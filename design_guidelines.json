@@ -1,0 +1,132 @@
+{
+  "theme_strategy": "dark_first",
+  "archetype": "ARCHETYPE 7: ELECTRIC & NEON (Premium Audio Variant)",
+  "emotional_tone": "Futuristic, commanded, slightly mysterious, and elite. Merging high-end audio hardware interfaces with cyberpunk AI orchestration.",
+  "typography": {
+    "font_families": {
+      "headings": "Unbounded",
+      "body": "IBM Plex Sans",
+      "mono": "JetBrains Mono"
+    },
+    "scale_and_rules": {
+      "h1": "text-4xl sm:text-5xl lg:text-6xl font-black tracking-tighter",
+      "h2": "text-2xl sm:text-3xl lg:text-4xl font-bold tracking-tight",
+      "h3": "text-xl sm:text-2xl font-semibold tracking-tight",
+      "body": "text-base leading-relaxed text-zinc-400",
+      "labels": "text-xs font-mono uppercase tracking-[0.2em] text-cyan-400",
+      "banned_fonts": ["Inter", "Roboto", "Open Sans", "Lato"],
+      "specific_instructions": "Never center headings by default. Use 'Unbounded' for all public-facing and dashboard primary headings. Use 'JetBrains Mono' for timecodes, AI models (GPT-4/Claude), and live data feeds."
+    }
+  },
+  "colors": {
+    "backgrounds": {
+      "app_bg": "#05050A",
+      "surface_base": "#0F0F14",
+      "surface_elevated": "#181820"
+    },
+    "brand_accents": {
+      "primary_neon": "#FF1493",
+      "secondary_electric": "#007AFF",
+      "ai_indicator": "#8A2BE2"
+    },
+    "text": {
+      "primary": "#FFFFFF",
+      "secondary": "#A1A1AA",
+      "muted": "#52525B"
+    },
+    "borders": {
+      "default": "rgba(255, 255, 255, 0.08)",
+      "active": "rgba(0, 122, 255, 0.5)"
+    },
+    "rules": {
+      "forbidden_colors": ["#1B93A4", "teal green", "pure #000000"],
+      "contrast_requirement": "Ensure 4.5:1 ratio for all body text. Use background-color shifts instead of shadows for dark mode card separation.",
+      "hover_states": "Hover must shift to a lighter background (e.g., bg-zinc-800 to bg-zinc-700) and explicitly set text color."
+    }
+  },
+  "visual_enhancers": {
+    "glassmorphism": {
+      "usage": "Public live player and sticky headers.",
+      "classes": "bg-black/40 backdrop-blur-2xl border border-white/10 shadow-[0_8px_32px_rgba(0,0,0,0.5)]"
+    },
+    "neumorphism_tactile": {
+      "usage": "Avoid. Use Flat Solid surfaces or Glassmorphism instead."
+    },
+    "retro_terminal": {
+      "usage": "LLM Orchestration View and System Logs.",
+      "classes": "bg-[#05050A] border border-cyan-500/30 text-cyan-400 font-mono"
+    },
+    "borders_and_glows": {
+      "active_elements": "Use 1px solid borders with subtle inner glows. Example: shadow-[inset_0_0_12px_rgba(255,20,147,0.2)] for active live streams."
+    }
+  },
+  "layouts": {
+    "admin_dashboard": {
+      "strategy": "High Density Grid (Bento Protocol Mode B)",
+      "base_grid": "grid-cols-1 md:grid-cols-3 lg:grid-cols-4",
+      "gaps": "gap-4 or gap-6",
+      "spacing_scale": "Use p-6 to p-8 inside cards. Tight margins between structural elements.",
+      "components": {
+        "sidebar": "Fixed, dense, text-sm links, prominent 'LIVE' indicator badge.",
+        "header": "Solid dark background with hard bottom border. Do not use transparent headers."
+      }
+    },
+    "public_player": {
+      "strategy": "The Swiss Grid / Artful Asymmetry",
+      "alignment": "Optical alignment, heavily relying on large visual cover art and abstract waveforms.",
+      "spacing": "Massive breathing room. p-12 to p-24.",
+      "max_width": "max-w-7xl mx-auto"
+    }
+  },
+  "components": {
+    "now_playing_widget": "Glassmorphism card overlapping the hero background. Must include high-contrast typography and a pulsing 'LIVE' badge.",
+    "ai_dj_roster": "Flat rectangular cards. Hover effects should introduce a subtle border color shift (e.g., border-purple-500/50) and a slight -translate-y-1.",
+    "audio_waveform": "Implement using Recharts (bar chart simulating frequencies) or Framer Motion sequenced divs. It must feel kinetic.",
+    "buttons": "Pill-shaped or sharp rectangular (no in-between). Primary buttons use bg-pink-600 hover:bg-pink-500 text-white. Secondary buttons use transparent backgrounds with border-white/20.",
+    "forms_and_inputs": "Shadcn components heavily customized to be flat, dark-themed (bg-[#0F0F14]), with 1px border. No native HTML inputs."
+  },
+  "motion": {
+    "transitions": "Specific properties only. Example: transition-transform duration-300 ease-out, opacity duration-200. NEVER use 'transition-all'.",
+    "micro_interactions": "Play/Pause buttons need scale-down on active (active:scale-95).",
+    "animations": "Subtle pulsing opacity (animate-pulse) on the 'LIVE' indicator. Marquee text for long track names."
+  },
+  "accessibility": {
+    "focus_states": "focus:ring-2 focus:ring-cyan-500 focus:outline-none",
+    "motion": "Respect prefers-reduced-motion for the audio waveforms.",
+    "testing": "All interactive elements MUST have data-testid attributes (e.g., data-testid='play-pause-button', data-testid='dj-selector')."
+  },
+  "media": {
+    "icons": "lucide-react (installed). Use sharp, consistent sizing (e.g., w-5 h-5).",
+    "image_urls": [
+      {
+        "url": "https://images.unsplash.com/photo-1724185773486-0b39642e607e?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxODd8MHwxfHNlYXJjaHwyfHxhYnN0cmFjdCUyMG5lb24lMjBzb3VuZCUyMHdhdmV8ZW58MHx8fHwxNzgzODAwMDI5fDA&ixlib=rb-4.1.0&q=85",
+        "category": "Hero Background / Public Player Cover",
+        "description": "Colorful abstract sound wave on black background, used as the main visual for the live web radio."
+      },
+      {
+        "url": "https://images.unsplash.com/photo-1750096319146-6310519b5af2?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2Nzh8MHwxfHNlYXJjaHwzfHxjeWJlcnB1bmslMjBhdmF0YXIlMjBmYWNlfGVufDB8fHx8MTc4MzgwMDAyOXww&ixlib=rb-4.1.0&q=85",
+        "category": "AI DJ Avatar 1",
+        "description": "Glowing digital face for the primary AI DJ persona."
+      },
+      {
+        "url": "https://images.unsplash.com/photo-1732020858816-93c130ab8f49?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2Nzh8MHwxfHNlYXJjaHw0fHxjeWJlcnB1bmslMjBhdmF0YXIlMjBmYWNlfGVufDB8fHx8MTc4MzgwMDAyOXww&ixlib=rb-4.1.0&q=85",
+        "category": "AI DJ Avatar 2",
+        "description": "Glass sculpture head for a sophisticated, intellectual AI DJ."
+      },
+      {
+        "url": "https://images.unsplash.com/photo-1781865202636-0adef1d06cce?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDQ2MzR8MHwxfHNlYXJjaHwzfHxmdXR1cmlzdGljJTIwcmFkaW8lMjBzdHVkaW8lMjBuaWdodHxlbnwwfHx8fDE3ODM4MDAwMjl8MA&ixlib=rb-4.1.0&q=85",
+        "category": "Admin Dashboard Banner / Login Background",
+        "description": "Modern recording studio with neon lighting to set the station management mood."
+      }
+    ]
+  },
+  "libraries": [
+    "framer-motion (for player animations)",
+    "lucide-react (icons)",
+    "recharts (analytics dashboard)",
+    "react-fast-marquee (for live track titles)",
+    "sonner (toasts)"
+  ],
+  "instructions_to_main_agent": "Create a hybrid application. The public-facing radio player should be a massive, immersive experience with the 'abstract sound wave' image as a dark background, heavily utilizing glassmorphism for the player controls. The admin area (accessible via a clear 'Manage Station' or similar link) must switch to a dense, tactical 'Bento Grid' dashboard. Do not use generic Vercel/Stripe styles. Rely on pure HTML+Tailwind for layouts, and heavily customized Shadcn components for interactive logic. Never leave pure transparent backgrounds behind text. Every card in the dashboard should have a 1px border of white/10 to stand out against the deep app_bg.",
+  "UNIVERSAL_GUIDELINES_FOR_MAIN_AGENT": "1. IMPORTANT: Ensure all created frontend files are .js/.jsx (NOT .tsx). 2. NEVER apply 'transition: all'. Use specific transitions. 3. NEVER center-align text at the app root level. 4. NEVER use AI emojis (🤖, 🧠, etc.) as icons; strictly use lucide-react. 5. Prioritize existing Shadcn components but override their styles to match the 'Electric & Neon' dark theme (e.g., removing soft shadows, adding hard borders). 6. Incorporate 'data-testid' on all interactive elements. 7. Build the UI exclusively for Dark Mode first. 8. Do NOT use placeholder URLs for images; strictly use the provided media URLs."
+}
