@@ -182,6 +182,7 @@ export default function PublicRadio() {
                 <span className="font-mono text-xs uppercase tracking-widest text-pink-400">Live</span>
               </div>
             )}
+            <Link to="/pubblicita" data-testid="advertise-link" className="btn-outline focusable text-sm hidden sm:inline-flex">Sponsorizza</Link>
             <Link to="/dashboard" data-testid="admin-link" className="btn-outline focusable text-sm">Pannello Admin</Link>
           </nav>
         </div>

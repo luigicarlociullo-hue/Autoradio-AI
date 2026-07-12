@@ -13,24 +13,25 @@ Vorrei costruire un software di gestione radiofonica completamente automatizzato
 - Audio: Browser Web Speech API (TTS) + Web Audio API procedural synthesis (music) — 100 % client-side, zero cost. Ready to swap in ElevenLabs / Suno when the user activates paid keys.
 - Auth: Emergent Google OAuth (free) for admin.
 
-## What's implemented (2026-07-11)
-- Public listener page `/` with hero, live player, DJ roster, timeline, question form.
-- Admin dashboard `/dashboard` with station toggle, KPI, LLM orchestration chart, DJ CRUD, track library, question queue with in-diretta answer generation.
-- Backend endpoints: `/api/station`, `/api/station/toggle`, `/api/djs` (CRUD), `/api/segments/generate` (music/talk/news/answer), `/api/segments/{id}/render_hd`, `/api/audio/{filename}`, `/api/tracks/generate`, `/api/questions`, `/api/analytics`, `/api/auth/{session,me,logout}`.
-- Multi-LLM roster: each DJ persona bound to a different provider; segment generation dispatches to that DJ's LLM.
-- Fallback scripts (Italian) if LLM budget is exhausted, so radio never goes silent.
-- **HD open-source audio mode** (2026-07-12): toggling "HD" in the player calls Bark (Suno OSS, Italian speakers) for TTS and Stable Audio Open (Stability AI OSS) for music, via HuggingFace Gradio Spaces free tier. Non-HD mode still uses browser Web Speech / Web Audio for instant playback.
-- Emergent Google Auth wiring (session-cookie based).
+## What's implemented (2026-07-12)
+- Public listener page `/`, admin `/dashboard`, HD open-source audio mode (Bark + Stable Audio Open), Emergent Google Auth, multi-LLM (GPT-5.2, Claude Sonnet 4.5, Gemini 3 Flash).
+- **Monetization via PayPal ads** (2026-07-12):
+  - Public page `/pubblicita` with 3 tiers (Basic 4,99€ / Standard 14,99€ / Premium 39,99€), advertiser form, PayPal checkout redirect.
+  - `/ads/return` handles PayPal callback, captures payment, calls LLM for ad copy, generates real Bark audio, activates campaign.
+  - Backend `paypal_service.py` with **three modes**: `live`, `sandbox`, `demo`. Demo mode active by default (empty PAYPAL_CLIENT_ID) so the whole flow can be tested without a Business account.
+  - Ad campaigns auto-rotate into the segment loop (~22% of unqualified segments become paid spots) until `plays_remaining` reaches 0.
+  - Admin dashboard shows revenue KPI, live campaign list with inline audio preview, "quick-create" button.
+  - Endpoints: `GET /api/ads/tiers`, `POST /api/ads/create`, `POST /api/ads/{id}/confirm`, `GET /api/ads`, `GET /api/ads/next`, `POST /api/ads/{id}/mark_played`, `GET /api/ads/revenue`.
 
 ## Deferred / Backlog (P1 / P2)
-- P1 — Pre-render HD segments in the background so listeners don't wait 20–35s per segment.
-- P1 — Suno / ElevenLabs premium swap-in when the user provides paid keys.
+- P1 — Upgrade PayPal from `demo` to `sandbox` (user creates dev app on developer.paypal.com — free, no Business account required) then to `live` (requires Business upgrade).
+- P1 — PayPal webhook `/api/webhooks/paypal` for asynchronous events (refunds, disputes).
+- P1 — Pre-render HD segments in background.
+- P1 — Suno / ElevenLabs premium swap-in.
 - P1 — Telegram bot ingestion (`/api/questions?source=telegram`).
 - P1 — Twilio SMS + voice call ingestion.
-- P2 — Real streaming audio pipeline (HLS/Icecast) so listeners hear the same stream in sync.
-- P2 — Scheduler / crontab palinsesto (programmed segments).
-- P2 — Multi-channel (news channel, chill channel).
-- P2 — Playlist history + skip/like buttons + analytics per DJ.
+- P2 — Ad performance analytics per campaign (plays served, timestamp history).
+- P2 — Real streaming audio pipeline (HLS/Icecast).
 
 ## Next tasks
 1. When user provides Suno API key → wire real music generation via `/api/tracks/generate` (backend already returns metadata compatible with Suno).

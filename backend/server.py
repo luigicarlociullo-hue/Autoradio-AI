@@ -19,6 +19,7 @@ load_dotenv(ROOT_DIR / '.env')
 
 from emergentintegrations.llm.chat import LlmChat, UserMessage
 from hf_audio import synth_speech, synth_music, audio_path, cleanup_old, AUDIO_DIR
+import paypal_service
 
 # MongoDB
 mongo_url = os.environ['MONGO_URL']
@@ -407,6 +408,39 @@ async def list_segments(limit: int = 30):
 @api_router.post("/segments/generate", response_model=Segment)
 async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = None, question_id: Optional[str] = None):
     await ensure_seeded()
+
+    # Ad rotation: ~1 out of every 5 segments becomes an ad if there is any
+    # active campaign with plays remaining, unless caller explicitly forced a kind.
+    if kind is None and random.random() < 0.22:
+        ad = await db.ad_campaigns.find_one(
+            {"status": "active", "plays_remaining": {"$gt": 0}},
+            {"_id": 0},
+            sort=[("created_at", 1)],
+        )
+        if ad and ad.get("script"):
+            djs_ad = await db.djs.find({}, {"_id": 0}).to_list(20)
+            dj_ad = random.choice(djs_ad) if djs_ad else None
+            ad_seg = Segment(
+                kind="talk",
+                dj_id=(dj_ad or {}).get("id"),
+                dj_name=(dj_ad or {}).get("name") or "AdBot",
+                voice_key=(dj_ad or {}).get("voice_key") or "male-1",
+                title=f"📢 Spot · {ad['brand']}",
+                script=ad["script"],
+                llm_provider="ad-campaign",
+                duration_sec=30,
+            )
+            if ad.get("audio_url"):
+                ad_seg.speech_audio_url = ad["audio_url"]
+                ad_seg.hd_status = "ready"
+            await db.segments.insert_one(ad_seg.model_dump())
+            await db.station.update_one({"_id": "state"}, {"$inc": {"total_segments": 1}}, upsert=True)
+            # Decrement plays
+            remaining = max(0, ad["plays_remaining"] - 1)
+            new_status = "exhausted" if remaining == 0 else "active"
+            await db.ad_campaigns.update_one({"id": ad["id"]}, {"$set": {"plays_remaining": remaining, "status": new_status}})
+            return ad_seg
+
     kind = kind or random.choice(["talk", "music", "news", "talk", "music"])
     djs = await db.djs.find({}, {"_id": 0}).to_list(20)
     if not djs:
@@ -543,6 +577,199 @@ async def analytics():
         "answered_questions": answered,
         "segments_by_kind": kinds,
         "segments_by_provider": provider_counts,
+    }
+
+
+# ----------------------- Ads / Monetization -----------------------
+AD_TIERS = {
+    "basic":    {"price_eur": 4.99,  "plays": 1,  "label": "Basic",    "desc": "Un passaggio spot in diretta"},
+    "standard": {"price_eur": 14.99, "plays": 5,  "label": "Standard", "desc": "5 passaggi con posizione preferita"},
+    "premium":  {"price_eur": 39.99, "plays": 20, "label": "Premium",  "desc": "20 passaggi + brand sponsor 'questa ora è offerta da…'"},
+}
+
+
+class AdCampaign(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    brand: str
+    message: str
+    tier: Literal["basic", "standard", "premium"] = "basic"
+    price_eur: float = 4.99
+    plays_total: int = 1
+    plays_remaining: int = 1
+    status: Literal["pending_payment", "active", "exhausted", "cancelled"] = "pending_payment"
+    paypal_order_id: Optional[str] = None
+    paypal_capture_id: Optional[str] = None
+    script: Optional[str] = None
+    audio_url: Optional[str] = None
+    is_demo: bool = False
+    contact_email: Optional[str] = None
+    created_at: str = Field(default_factory=now_iso)
+    paid_at: Optional[str] = None
+
+
+class AdCreateRequest(BaseModel):
+    brand: str
+    message: str
+    tier: Literal["basic", "standard", "premium"] = "basic"
+    contact_email: Optional[str] = None
+    return_origin: str  # e.g. https://autoradio-ai.preview.emergentagent.com
+
+
+@api_router.get("/ads/tiers")
+async def ad_tiers():
+    return {
+        "tiers": AD_TIERS,
+        "paypal_mode": paypal_service.current_mode(),
+        "is_demo": paypal_service.is_demo(),
+        "currency": "EUR",
+    }
+
+
+@api_router.post("/ads/create", response_model=AdCampaign)
+async def create_ad(payload: AdCreateRequest):
+    if payload.tier not in AD_TIERS:
+        raise HTTPException(400, "Invalid tier")
+    tier = AD_TIERS[payload.tier]
+    camp = AdCampaign(
+        brand=payload.brand.strip()[:60] or "Brand",
+        message=payload.message.strip()[:400],
+        tier=payload.tier,
+        price_eur=tier["price_eur"],
+        plays_total=tier["plays"],
+        plays_remaining=tier["plays"],
+        contact_email=(payload.contact_email or "").strip()[:120] or None,
+        is_demo=paypal_service.is_demo(),
+    )
+    return_url = f"{payload.return_origin}/ads/return?campaign_id={camp.id}"
+    cancel_url = f"{payload.return_origin}/pubblicita?cancelled=1"
+    try:
+        order_id, approval_url = await paypal_service.create_order(
+            amount_eur=camp.price_eur,
+            description=f"NEURA·FM spot {tier['label']} — {camp.brand}",
+            return_url=return_url,
+            cancel_url=cancel_url,
+        )
+    except Exception as e:
+        logger.error(f"PayPal create_order failed: {e}")
+        raise HTTPException(502, "PayPal non disponibile")
+    camp.paypal_order_id = order_id
+    doc = camp.model_dump()
+    doc["approval_url"] = approval_url
+    await db.ad_campaigns.insert_one(camp.model_dump())
+    return JSONResponse(doc)
+
+
+@api_router.post("/ads/{campaign_id}/confirm")
+async def confirm_ad(campaign_id: str):
+    camp = await db.ad_campaigns.find_one({"id": campaign_id}, {"_id": 0})
+    if not camp:
+        raise HTTPException(404, "Campaign not found")
+    if camp["status"] == "active":
+        return camp
+
+    try:
+        capture = await paypal_service.capture_order(camp["paypal_order_id"])
+    except Exception as e:
+        logger.error(f"PayPal capture failed: {e}")
+        raise HTTPException(502, "Errore nella conferma pagamento PayPal")
+
+    status = (capture.get("status") or "").upper()
+    if status != "COMPLETED":
+        raise HTTPException(400, f"Pagamento non completato: {status}")
+
+    capture_id = None
+    try:
+        capture_id = capture["purchase_units"][0]["payments"]["captures"][0]["id"]
+    except Exception:
+        pass
+
+    # Generate the spot script via LLM
+    provider, model = _pick_llm()
+    system = "Sei uno speaker radiofonico italiano che scrive spot pubblicitari brevi e memorabili per una webradio AI di nome NEURA FM. Non usare emoji."
+    prompt = (
+        f"Scrivi uno spot pubblicitario radiofonico di massimo 40 parole per il brand '{camp['brand']}'. "
+        f"Messaggio chiave del brand: {camp['message']}. "
+        "Deve essere accattivante, chiudere con un invito all'azione forte, e chiaramente distinguibile come pubblicità. "
+        "Inizia SEMPRE con 'Pubblicità.' e termina con il nome del brand."
+    )
+    script = await llm_generate(provider, model, system, prompt)
+    if not script or not script.strip():
+        script = f"Pubblicità. {camp['brand']} ti aspetta. {camp['message'][:120]} Scegli {camp['brand']}."
+
+    # Try to synth audio via Bark (HD open source)
+    audio_fname = None
+    try:
+        audio_fname = await synth_speech(script.strip(), voice_key="male-1")
+    except Exception as e:
+        logger.warning(f"Ad Bark synth failed: {e}")
+
+    audio_url = f"/api/audio/{audio_fname}" if audio_fname else None
+    update = {
+        "status": "active",
+        "paypal_capture_id": capture_id,
+        "script": script.strip(),
+        "audio_url": audio_url,
+        "paid_at": now_iso(),
+    }
+    await db.ad_campaigns.update_one({"id": campaign_id}, {"$set": update})
+    camp.update(update)
+    return camp
+
+
+@api_router.get("/ads", response_model=List[AdCampaign])
+async def list_ads(status: Optional[str] = None):
+    q = {"status": status} if status else {}
+    docs = await db.ad_campaigns.find(q, {"_id": 0}).sort("created_at", -1).to_list(200)
+    return docs
+
+
+@api_router.get("/ads/next")
+async def next_ad():
+    doc = await db.ad_campaigns.find_one(
+        {"status": "active", "plays_remaining": {"$gt": 0}},
+        {"_id": 0},
+        sort=[("tier", -1), ("created_at", 1)],  # premium tiers first alphabetically last
+    )
+    return doc or {}
+
+
+@api_router.post("/ads/{campaign_id}/mark_played")
+async def mark_played(campaign_id: str):
+    doc = await db.ad_campaigns.find_one({"id": campaign_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(404, "Not found")
+    remaining = max(0, (doc.get("plays_remaining") or 0) - 1)
+    new_status = "exhausted" if remaining == 0 else doc.get("status", "active")
+    await db.ad_campaigns.update_one({"id": campaign_id}, {"$set": {"plays_remaining": remaining, "status": new_status}})
+    return {"plays_remaining": remaining, "status": new_status}
+
+
+@api_router.get("/ads/revenue")
+async def ad_revenue():
+    total = 0.0
+    active_count = 0
+    exhausted_count = 0
+    demo_count = 0
+    by_tier = {}
+    async for c in db.ad_campaigns.find({}, {"_id": 0}):
+        if c.get("status") in ("active", "exhausted"):
+            total += float(c.get("price_eur") or 0)
+            t = c.get("tier", "basic")
+            by_tier[t] = by_tier.get(t, 0) + 1
+        if c.get("status") == "active":
+            active_count += 1
+        if c.get("status") == "exhausted":
+            exhausted_count += 1
+        if c.get("is_demo"):
+            demo_count += 1
+    return {
+        "total_revenue_eur": round(total, 2),
+        "active_campaigns": active_count,
+        "exhausted_campaigns": exhausted_count,
+        "demo_campaigns": demo_count,
+        "by_tier": by_tier,
+        "currency": "EUR",
+        "paypal_mode": paypal_service.current_mode(),
     }
 
 

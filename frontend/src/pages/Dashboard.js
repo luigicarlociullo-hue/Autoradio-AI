@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { Radio, Power, Trash2, Sparkles, Zap, Music2, Newspaper, MessageCircle, LogOut, LogIn, Send, User, ChevronRight, Cpu, Users, RefreshCw } from "lucide-react";
-import { endpoints } from "@/lib/api";
+import { Radio, Power, Trash2, Sparkles, Zap, Music2, Newspaper, MessageCircle, LogOut, LogIn, Send, User, ChevronRight, Cpu, Users, RefreshCw, Megaphone, Euro, ExternalLink } from "lucide-react";
+import { endpoints, api } from "@/lib/api";
 import { toast } from "sonner";
 
 const STUDIO_BG = "https://images.unsplash.com/photo-1781865202636-0adef1d06cce?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDQ2MzR8MHwxfHNlYXJjaHwzfHxmdXR1cmlzdGljJTIwcmFkaW8lMjBzdHVkaW8lMjBuaWdodHxlbnwwfHx8fDE3ODM4MDAwMjl8MA&ixlib=rb-4.1.0&q=85";
@@ -17,6 +17,8 @@ export default function Dashboard() {
   const [tracks, setTracks] = useState([]);
   const [questions, setQuestions] = useState([]);
   const [analytics, setAnalytics] = useState({});
+  const [ads, setAds] = useState([]);
+  const [adRevenue, setAdRevenue] = useState({ total_revenue_eur: 0, active_campaigns: 0, exhausted_campaigns: 0, paypal_mode: "demo" });
   const [busy, setBusy] = useState(false);
   const [newDj, setNewDj] = useState({ name: "", personality: "", voice_key: "female-1", llm_provider: "openai", llm_model: "gpt-5.2", accent_color: "#22d3ee" });
 
@@ -34,11 +36,14 @@ export default function Dashboard() {
 
   const refresh = async () => {
     try {
-      const [s, d, seg, t, q, a] = await Promise.all([
+      const [s, d, seg, t, q, a, adsList, rev] = await Promise.all([
         endpoints.station(), endpoints.djs(), endpoints.segments(),
         endpoints.tracks(), endpoints.questions(false), endpoints.analytics(),
+        api.get("/ads").then(r => r.data),
+        api.get("/ads/revenue").then(r => r.data),
       ]);
       setStation(s); setDjs(d); setSegments(seg); setTracks(t); setQuestions(q); setAnalytics(a);
+      setAds(adsList); setAdRevenue(rev);
     } catch (e) { /* noop */ }
   };
   useEffect(() => { refresh(); const iv = setInterval(refresh, 8000); return () => clearInterval(iv); }, []);
@@ -157,7 +162,77 @@ export default function Dashboard() {
         <KPI label="Segmenti" value={analytics.total_segments || 0} icon={Zap} />
         <KPI label="Tracce inventate" value={analytics.total_tracks || 0} icon={Music2} />
         <KPI label="Domande ricevute" value={analytics.total_questions || 0} icon={MessageCircle} />
-        <KPI label="Risposte in onda" value={analytics.answered_questions || 0} icon={Sparkles} />
+        <KPI label="Ricavi pubblicità" value={`€${(adRevenue.total_revenue_eur || 0).toFixed(2).replace(".", ",")}`} icon={Euro} />
+
+        {/* Ad Campaigns panel */}
+        <section className="lg:col-span-4 card-surface p-6" data-testid="ads-panel">
+          <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+            <div>
+              <div className="label-mono flex items-center gap-2">
+                <Megaphone className="w-3.5 h-3.5" /> Monetizzazione automatica
+                <span className="chip" style={{ borderColor: adRevenue.paypal_mode === "live" ? "#10b98155" : "#22d3ee55", color: adRevenue.paypal_mode === "live" ? "#10b981" : "#22d3ee" }}>
+                  PayPal · {adRevenue.paypal_mode}
+                </span>
+              </div>
+              <h3 className="font-display font-bold text-xl">Campagne pubblicitarie</h3>
+              <div className="text-xs font-mono text-zinc-500 mt-1">
+                Attive: {adRevenue.active_campaigns} · Terminate: {adRevenue.exhausted_campaigns} · Ricavi totali: <span className="text-emerald-400">€{(adRevenue.total_revenue_eur || 0).toFixed(2)}</span>
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <Link to="/pubblicita" target="_blank" rel="noopener noreferrer" className="btn-outline text-sm flex items-center gap-2" data-testid="open-ads-page">
+                <ExternalLink className="w-4 h-4" /> Pagina pubblica
+              </Link>
+              <button
+                onClick={async () => {
+                  const brand = window.prompt("Nome brand:");
+                  if (!brand) return;
+                  const message = window.prompt("Messaggio chiave (max 400 caratteri):");
+                  if (!message) return;
+                  const tier = (window.prompt("Tier (basic/standard/premium):", "basic") || "basic").toLowerCase();
+                  try {
+                    const r = await api.post("/ads/create", { brand, message, tier, return_origin: window.location.origin });
+                    // immediately confirm demo (admin quick-create)
+                    if (r.data.is_demo) {
+                      await api.post(`/ads/${r.data.id}/confirm`, null, { timeout: 120000 });
+                      toast.success("Campagna creata e attivata (demo)");
+                    } else if (r.data.approval_url) {
+                      window.open(r.data.approval_url, "_blank");
+                    }
+                    refresh();
+                  } catch (e) { toast.error("Errore creazione campagna"); }
+                }}
+                className="btn-primary text-sm flex items-center gap-2"
+                data-testid="quick-create-ad"
+              >
+                <Sparkles className="w-4 h-4" /> Crea rapida
+              </button>
+            </div>
+          </div>
+          <div className="grid md:grid-cols-2 gap-3 max-h-96 overflow-auto pr-1">
+            {ads.length === 0 && (
+              <div className="text-sm text-zinc-500 col-span-2">Nessuna campagna ancora. La <Link to="/pubblicita" className="text-cyan-400 underline">pagina pubblica</Link> è aperta agli inserzionisti.</div>
+            )}
+            {ads.map(c => (
+              <div key={c.id} className="border border-white/8 rounded-lg p-3 bg-[#0F0F14]" data-testid={`ad-${c.id}`}>
+                <div className="flex items-center justify-between gap-2 mb-1">
+                  <div className="font-display font-semibold truncate">{c.brand}</div>
+                  <span className="chip" style={{ color: c.status === "active" ? "#10b981" : c.status === "exhausted" ? "#a1a1aa" : "#f59e0b", borderColor: "rgba(255,255,255,0.15)" }}>
+                    {c.status}
+                  </span>
+                </div>
+                <div className="text-xs font-mono text-zinc-500 mb-1">
+                  {c.tier.toUpperCase()} · €{(c.price_eur || 0).toFixed(2)} · {c.plays_remaining}/{c.plays_total} passaggi
+                  {c.is_demo && <span className="text-cyan-400 ml-2">DEMO</span>}
+                </div>
+                {c.script && <div className="text-xs text-zinc-400 line-clamp-2 mt-1">{c.script}</div>}
+                {c.audio_url && (
+                  <audio controls src={endpoints.audioUrl(c.audio_url)} className="mt-2 w-full h-8" style={{ height: 32 }} />
+                )}
+              </div>
+            ))}
+          </div>
+        </section>
 
         {/* LLM orchestration */}
         <section className="lg:col-span-2 card-surface p-6">

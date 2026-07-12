@@ -4,6 +4,8 @@ import { Toaster } from "sonner";
 import PublicRadio from "@/pages/PublicRadio";
 import Dashboard from "@/pages/Dashboard";
 import AuthCallback from "@/pages/AuthCallback";
+import Advertise from "@/pages/Advertise";
+import AdReturn from "@/pages/AdReturn";
 import "@/App.css";
 
 function AppRouter() {
@@ -16,6 +18,8 @@ function AppRouter() {
     <Routes>
       <Route path="/" element={<PublicRadio />} />
       <Route path="/dashboard" element={<Dashboard />} />
+      <Route path="/pubblicita" element={<Advertise />} />
+      <Route path="/ads/return" element={<AdReturn />} />
       <Route path="*" element={<PublicRadio />} />
     </Routes>
   );
