@@ -20,6 +20,7 @@ load_dotenv(ROOT_DIR / '.env')
 from emergentintegrations.llm.chat import LlmChat, UserMessage
 from hf_audio import synth_speech, synth_music, audio_path, cleanup_old, AUDIO_DIR
 import paypal_service
+import telegram_bot
 
 # MongoDB
 mongo_url = os.environ['MONGO_URL']
@@ -406,7 +407,7 @@ async def list_segments(limit: int = 30):
 
 
 @api_router.post("/segments/generate", response_model=Segment)
-async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = None, question_id: Optional[str] = None):
+async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = None, question_id: Optional[str] = None, hd: bool = False):
     await ensure_seeded()
 
     # Ad rotation: ~1 out of every 5 segments becomes an ad if there is any
@@ -435,10 +436,17 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
                 ad_seg.hd_status = "ready"
             await db.segments.insert_one(ad_seg.model_dump())
             await db.station.update_one({"_id": "state"}, {"$inc": {"total_segments": 1}}, upsert=True)
-            # Decrement plays
+            # Decrement plays + log ad play
             remaining = max(0, ad["plays_remaining"] - 1)
             new_status = "exhausted" if remaining == 0 else "active"
             await db.ad_campaigns.update_one({"id": ad["id"]}, {"$set": {"plays_remaining": remaining, "status": new_status}})
+            await db.ad_plays.insert_one({
+                "campaign_id": ad["id"],
+                "brand": ad["brand"],
+                "tier": ad["tier"],
+                "played_at": now_iso(),
+                "segment_id": ad_seg.id,
+            })
             return ad_seg
 
     kind = kind or random.choice(["talk", "music", "news", "talk", "music"])
@@ -532,6 +540,35 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
 
     await db.segments.insert_one(segment.model_dump())
     await db.station.update_one({"_id": "state"}, {"$inc": {"total_segments": 1}}, upsert=True)
+
+    # Inline HD render (used by the prefetch pipeline so the frontend gets
+    # ready-to-play audio in a single call)
+    if hd:
+        try:
+            speech_url = None
+            music_url = None
+            if segment.script:
+                fn = await synth_speech(segment.script, segment.voice_key or "female-1")
+                if fn:
+                    speech_url = f"/api/audio/{fn}"
+            if segment.kind == "music" and segment.track_meta:
+                tm = segment.track_meta
+                mprompt = f"{tm.get('genre','electronic')} {tm.get('mood','')} music, {tm.get('title','')}"
+                fn = await synth_music(mprompt, seconds=15)
+                if fn:
+                    music_url = f"/api/audio/{fn}"
+            update = {"hd_status": "ready" if (speech_url or music_url) else "failed"}
+            if speech_url:
+                update["speech_audio_url"] = speech_url
+                segment.speech_audio_url = speech_url
+            if music_url:
+                update["music_audio_url"] = music_url
+                segment.music_audio_url = music_url
+            segment.hd_status = update["hd_status"]
+            await db.segments.update_one({"id": segment.id}, {"$set": update})
+            cleanup_old(120)
+        except Exception as e:
+            logger.warning(f"inline hd render failed: {e}")
     return segment
 
 
@@ -773,6 +810,42 @@ async def ad_revenue():
     }
 
 
+@api_router.get("/ads/{campaign_id}/plays")
+async def ad_plays(campaign_id: str):
+    docs = await db.ad_plays.find({"campaign_id": campaign_id}, {"_id": 0}).sort("played_at", 1).to_list(500)
+    # Bucket by hour of day
+    hourly = {h: 0 for h in range(24)}
+    for d in docs:
+        ts = d.get("played_at", "")
+        try:
+            hour = datetime.fromisoformat(ts).hour
+            hourly[hour] = hourly.get(hour, 0) + 1
+        except Exception:
+            pass
+    # Bucket by day
+    daily = {}
+    for d in docs:
+        ts = d.get("played_at", "")
+        try:
+            day = ts[:10]
+            daily[day] = daily.get(day, 0) + 1
+        except Exception:
+            pass
+    return {
+        "campaign_id": campaign_id,
+        "total_plays": len(docs),
+        "hourly": [{"hour": h, "plays": hourly.get(h, 0)} for h in range(24)],
+        "daily": [{"day": k, "plays": v} for k, v in sorted(daily.items())],
+        "recent": docs[-20:],
+    }
+
+
+# ----------------------- Telegram integration -----------------------
+@api_router.get("/telegram/status")
+async def telegram_status():
+    return telegram_bot.status()
+
+
 # ----------------------- HD Audio (HF Spaces) -----------------------
 @api_router.get("/audio/{filename}")
 async def get_audio(filename: str):
@@ -842,6 +915,7 @@ app.add_middleware(
 @app.on_event("startup")
 async def on_startup():
     await ensure_seeded()
+    await telegram_bot.start(db)
 
 
 @app.on_event("shutdown")

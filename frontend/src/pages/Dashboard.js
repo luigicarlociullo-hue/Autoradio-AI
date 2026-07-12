@@ -19,6 +19,8 @@ export default function Dashboard() {
   const [analytics, setAnalytics] = useState({});
   const [ads, setAds] = useState([]);
   const [adRevenue, setAdRevenue] = useState({ total_revenue_eur: 0, active_campaigns: 0, exhausted_campaigns: 0, paypal_mode: "demo" });
+  const [tgStatus, setTgStatus] = useState({ enabled: false });
+  const [adPlays, setAdPlays] = useState({}); // { campaign_id: plays payload }
   const [busy, setBusy] = useState(false);
   const [newDj, setNewDj] = useState({ name: "", personality: "", voice_key: "female-1", llm_provider: "openai", llm_model: "gpt-5.2", accent_color: "#22d3ee" });
 
@@ -36,14 +38,22 @@ export default function Dashboard() {
 
   const refresh = async () => {
     try {
-      const [s, d, seg, t, q, a, adsList, rev] = await Promise.all([
+      const [s, d, seg, t, q, a, adsList, rev, tg] = await Promise.all([
         endpoints.station(), endpoints.djs(), endpoints.segments(),
         endpoints.tracks(), endpoints.questions(false), endpoints.analytics(),
-        api.get("/ads").then(r => r.data),
-        api.get("/ads/revenue").then(r => r.data),
+        endpoints.ads(),
+        endpoints.adRevenue(),
+        endpoints.telegramStatus(),
       ]);
       setStation(s); setDjs(d); setSegments(seg); setTracks(t); setQuestions(q); setAnalytics(a);
-      setAds(adsList); setAdRevenue(rev);
+      setAds(adsList); setAdRevenue(rev); setTgStatus(tg);
+      // Fetch play analytics for each active campaign (max 6 to avoid burst)
+      const active = adsList.filter(c => c.status === "active" || c.status === "exhausted").slice(0, 6);
+      const plays = {};
+      await Promise.all(active.map(async (c) => {
+        try { plays[c.id] = await endpoints.adPlays(c.id); } catch { /* noop */ }
+      }));
+      setAdPlays(plays);
     } catch (e) { /* noop */ }
   };
   useEffect(() => { refresh(); const iv = setInterval(refresh, 8000); return () => clearInterval(iv); }, []);
@@ -213,7 +223,10 @@ export default function Dashboard() {
             {ads.length === 0 && (
               <div className="text-sm text-zinc-500 col-span-2">Nessuna campagna ancora. La <Link to="/pubblicita" className="text-cyan-400 underline">pagina pubblica</Link> è aperta agli inserzionisti.</div>
             )}
-            {ads.map(c => (
+            {ads.map(c => {
+              const plays = adPlays[c.id];
+              const maxHour = plays ? Math.max(1, ...(plays.hourly || []).map(h => h.plays)) : 1;
+              return (
               <div key={c.id} className="border border-white/8 rounded-lg p-3 bg-[#0F0F14]" data-testid={`ad-${c.id}`}>
                 <div className="flex items-center justify-between gap-2 mb-1">
                   <div className="font-display font-semibold truncate">{c.brand}</div>
@@ -229,9 +242,71 @@ export default function Dashboard() {
                 {c.audio_url && (
                   <audio controls src={endpoints.audioUrl(c.audio_url)} className="mt-2 w-full h-8" style={{ height: 32 }} />
                 )}
+                {plays && plays.total_plays > 0 && (
+                  <div className="mt-3">
+                    <div className="flex items-center justify-between mb-1">
+                      <div className="label-mono">Passaggi per ora</div>
+                      <div className="font-mono text-xs text-zinc-500">totale: {plays.total_plays}</div>
+                    </div>
+                    <div className="flex items-end gap-[2px] h-10">
+                      {(plays.hourly || []).map((h, i) => (
+                        <div
+                          key={i}
+                          title={`${h.hour}:00 → ${h.plays} passaggi`}
+                          className="flex-1 rounded-t"
+                          style={{
+                            height: `${(h.plays / maxHour) * 100}%`,
+                            minHeight: h.plays > 0 ? "3px" : "1px",
+                            background: h.plays > 0 ? "linear-gradient(180deg,#FF1493,#8A2BE2)" : "rgba(255,255,255,0.05)",
+                          }}
+                        />
+                      ))}
+                    </div>
+                    <div className="flex justify-between font-mono text-[10px] text-zinc-600 mt-1">
+                      <span>00</span><span>06</span><span>12</span><span>18</span><span>23</span>
+                    </div>
+                  </div>
+                )}
               </div>
-            ))}
+              );
+            })}
           </div>
+        </section>
+
+        {/* Telegram integration status */}
+        <section className="lg:col-span-2 card-surface p-6" data-testid="telegram-panel">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <div className="label-mono flex items-center gap-2">
+                Telegram Bot
+                {tgStatus.enabled ? (
+                  <span className="chip" style={{ color: "#10b981", borderColor: "#10b98155" }}>connesso</span>
+                ) : (
+                  <span className="chip" style={{ color: "#a1a1aa" }}>disattivato</span>
+                )}
+              </div>
+              <h3 className="font-display font-bold text-xl">Domande dal pubblico</h3>
+            </div>
+            <MessageCircle className="w-5 h-5 text-cyan-400" />
+          </div>
+          {tgStatus.enabled ? (
+            <div className="space-y-2">
+              <div className="text-sm text-zinc-300">
+                Bot attivo come <span className="font-mono text-cyan-400">@{tgStatus.username}</span>.
+                Gli ascoltatori possono scrivere direttamente al bot e le domande arrivano nella coda.
+              </div>
+              {tgStatus.link && (
+                <a href={tgStatus.link} target="_blank" rel="noopener noreferrer" className="btn-outline text-sm inline-flex items-center gap-2 mt-2">
+                  Apri Telegram <ExternalLink className="w-4 h-4" />
+                </a>
+              )}
+            </div>
+          ) : (
+            <div className="text-sm text-zinc-400 leading-relaxed">
+              <p>Per accendere il bot Telegram: 1) crea un bot con <span className="font-mono text-cyan-400">@BotFather</span> su Telegram, 2) copia il token nel file <span className="font-mono text-cyan-400">/app/backend/.env</span> alla riga <span className="font-mono">TELEGRAM_BOT_TOKEN=...</span>, 3) riavvia il backend.</p>
+              <p className="mt-2 text-xs font-mono text-zinc-500">Il polling parte automatico allo startup, ricevi le domande nella coda con <code className="text-cyan-400">source=telegram</code>.</p>
+            </div>
+          )}
         </section>
 
         {/* LLM orchestration */}

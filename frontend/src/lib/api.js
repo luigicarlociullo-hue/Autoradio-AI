@@ -15,7 +15,7 @@ export const endpoints = {
   createDj: (data) => api.post("/djs", data).then(r => r.data),
   deleteDj: (id) => api.delete(`/djs/${id}`).then(r => r.data),
   segments: () => api.get("/segments").then(r => r.data),
-  generateSegment: (params) => api.post("/segments/generate", null, { params }).then(r => r.data),
+  generateSegment: (params) => api.post("/segments/generate", null, { params, timeout: params?.hd ? 180000 : 30000 }).then(r => r.data),
   renderHD: (id) => api.post(`/segments/${id}/render_hd`, null, { timeout: 180000 }).then(r => r.data),
   clearSegments: () => api.delete("/segments").then(r => r.data),
   tracks: () => api.get("/tracks").then(r => r.data),
@@ -27,4 +27,8 @@ export const endpoints = {
   me: () => api.get("/auth/me").then(r => r.data),
   logout: () => api.post("/auth/logout").then(r => r.data),
   audioUrl: (path) => `${API}${path.startsWith("/api") ? path.slice(4) : path}`,
+  ads: () => api.get("/ads").then(r => r.data),
+  adRevenue: () => api.get("/ads/revenue").then(r => r.data),
+  adPlays: (id) => api.get(`/ads/${id}/plays`).then(r => r.data),
+  telegramStatus: () => api.get("/telegram/status").then(r => r.data),
 };

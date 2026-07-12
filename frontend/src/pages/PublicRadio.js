@@ -86,29 +86,39 @@ export default function PublicRadio() {
     playingRef.current = true;
     stopFlag.current = false;
     setIsPlaying(true);
+
+    const fetchSegment = async () => {
+      let seg = await endpoints.generateSegment(hdMode ? { hd: true } : {});
+      if (hdMode) {
+        if (seg.speech_audio_url) seg.speech_audio_url = endpoints.audioUrl(seg.speech_audio_url);
+        if (seg.music_audio_url)  seg.music_audio_url  = endpoints.audioUrl(seg.music_audio_url);
+      }
+      return seg;
+    };
+
     try {
+      // Prefetch pipeline: keep one segment ready ahead
+      let nextPromise = fetchSegment();
+      if (hdMode) setRenderingHd(true);
+      let seg = await nextPromise;
+      if (hdMode) setRenderingHd(false);
+      // Kick off next fetch in background
+      nextPromise = fetchSegment();
+
       while (!stopFlag.current) {
-        // Generate a fresh segment
-        let seg = await endpoints.generateSegment({});
-        // In HD mode, ask backend to render real Bark speech + Stable Audio music
-        if (hdMode) {
-          setRenderingHd(true);
-          try {
-            const withAudio = await endpoints.renderHD(seg.id);
-            seg = { ...seg, ...withAudio };
-          } catch (e) {
-            toast.error("HD non disponibile, uso modalità veloce");
-          } finally {
-            setRenderingHd(false);
-          }
-          // rewrite URLs to absolute
-          if (seg.speech_audio_url) seg.speech_audio_url = endpoints.audioUrl(seg.speech_audio_url);
-          if (seg.music_audio_url)  seg.music_audio_url  = endpoints.audioUrl(seg.music_audio_url);
-        }
         setCurrent(seg);
         setSegments(prev => [...prev, seg].slice(-30));
         await radioEngine.playSegment(seg);
         if (stopFlag.current) break;
+        // Await the already-in-flight next segment
+        try {
+          seg = await nextPromise;
+        } catch (e) {
+          toast.error("HD non disponibile, torno alla modalità veloce");
+          seg = await endpoints.generateSegment({});
+        }
+        // Prefetch the one after
+        nextPromise = fetchSegment();
       }
     } catch (e) {
       toast.error("Errore nel flusso radiofonico");
