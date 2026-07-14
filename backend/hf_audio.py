@@ -30,8 +30,14 @@ BARK_IT_SPEAKERS = [
 VOICE_KEY_TO_BARK = {
     "female-1": "Speaker 3 (it)",
     "female-2": "Speaker 7 (it)",
+    "female-3": "Speaker 5 (it)",
+    "female-4": "Speaker 9 (it)",
+    "female-5": "Speaker 2 (it)",
     "male-1":   "Speaker 4 (it)",
     "male-2":   "Speaker 1 (it)",
+    "male-3":   "Speaker 6 (it)",
+    "male-4":   "Speaker 8 (it)",
+    "male-5":   "Speaker 0 (it)",
 }
 
 

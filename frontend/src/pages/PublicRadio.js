@@ -29,12 +29,18 @@ function Waveform({ active }) {
 
 function KindBadge({ kind }) {
   const map = {
-    music: { label: "MUSIC", color: "#FF1493", Icon: Music2 },
-    talk:  { label: "TALK",  color: "#22d3ee", Icon: MessageCircle },
-    news:  { label: "NEWS",  color: "#8A2BE2", Icon: Newspaper },
-    answer:{ label: "ANSWER",color: "#007AFF", Icon: Sparkles },
-    intro: { label: "INTRO", color: "#22d3ee", Icon: Radio },
-    outro: { label: "OUTRO", color: "#22d3ee", Icon: Radio },
+    music:      { label: "MUSIC",      color: "#FF1493", Icon: Music2 },
+    talk:       { label: "TALK",       color: "#22d3ee", Icon: MessageCircle },
+    news:       { label: "NEWS",       color: "#8A2BE2", Icon: Newspaper },
+    answer:     { label: "ANSWER",     color: "#007AFF", Icon: Sparkles },
+    intro:      { label: "INTRO",      color: "#22d3ee", Icon: Radio },
+    outro:      { label: "OUTRO",      color: "#22d3ee", Icon: Radio },
+    weather:    { label: "METEO",      color: "#0EA5E9", Icon: Sparkles },
+    horoscope:  { label: "OROSCOPO",   color: "#C084FC", Icon: Sparkles },
+    history:    { label: "STORIA",     color: "#F59E0B", Icon: Sparkles },
+    interview:  { label: "DIALOGO",    color: "#EC4899", Icon: MessageCircle },
+    motivation: { label: "MOTIV",      color: "#84CC16", Icon: Sparkles },
+    joke:       { label: "BATTUTA",    color: "#EF4444", Icon: Sparkles },
   };
   const m = map[kind] || map.talk;
   const { Icon } = m;
@@ -207,7 +213,7 @@ export default function PublicRadio() {
           <span className="text-pink-500">Zero umani in cabina.</span>
         </h1>
         <p className="mt-6 max-w-2xl text-zinc-400 leading-relaxed">
-          Tre DJ AI si passano il microfono, generano brani mai esistiti, commentano notizie dal futuro e rispondono alle tue domande in diretta. GPT · Claude · Gemini scrivono i copioni; <span className="text-cyan-400">Bark</span> presta la voce e <span className="text-cyan-400">Stable Audio Open</span> compone la musica — tutto rigorosamente open source.
+          Dieci DJ AI si passano il microfono: satira, dialoghi in diretta, oroscopo, storia, meteo poetico, dialoghi tra due modelli e brani mai esistiti. GPT · Claude · Gemini scrivono i copioni; <span className="text-cyan-400">Bark</span> presta la voce e <span className="text-cyan-400">Stable Audio Open</span> compone la musica — tutto rigorosamente open source.
         </p>
 
         {/* Now playing panel */}

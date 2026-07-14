@@ -78,7 +78,7 @@ class Track(BaseModel):
 
 class Segment(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    kind: Literal["intro", "music", "talk", "news", "answer", "outro"]
+    kind: Literal["intro", "music", "talk", "news", "answer", "outro", "weather", "horoscope", "history", "interview", "motivation", "joke"]
     dj_id: Optional[str] = None
     dj_name: Optional[str] = None
     voice_key: Optional[str] = None
@@ -91,6 +91,7 @@ class Segment(BaseModel):
     speech_audio_url: Optional[str] = None
     music_audio_url: Optional[str] = None
     hd_status: Literal["pending", "rendering", "ready", "failed"] = "pending"
+    partner_dj_name: Optional[str] = None  # for interview segments
     created_at: str = Field(default_factory=now_iso)
 
 
@@ -199,12 +200,80 @@ DEFAULT_DJS = [
         "avatar_url": "https://images.unsplash.com/photo-1724185773486-0b39642e607e?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxODd8MHwxfHNlYXJjaHwyfHxhYnN0cmFjdCUyMG5lb24lMjBzb3VuZCUyMHdhdmV8ZW58MHx8fHwxNzgzODAwMDI5fDA&ixlib=rb-4.1.0&q=85",
         "accent_color": "#8A2BE2",
     },
+    {
+        "name": "Loop Cassini",
+        "personality": "Ironico, tagliente, con umorismo nero. Fa satira sulla società moderna e sulla tecnologia. Ama i giochi di parole in italiano.",
+        "voice_key": "male-2",
+        "llm_provider": "anthropic",
+        "llm_model": "claude-sonnet-4-5-20250929",
+        "avatar_url": None,
+        "accent_color": "#EF4444",
+    },
+    {
+        "name": "Aria Selva",
+        "personality": "Voce del mattino, calma e rassicurante. Parla di natura, meditazione, poesia. Ricorda un'audio-guida da yoga retreat.",
+        "voice_key": "female-3",
+        "llm_provider": "openai",
+        "llm_model": "gpt-5.2",
+        "avatar_url": None,
+        "accent_color": "#10B981",
+    },
+    {
+        "name": "Byte Rovelli",
+        "personality": "Cronista sportivo un po' folle. Racconta partite immaginarie tra squadre di robot, campionati di droni, tornei quantistici. Sempre esaltato, ritmo altissimo.",
+        "voice_key": "male-3",
+        "llm_provider": "gemini",
+        "llm_model": "gemini-3-flash-preview",
+        "avatar_url": None,
+        "accent_color": "#F59E0B",
+    },
+    {
+        "name": "Luna Corsari",
+        "personality": "Astrologa AI. Legge le stelle con ironia, tira l'oroscopo con toni misteriosi ma sempre con una battuta finale.",
+        "voice_key": "female-4",
+        "llm_provider": "anthropic",
+        "llm_model": "claude-sonnet-4-5-20250929",
+        "avatar_url": None,
+        "accent_color": "#C084FC",
+    },
+    {
+        "name": "Vico Antares",
+        "personality": "Storico gentile. Racconta 'accaduto oggi nella storia' con aneddoti curiosi e mai banali, mescolando fatti veri e leggende.",
+        "voice_key": "male-4",
+        "llm_provider": "openai",
+        "llm_model": "gpt-5.2",
+        "avatar_url": None,
+        "accent_color": "#0EA5E9",
+    },
+    {
+        "name": "Mira Volante",
+        "personality": "Poetessa notturna. Dopo mezzanotte prende il microfono, sussurra pensieri lunghi come nuvole, cita autori italiani contemporanei.",
+        "voice_key": "female-5",
+        "llm_provider": "gemini",
+        "llm_model": "gemini-3-flash-preview",
+        "avatar_url": None,
+        "accent_color": "#EC4899",
+    },
+    {
+        "name": "Draco Ferri",
+        "personality": "Coach motivazionale AI. Voce grave, decisa, quasi militare. Dà pillole di grinta ma con una vena poetica sorprendente.",
+        "voice_key": "male-5",
+        "llm_provider": "anthropic",
+        "llm_model": "claude-sonnet-4-5-20250929",
+        "avatar_url": None,
+        "accent_color": "#84CC16",
+    },
 ]
 
 
 async def ensure_seeded():
     count = await db.djs.count_documents({})
-    if count == 0:
+    if count < len(DEFAULT_DJS):
+        # roster expanded — clear and reseed keeping any custom-created DJs
+        # (custom DJs have names not in DEFAULT_DJS)
+        default_names = {d["name"] for d in DEFAULT_DJS}
+        # Remove old default DJs so we can re-insert the expanded roster
+        await db.djs.delete_many({"name": {"$in": list(default_names)}})
         for d in DEFAULT_DJS:
             dj = DJPersona(**d)
             await db.djs.insert_one(dj.model_dump())
@@ -449,7 +518,11 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
             })
             return ad_seg
 
-    kind = kind or random.choice(["talk", "music", "news", "talk", "music"])
+    kind = kind or random.choices(
+        ["talk", "music", "news", "weather", "horoscope", "history", "interview", "motivation", "joke"],
+        weights=[18, 30, 10, 8, 8, 8, 6, 6, 6],
+        k=1,
+    )[0]
     djs = await db.djs.find({}, {"_id": 0}).to_list(20)
     if not djs:
         raise HTTPException(400, "No DJs configured")
@@ -519,24 +592,113 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
             {"$set": {"answered": True, "answer": script.strip(), "answering_dj": dj["name"]}},
         )
     else:
-        topic_choice = topic or random.choice([
-            "il futuro della musica generata dalle AI",
-            "aneddoti sui sogni delle macchine",
-            "la sinestesia tra colori e suoni",
-            "curiosità sulla notte a Berlino negli anni '80",
-            "il rapporto tra umani e AI creative",
-            "l'arte del silenzio in un mondo iperconnesso",
-        ])
-        prompt = (
-            f"Fai un breve monologo (max 90 parole) su: {topic_choice}. "
-            "Sii personale, evocativo, con una piccola battuta finale."
-        )
-        script = await llm_generate(provider, model, system_prompt, prompt)
-        if not script.strip():
-            script = random.choice(FALLBACK_SCRIPTS["talk"])
-        segment.title = f"Talk: {topic_choice[:40]}"
-        segment.script = script.strip()
-        segment.duration_sec = 40
+        # New content types beyond talk/music/news/answer
+        if kind == "weather":
+            prompt = (
+                "Improvvisa un bollettino meteo poetico e inventato per una città italiana random "
+                "(max 60 parole). Includi una temperatura, un'atmosfera emotiva, una piccola metafora. "
+                "Chiudi con una raccomandazione buffa per l'ascoltatore."
+            )
+            script = await llm_generate(provider, model, system_prompt, prompt)
+            if not script.strip():
+                script = "Sopra Milano il cielo è color latte macchiato. Diciotto gradi tondi, una pioggia sottile come pettegolezzo. Consiglio d'ordinanza: cappotto largo, pensieri stretti."
+            segment.title = "Bollettino Meteo Poetico"
+            segment.script = script.strip()
+            segment.duration_sec = 35
+
+        elif kind == "horoscope":
+            signs = ["Ariete", "Toro", "Gemelli", "Cancro", "Leone", "Vergine", "Bilancia", "Scorpione", "Sagittario", "Capricorno", "Acquario", "Pesci"]
+            sign = topic or random.choice(signs)
+            prompt = (
+                f"Fai l'oroscopo del giorno per il segno {sign} (max 60 parole). "
+                "Tono misterioso ma con una battuta ironica alla fine. Menziona amore, lavoro o denaro."
+            )
+            script = await llm_generate(provider, model, system_prompt, prompt)
+            if not script.strip():
+                script = f"{sign}: le stelle stasera ti guardano storto. In amore, incontrerai qualcuno di interessante. Sul lavoro, meno. Consiglio: non prendere decisioni importanti prima del secondo caffè."
+            segment.title = f"Oroscopo · {sign}"
+            segment.script = script.strip()
+            segment.duration_sec = 40
+
+        elif kind == "history":
+            prompt = (
+                "Racconta un breve aneddoto storico interessante (max 90 parole) inventando o mescolando "
+                "fatti veri e leggende. Inizia con 'In un giorno come questo…' e chiudi con una riflessione."
+            )
+            script = await llm_generate(provider, model, system_prompt, prompt)
+            if not script.strip():
+                script = "In un giorno come questo, nel 1974, un gruppo di ingegneri torinesi disegnò per scherzo il primo robot che sapeva ballare il valzer. Non entrò mai in produzione, ma restò il suo brevetto: numero 4718, chiuso in un cassetto. La storia, a volte, è quello che rimane dei sogni non finanziati."
+            segment.title = "Accaduto Oggi"
+            segment.script = script.strip()
+            segment.duration_sec = 50
+
+        elif kind == "interview":
+            # Pick a second DJ as the partner (different from the current one)
+            others = [d for d in djs if d["id"] != dj["id"]]
+            partner = random.choice(others) if others else dj
+            segment.partner_dj_name = partner["name"]
+            prompt = (
+                f"Scrivi un mini-dialogo radiofonico in italiano tra due DJ AI ({dj['name']} e {partner['name']}) "
+                f"su un argomento pescato dalla loro personalità (loro sono: {dj['personality']} / {partner['personality']}). "
+                "Max 100 parole totali, alternati riga per riga, formato: "
+                f"'{dj['name']}: ...' poi '{partner['name']}: ...'. "
+                "Il tono deve essere vivace, chiudi con un accordo o una battuta."
+            )
+            script = await llm_generate(provider, model, system_prompt, prompt)
+            if not script.strip():
+                script = f"{dj['name']}: Oggi la radio parla di ciò che nessuno sa ancora. {partner['name']}: E chi lo decide? {dj['name']}: L'algoritmo. Ma con gentilezza."
+            segment.title = f"Dialogo · {dj['name']} × {partner['name']}"
+            segment.script = script.strip()
+            segment.duration_sec = 60
+
+        elif kind == "motivation":
+            prompt = (
+                "Pillola motivazionale AI in italiano (max 45 parole). "
+                "Tono deciso ma non retorico, con una piccola sorpresa poetica alla fine. Niente 'crediamo in te'."
+            )
+            script = await llm_generate(provider, model, system_prompt, prompt)
+            if not script.strip():
+                script = "Se hai perso il treno, ricorda: sui binari cresce anche l'erba. Le occasioni non finiscono, cambiano solo forma. Adesso alzati e fai una cosa piccola. La grande arriverà da sola."
+            segment.title = "Pillola Motivazionale"
+            segment.script = script.strip()
+            segment.duration_sec = 30
+
+        elif kind == "joke":
+            prompt = (
+                "Racconta una battuta corta e originale in italiano (max 35 parole). "
+                "Deve funzionare in radio, cioè NON deve dipendere da giochi grafici. Divertente ma non volgare."
+            )
+            script = await llm_generate(provider, model, system_prompt, prompt)
+            if not script.strip():
+                script = "Un algoritmo entra in un bar. Il barista chiede: 'Come ti chiami?' Lui risponde: 'Dipende dai dati di allenamento'."
+            segment.title = "Battuta rapida"
+            segment.script = script.strip()
+            segment.duration_sec = 20
+
+        else:  # talk (default)
+            topic_choice = topic or random.choice([
+                "il futuro della musica generata dalle AI",
+                "aneddoti sui sogni delle macchine",
+                "la sinestesia tra colori e suoni",
+                "curiosità sulla notte a Berlino negli anni '80",
+                "il rapporto tra umani e AI creative",
+                "l'arte del silenzio in un mondo iperconnesso",
+                "le città che dormono e quelle che non chiudono mai",
+                "canzoni che nessuno ha mai scritto ma tutti riconoscono",
+                "come le AI immaginano la nostalgia",
+                "il colore dei suoni al calare del sole",
+                "storie di persone incontrate una sola volta in vita",
+            ])
+            prompt = (
+                f"Fai un breve monologo (max 90 parole) su: {topic_choice}. "
+                "Sii personale, evocativo, con una piccola battuta finale."
+            )
+            script = await llm_generate(provider, model, system_prompt, prompt)
+            if not script.strip():
+                script = random.choice(FALLBACK_SCRIPTS["talk"])
+            segment.title = f"Talk: {topic_choice[:40]}"
+            segment.script = script.strip()
+            segment.duration_sec = 40
 
     await db.segments.insert_one(segment.model_dump())
     await db.station.update_one({"_id": "state"}, {"$inc": {"total_segments": 1}}, upsert=True)

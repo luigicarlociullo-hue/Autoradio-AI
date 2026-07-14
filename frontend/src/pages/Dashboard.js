@@ -164,6 +164,12 @@ export default function Dashboard() {
               <button data-testid="gen-talk" disabled={busy} onClick={() => generate("talk")} className="btn-outline flex items-center gap-2"><MessageCircle className="w-4 h-4" /> Talk</button>
               <button data-testid="gen-music" disabled={busy} onClick={() => generate("music")} className="btn-outline flex items-center gap-2"><Music2 className="w-4 h-4" /> Musica</button>
               <button data-testid="gen-news" disabled={busy} onClick={() => generate("news")} className="btn-outline flex items-center gap-2"><Newspaper className="w-4 h-4" /> News</button>
+              <button data-testid="gen-interview" disabled={busy} onClick={() => generate("interview")} className="btn-outline flex items-center gap-2"><Users className="w-4 h-4" /> Dialogo</button>
+              <button data-testid="gen-horoscope" disabled={busy} onClick={() => generate("horoscope")} className="btn-outline flex items-center gap-2"><Sparkles className="w-4 h-4" /> Oroscopo</button>
+              <button data-testid="gen-history" disabled={busy} onClick={() => generate("history")} className="btn-outline flex items-center gap-2"><Sparkles className="w-4 h-4" /> Storia</button>
+              <button data-testid="gen-weather" disabled={busy} onClick={() => generate("weather")} className="btn-outline flex items-center gap-2"><Sparkles className="w-4 h-4" /> Meteo</button>
+              <button data-testid="gen-joke" disabled={busy} onClick={() => generate("joke")} className="btn-outline flex items-center gap-2"><Sparkles className="w-4 h-4" /> Battuta</button>
+              <button data-testid="gen-motivation" disabled={busy} onClick={() => generate("motivation")} className="btn-outline flex items-center gap-2"><Sparkles className="w-4 h-4" /> Motivazione</button>
             </div>
           </div>
         </section>
@@ -385,8 +391,14 @@ export default function Dashboard() {
               <select value={newDj.voice_key} onChange={e => setNewDj({ ...newDj, voice_key: e.target.value })} className="bg-[#0F0F14] border border-white/10 rounded px-3 py-2 text-sm focusable">
                 <option value="female-1">Voce femminile 1</option>
                 <option value="female-2">Voce femminile 2</option>
+                <option value="female-3">Voce femminile 3</option>
+                <option value="female-4">Voce femminile 4</option>
+                <option value="female-5">Voce femminile 5</option>
                 <option value="male-1">Voce maschile 1</option>
                 <option value="male-2">Voce maschile 2</option>
+                <option value="male-3">Voce maschile 3</option>
+                <option value="male-4">Voce maschile 4</option>
+                <option value="male-5">Voce maschile 5</option>
               </select>
             </div>
             <textarea placeholder="Personalità (es. energica, ironica, nostalgica…)" value={newDj.personality} onChange={e => setNewDj({ ...newDj, personality: e.target.value })} rows={2} className="w-full bg-[#0F0F14] border border-white/10 rounded px-3 py-2 text-sm focusable" data-testid="new-dj-personality" />
