@@ -2,6 +2,7 @@ import React, { useEffect, useRef } from "react";
 import { Youtube, Play } from "lucide-react";
 import { toast } from "sonner";
 import radioEngine from "@/lib/radioEngine";
+import LogoWatermark from "@/components/LogoWatermark";
 
 const YOUTUBE_URL = process.env.REACT_APP_YOUTUBE_URL || "";
 
@@ -165,6 +166,8 @@ export default function AudioVisualizer({ isPlaying, currentKind = "", currentTi
       aria-label="Guarda anche su YouTube"
     >
       <canvas ref={canvasRef} className="absolute inset-0 w-full h-full block" />
+      {/* Persistent channel bug logo — always visible on the visual "video" area */}
+      <LogoWatermark position="top-right" size={1.15} opacity={0.92} />
       {/* Grain overlay */}
       <div
         className="absolute inset-0 pointer-events-none opacity-30 mix-blend-overlay"

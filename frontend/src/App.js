@@ -6,6 +6,7 @@ import Dashboard from "@/pages/Dashboard";
 import AuthCallback from "@/pages/AuthCallback";
 import Advertise from "@/pages/Advertise";
 import AdReturn from "@/pages/AdReturn";
+import LogoWatermark from "@/components/LogoWatermark";
 import "@/App.css";
 
 function AppRouter() {
@@ -30,6 +31,10 @@ export default function App() {
     <div className="App">
       <BrowserRouter>
         <AppRouter />
+        {/* Persistent channel bug — visible on every route to brand all content */}
+        <div style={{ position: "fixed", bottom: 0, right: 0, width: 100, height: 76, pointerEvents: "none", zIndex: 60 }}>
+          <LogoWatermark position="bottom-right" size={0.85} opacity={0.75} />
+        </div>
         <Toaster
           theme="dark"
           position="top-right"
