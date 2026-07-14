@@ -20,7 +20,27 @@ class RadioEngine {
       if (AC) this.audioCtx = new AC();
     }
     if (this.audioCtx?.state === "suspended") this.audioCtx.resume();
+    // Ensure a shared analyser + output bus
+    if (this.audioCtx && !this.outputBus) {
+      this.outputBus = this.audioCtx.createGain();
+      this.outputBus.gain.value = 1.0;
+      this.analyser = this.audioCtx.createAnalyser();
+      this.analyser.fftSize = 512;
+      this.analyser.smoothingTimeConstant = 0.82;
+      this.outputBus.connect(this.analyser);
+      this.analyser.connect(this.audioCtx.destination);
+    }
     return this.audioCtx;
+  }
+
+  getAnalyser() {
+    return this.analyser || null;
+  }
+
+  getFakeAmplitude() {
+    // Used by visualizer when speaking via Web Speech (no analyser access)
+    if (!this.synth) return 0;
+    return this.synth.speaking ? 0.55 + Math.random() * 0.4 : 0;
   }
 
   pickVoice(voiceKey) {
@@ -65,10 +85,11 @@ class RadioEngine {
   startMusic({ genre = "electronic", durationSec = 30, seed = 0 } = {}) {
     const ctx = this.ensureAudioCtx();
     if (!ctx) return () => {};
+    const dest = this.outputBus || ctx.destination;
 
     const master = ctx.createGain();
     master.gain.value = 0.0;
-    master.connect(ctx.destination);
+    master.connect(dest);
     master.gain.linearRampToValueAtTime(0.16, ctx.currentTime + 1.2);
 
     // Scale selection based on mood
@@ -160,9 +181,18 @@ class RadioEngine {
     return new Promise((resolve) => {
       if (!url) return resolve();
       try {
+        const ctx = this.ensureAudioCtx();
         const a = new Audio(url);
-        this.currentAudio = a;
         a.crossOrigin = "anonymous";
+        this.currentAudio = a;
+        // Route through analyser bus so the visualizer reacts
+        try {
+          const src = ctx.createMediaElementSource(a);
+          src.connect(this.outputBus);
+          a._srcNode = src;
+        } catch (e) {
+          // Some browsers throw if the element already has a source. Fall back to native output.
+        }
         a.onended = () => { this.currentAudio = null; resolve(); };
         a.onerror = () => { this.currentAudio = null; resolve(); };
         a.play().catch(() => { this.currentAudio = null; resolve(); });

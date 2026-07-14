@@ -4,6 +4,7 @@ import { Play, Pause, SkipForward, Radio, Send, Volume2, Sparkles, Users, Music2
 import { endpoints } from "@/lib/api";
 import radioEngine from "@/lib/radioEngine";
 import { toast } from "sonner";
+import AudioVisualizer from "@/components/AudioVisualizer";
 
 const HERO_BG = "https://images.unsplash.com/photo-1724185773486-0b39642e607e?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxODd8MHwxfHNlYXJjaHwyfHxhYnN0cmFjdCUyMG5lb24lMjBzb3VuZCUyMHdhdmV8ZW58MHx8fHwxNzgzODAwMDI5fDA&ixlib=rb-4.1.0&q=85";
 
@@ -216,8 +217,17 @@ export default function PublicRadio() {
           Dieci DJ AI si passano il microfono: satira, dialoghi in diretta, oroscopo, storia, meteo poetico, dialoghi tra due modelli e brani mai esistiti. GPT · Claude · Gemini scrivono i copioni; <span className="text-cyan-400">Bark</span> presta la voce e <span className="text-cyan-400">Stable Audio Open</span> compone la musica — tutto rigorosamente open source.
         </p>
 
+        {/* Live visualizer — clicks open the YouTube channel */}
+        <div className="mt-10">
+          <AudioVisualizer
+            isPlaying={isPlaying}
+            currentKind={current?.kind || ""}
+            currentTitle={current ? current.title : (isPlaying ? "In diretta…" : "NEURA·FM · in stand-by")}
+          />
+        </div>
+
         {/* Now playing panel */}
-        <div className="mt-10 glass rounded-2xl p-6 md:p-8">
+        <div className="mt-6 glass rounded-2xl p-6 md:p-8">
           <div className="grid md:grid-cols-3 gap-6 items-center">
             <div className="md:col-span-2">
               <div className="flex items-center gap-3 mb-3">
