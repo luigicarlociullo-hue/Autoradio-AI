@@ -262,9 +262,9 @@ class RadioEngine {
           musicGain.gain.linearRampToValueAtTime(target, now + seconds);
         };
 
-        const INTRO_DUCK = 0.28;   // music under voice
+        const INTRO_DUCK = 0.40;   // music under voice
         const FULL = 1.0;          // music at full while nobody speaks
-        const OUTRO_DUCK = 0.32;
+        const OUTRO_DUCK = 0.45;
 
         audio.onended = () => { rampTo(0.0, 0.6); setTimeout(done, 700); };
         audio.onerror = () => done();

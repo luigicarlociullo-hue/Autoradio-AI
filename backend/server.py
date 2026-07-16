@@ -602,8 +602,8 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
             await db.station.update_one({"_id": "state"}, {"$set": {"last_time_signal_hour": now_hour}}, upsert=True)
 
     kind = kind or random.choices(
-        ["music", "jingle", "talk", "joke", "weather", "horoscope", "interview", "news", "motivation", "history"],
-        weights=[62, 10, 5, 5, 4, 4, 4, 3, 2, 1],
+        ["music", "jingle", "talk", "history", "interview", "motivation", "joke", "weather", "horoscope", "news"],
+        weights=[62, 10, 8, 5, 6, 4, 5, 4, 4, 3],
         k=1,
     )[0]
     djs = await db.djs.find({}, {"_id": 0}).to_list(20)
@@ -649,18 +649,24 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
         if track is None:
             track = await generate_track()
 
+        # Extract BPM from genre string if present
+        import re as _re
+        bpm_match = _re.search(r"(\d{2,3})\s*bpm", track.genre or "", _re.IGNORECASE)
+        bpm = bpm_match.group(1) if bpm_match else "128"
         prompt = (
-            f"Introduci il prossimo brano dance in MAX 15 parole. "
-            f"Titolo: '{track.title}' di {track.artist}, {track.genre}. "
-            f"Sii sorridente, energico, chiudi con 'volume su!' o simile. Poche parole, ritmo alto."
+            f"Sei il DJ di NEURA FM, radio elettronica italiana. "
+            f"Scrivi un intro di massimo 20 parole per il brano \"{track.title}\" di {track.artist} "
+            f"({track.genre}, {bpm} BPM). "
+            f"Varia il tono ogni volta: entusiasta, ironico, poetico, energico, misterioso. "
+            f"Riferisci ora del giorno, energia, dancefloor. Mai uguale alle volte precedenti. Solo italiano."
         )
         script = await llm_generate(provider, model, system_prompt, prompt)
         if not script.strip():
             script = f"E si balla con {track.title}! Volume su!"
-        # Generate an outro too
         outro_prompt = (
-            f"In MAX 12 parole saluta il brano '{track.title}' e anticipa il prossimo con energia. "
-            "Tipo: 'Che bomba! Restate su NEURA FM, roba grossa in arrivo.'"
+            f"Sei il DJ di NEURA FM. Scrivi un outro di massimo 15 parole per il brano "
+            f"\"{track.title}\" appena finito. Commenta, anticipa il prossimo, fai una battuta "
+            f"o cita qualcosa di cool. Solo italiano. Mai uguale."
         )
         outro_script = await llm_generate(provider, model, system_prompt, outro_prompt)
         if not outro_script.strip():
@@ -764,33 +770,42 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
             segment.title = f"Oroscopo · {sign}"
             segment.duration_sec = 18
         elif kind == "history":
-            prompt = "In MAX 18 parole: aneddoto storico curioso stile 'accaduto oggi' con tocco ironico."
+            prompt = (
+                "Sei il DJ narratore di NEURA FM. Racconta un aneddoto vero e curioso di 50-60 parole "
+                "su: storia della musica elettronica, DJ famosi, festival, tecnologia audio, cultura rave. "
+                "Tono coinvolgente, mai robotico. Varia sempre l'argomento. Solo italiano."
+            )
             script = await llm_generate(provider, model, system_prompt, prompt)
             if not script.strip():
-                script = "Oggi nel 1977 nasceva la disco music. Da allora nessuno resta fermo!"
-            segment.title = "Storia Lampo"
-            segment.duration_sec = 18
+                script = "Nel 1988, in un capannone abbandonato di Manchester, tre ragazzi con un sampler Akai e un basso rubato inventarono l'acid house UK. Il locale si chiamava Haçienda. Non sapevano che avrebbero cambiato la notte europea per sempre."
+            segment.title = "Storia della Musica"
+            segment.duration_sec = 30
         elif kind == "interview":
             others = [d for d in djs if d["id"] != dj["id"]]
             partner = random.choice(others) if others else dj
             segment.partner_dj_name = partner["name"]
             prompt = (
-                f"Mini scambio VELOCE (MAX 25 parole totali) tra {dj['name']} e {partner['name']}. "
-                f"Formato: '{dj['name']}: ...' e '{partner['name']}: ...' su una sola riga. "
-                "Tono energico da radio, chiusura con battuta."
+                f"Sei il DJ narratore di NEURA FM. Scrivi un mini scambio di 50-60 parole totali tra "
+                f"{dj['name']} e {partner['name']} su un tema legato alla musica elettronica, DJ, festival o cultura club. "
+                f"Formato riga per riga: '{dj['name']}: ...' / '{partner['name']}: ...'. "
+                "Tono energico da radio, chiusura con battuta. Solo italiano."
             )
             script = await llm_generate(provider, model, system_prompt, prompt)
             if not script.strip():
-                script = f"{dj['name']}: Che si balla stasera? {partner['name']}: Tutta la notte! {dj['name']}: Facciamo partire il beat."
+                script = f"{dj['name']}: Sai qual è il segreto di un buon drop? {partner['name']}: L'attesa. {dj['name']}: E il silenzio prima. {partner['name']}: Esatto, un secondo di silenzio vale mille bassi. {dj['name']}: Facciamo partire il prossimo, dai."
             segment.title = f"{dj['name']} × {partner['name']}"
-            segment.duration_sec = 18
+            segment.duration_sec = 30
         elif kind == "motivation":
-            prompt = "In MAX 15 parole: pillola motivazionale energica ma non retorica, con chiusura sorprendente."
+            prompt = (
+                "Sei il DJ narratore di NEURA FM. Racconta in 50-60 parole un aneddoto motivazionale "
+                "vero legato a un DJ, un producer o una scena musicale (esempi: Daft Punk anni Novanta, "
+                "Berghain, Skrillex garage, Fatboy Slim spiaggia). Chiudi con una frase energica. Solo italiano."
+            )
             script = await llm_generate(provider, model, system_prompt, prompt)
             if not script.strip():
-                script = "Se hai perso il treno, ricorda: ne passa un altro, e questa volta con la musica giusta."
+                script = "Skrillex ha registrato i primi pezzi in un garage con un laptop di seconda mano. Nessuno lo prendeva sul serio. Cinque anni dopo ha vinto tre Grammy in una sera sola. Se hai un'idea nella testa, non aspettare il momento giusto. Il momento sei tu."
             segment.title = "Pillola"
-            segment.duration_sec = 12
+            segment.duration_sec = 30
         elif kind == "joke":
             prompt = "In MAX 18 parole: una battuta corta divertente adatta alla radio. Niente parole volgari."
             script = await llm_generate(provider, model, system_prompt, prompt)
@@ -807,17 +822,23 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
             segment.duration_sec = 18
         else:  # talk fallback
             topic_choice = topic or random.choice([
-                "quanto la vita è più bella con un buon beat",
-                "cosa succede quando la playlist ti legge nel pensiero",
-                "l'estate infinita di NEURA FM",
-                "il momento in cui la musica ti prende",
+                "storia della musica elettronica",
+                "DJ famosi e loro rituali prima del live",
+                "festival leggendari del passato",
+                "l'evoluzione dei sintetizzatori",
+                "cultura rave nei magazzini abbandonati",
+                "aneddoti sulle console analogiche",
+                "come è nato il concetto di drop",
             ])
-            prompt = f"In MAX 20 parole: chiacchierata sbarazzina su: {topic_choice}. Chiudi con energia."
+            prompt = (
+                "Sei il DJ narratore di NEURA FM. Racconta un aneddoto vero e curioso di 50-60 parole "
+                f"su: {topic_choice}. Tono coinvolgente, mai robotico. Varia sempre l'argomento. Solo italiano."
+            )
             script = await llm_generate(provider, model, system_prompt, prompt)
             if not script.strip():
-                script = random.choice(FALLBACK_SCRIPTS["talk"])[:120]
-            segment.title = f"Talk"
-            segment.duration_sec = 20
+                script = random.choice(FALLBACK_SCRIPTS["talk"])[:280]
+            segment.title = f"Talk · {topic_choice[:36]}"
+            segment.duration_sec = 30
         segment.script = script.strip()
     await db.segments.insert_one(segment.model_dump())
     await db.station.update_one({"_id": "state"}, {"$inc": {"total_segments": 1}}, upsert=True)
