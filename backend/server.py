@@ -1349,6 +1349,32 @@ async def on_startup():
     await telegram_bot.start(db)
     # Kick off background Suno music library filler
     asyncio.create_task(_suno_library_filler())
+    # Kick off weekly integrity check for local Suno mp3s
+    asyncio.create_task(_suno_integrity_check())
+
+
+async def _suno_integrity_check():
+    """Every 24h scan local Suno tracks; if the mp3 is missing or < 100KB
+    (truncated/corrupted), re-download it from `original_audio_url` while the
+    Suno CDN link is still valid."""
+    await asyncio.sleep(60)
+    while True:
+        try:
+            cursor = db.tracks.find({"source": "suno", "status": "ready", "audio_url": {"$regex": "^/api/suno_audio/"}}, {"_id": 0})
+            fixed = 0
+            async for t in cursor:
+                p = SUNO_AUDIO_DIR / f"track_{t['id']}.mp3"
+                if p.exists() and p.stat().st_size >= 100_000:
+                    continue
+                orig = t.get("original_audio_url")
+                if not orig:
+                    continue
+                if await download_and_save_suno_audio(orig, t["id"]):
+                    fixed += 1
+            logger.info(f"Suno integrity check: {fixed} tracks re-downloaded")
+        except Exception as e:
+            logger.warning(f"Suno integrity check error: {e}")
+        await asyncio.sleep(86400)  # 24h
 
 
 async def _suno_library_filler():
