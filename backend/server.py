@@ -430,18 +430,34 @@ async def list_tracks(limit: int = 20):
 @api_router.post("/tracks/generate", response_model=Track)
 async def generate_track(hint: Optional[str] = None, genre: Optional[str] = None, lang: Optional[str] = None, instrumental: bool = False):
     provider, model = _pick_llm()
-    genres_pool = ["italian pop", "electronic dance", "hip-hop trap", "synthwave", "indie pop", "jazz-hop", "reggaeton", "future bass", "italian rap"]
+    genres_pool = [
+        "tech house 126 bpm",
+        "future house 128 bpm",
+        "big room edm 128 bpm",
+        "electro house 130 bpm",
+        "melodic techno 124 bpm",
+        "drum and bass 174 bpm",
+        "bass house 128 bpm",
+        "progressive house 128 bpm",
+        "italo disco 122 bpm",
+        "afro house 122 bpm",
+        "trance 138 bpm",
+        "dance pop 124 bpm",
+    ]
     chosen_genre = (genre or random.choice(genres_pool))
-    hint_text = hint or f"a catchy {chosen_genre} song with memorable hook"
+    hint_text = hint or f"an energetic danceable {chosen_genre} track, punchy kick, groovy bass, catchy topline, club-ready drop"
     prompt = (
-        f"Inventa metadati per una traccia musicale mai esistita: '{hint_text}'. "
+        f"Inventa metadati per una traccia dance/elettronica mai esistita, pensata per far ballare: '{hint_text}'. "
         "Rispondi ESCLUSIVAMENTE in JSON valido con queste chiavi: "
-        "title (string, 3-5 parole), artist (nome inventato), genre, mood, "
-        f"lyrics_excerpt (4 versi brevi in {'italiano' if (lang or 'it') == 'it' else 'inglese'}), "
-        "duration_sec (int tra 90 e 220), style_tags (stringa breve tipo 'pop, catchy, vocals, 128bpm'). "
-        "Nessun testo aggiuntivo, solo JSON."
+        "title (string, 3-5 parole, evocative come i titoli di brani club), artist (nome inventato stile DJ producer), "
+        "genre (deve includere il BPM, es. 'tech house 126 bpm'), mood, "
+        f"lyrics_excerpt (4 versi brevi da hook di ritornello in {'italiano' if (lang or 'en') == 'it' else 'inglese'}, tipo topline da radio dance), "
+        "duration_sec (int tra 150 e 220), "
+        "style_tags (stringa con TUTTI questi elementi: BPM esatto, kick 4-on-the-floor, sidechain compressed bass, arpeggio synth, "
+        "one energetic drop, vocals catchy, club-ready, es: '128bpm, four-on-the-floor kick, side-chained bass, plucky synth arps, big drop, female vocal hook, festival ready'). "
+        "Nessun testo aggiuntivo, solo JSON valido."
     )
-    raw = await llm_generate(provider, model, "Sei un compositore AI di una webradio esclusiva.", prompt)
+    raw = await llm_generate(provider, model, "Sei un producer AI di musica dance e club music.", prompt)
     import json, re
     m = re.search(r"\{.*\}", raw, re.DOTALL)
     data = {}
@@ -1160,17 +1176,29 @@ async def on_startup():
 
 async def _suno_library_filler():
     """Keep a small library of ready Suno tracks available for the radio.
-    Generates a new track in background whenever the ready-pool falls below 3."""
+    Focus on danceable electronic music."""
     if not suno_service.is_enabled():
         return
     await asyncio.sleep(5)
+    dance_genres = [
+        "tech house 126 bpm",
+        "future house 128 bpm",
+        "big room edm 128 bpm",
+        "electro house 130 bpm",
+        "melodic techno 124 bpm",
+        "drum and bass 174 bpm",
+        "bass house 128 bpm",
+        "progressive house 128 bpm",
+        "italo disco 122 bpm",
+        "afro house 122 bpm",
+        "dance pop 124 bpm",
+    ]
     while True:
         try:
             ready = await db.tracks.count_documents({"source": "suno", "status": "ready"})
             pending = await db.tracks.count_documents({"source": "suno", "status": "pending"})
-            if ready < 3 and pending < 2:
-                # Randomize genre for variety
-                genre = random.choice(["italian pop", "electronic dance", "hip-hop trap", "synthwave", "indie pop", "future bass", "italian rap", "reggaeton"])
+            if ready < 4 and pending < 2:
+                genre = random.choice(dance_genres)
                 logger.info(f"Suno filler: generating {genre} (ready={ready}, pending={pending})")
                 await generate_track(genre=genre)
             await asyncio.sleep(90)
