@@ -51,6 +51,35 @@ api_router = APIRouter(prefix="/api")
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# ----------------------- Suno audio local storage -----------------------
+# Suno CDN URLs expire after ~7 days. As soon as a track becomes ready we
+# download the mp3 and serve it from our own /api/suno_audio/<file>.mp3 route.
+SUNO_AUDIO_DIR = Path("/app/backend/static/suno")
+SUNO_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+
+
+async def download_and_save_suno_audio(audio_url: str, track_id: str) -> Optional[str]:
+    """Download the Suno mp3 and persist it under SUNO_AUDIO_DIR.
+    Returns the backend-relative URL (`/api/suno_audio/<file>.mp3`) or None on failure.
+    Idempotent: if the file already exists we skip the download.
+    """
+    if not audio_url or not track_id:
+        return None
+    local_name = f"track_{track_id}.mp3"
+    local_path = SUNO_AUDIO_DIR / local_name
+    if local_path.exists() and local_path.stat().st_size > 0:
+        return f"/api/suno_audio/{local_name}"
+    try:
+        async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
+            r = await client.get(audio_url)
+            r.raise_for_status()
+            local_path.write_bytes(r.content)
+        logger.info(f"Suno track {track_id} downloaded → {local_path} ({local_path.stat().st_size} bytes)")
+        return f"/api/suno_audio/{local_name}"
+    except Exception as e:
+        logger.warning(f"Suno download for {track_id} failed: {e}")
+        return None
+
 
 # ----------------------- Models -----------------------
 def now_iso():
@@ -89,7 +118,9 @@ class Track(BaseModel):
     duration_sec: int
     llm_provider: str
     cover_seed: str
-    audio_url: Optional[str] = None       # external URL (Suno mp3) or /api/audio/xxx.wav
+    audio_url: Optional[str] = None       # local /api/suno_audio/<id>.mp3 once downloaded
+    original_audio_url: Optional[str] = None  # Suno CDN URL (expires ~7 days) for reference
+    downloaded_at: Optional[str] = None
     image_url: Optional[str] = None       # optional cover art URL (Suno)
     source: Literal["suno", "stable_audio", "procedural"] = "procedural"
     suno_task_id: Optional[str] = None
@@ -529,19 +560,24 @@ async def generate_track(hint: Optional[str] = None, genre: Optional[str] = None
 
 
 async def _poll_suno_and_update(track_id: str, task_id: str):
-    """Background: poll Suno task and update the track with audio_url."""
+    """Background: poll Suno task, download the mp3 locally, then update the track."""
     try:
         song = await suno_service.poll_task(task_id, timeout_sec=300, interval_sec=10)
         if song and song.get("audio_url"):
+            suno_url = song["audio_url"]
+            # Download the mp3 to local disk so we don't depend on the 7-day CDN.
+            local_url = await download_and_save_suno_audio(suno_url, track_id)
             update = {
-                "audio_url": song["audio_url"],
+                "audio_url": local_url or suno_url,       # prefer local, fallback to CDN if DL failed
+                "original_audio_url": suno_url,           # keep CDN reference
                 "image_url": song.get("image_url"),
                 "status": "ready",
+                "downloaded_at": now_iso() if local_url else None,
             }
             if song.get("duration"):
                 update["duration_sec"] = int(song["duration"])
             await db.tracks.update_one({"id": track_id}, {"$set": update})
-            logger.info(f"Suno track {track_id} ready: {song['audio_url']}")
+            logger.info(f"Suno track {track_id} ready: {update['audio_url']}")
         else:
             await db.tracks.update_one({"id": track_id}, {"$set": {"status": "failed"}})
     except Exception as e:
@@ -1196,6 +1232,58 @@ async def get_tts_audio(filename: str):
     if not p:
         raise HTTPException(404, "TTS audio not found")
     return FileResponse(str(p), media_type="audio/mpeg")
+
+
+@api_router.get("/suno_audio/{filename}")
+async def get_suno_audio(filename: str):
+    """Serve locally-cached Suno mp3s. Files live under SUNO_AUDIO_DIR."""
+    # Defensive: reject path traversal / weird filenames.
+    if "/" in filename or ".." in filename or not filename.endswith(".mp3"):
+        raise HTTPException(400, "Invalid filename")
+    p = SUNO_AUDIO_DIR / filename
+    if not p.exists():
+        raise HTTPException(404, "Suno audio not found")
+    return FileResponse(
+        str(p),
+        media_type="audio/mpeg",
+        headers={
+            "Cache-Control": "public, max-age=604800",  # 7 days
+            "Accept-Ranges": "bytes",
+        },
+    )
+
+
+@api_router.post("/admin/migrate_suno_audio")
+async def admin_migrate_suno_audio(limit: int = 200):
+    """One-shot migration: download every Suno track whose audio_url still points
+    to the external CDN and rewrite it to the local /api/suno_audio/... path.
+    """
+    tracks = await db.tracks.find(
+        {
+            "source": "suno",
+            "status": "ready",
+            "audio_url": {"$regex": "^https?://"},
+        },
+        {"_id": 0},
+    ).to_list(limit)
+    migrated, failed = 0, []
+    for t in tracks:
+        tid = t.get("id")
+        url = t.get("audio_url")
+        local_url = await download_and_save_suno_audio(url, tid)
+        if local_url:
+            await db.tracks.update_one(
+                {"id": tid},
+                {"$set": {
+                    "audio_url": local_url,
+                    "original_audio_url": url,
+                    "downloaded_at": now_iso(),
+                }},
+            )
+            migrated += 1
+        else:
+            failed.append({"id": tid, "title": t.get("title")})
+    return {"migrated": migrated, "failed_count": len(failed), "failed": failed, "scanned": len(tracks)}
 
 
 @api_router.post("/segments/{seg_id}/render_hd")

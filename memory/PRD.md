@@ -14,7 +14,15 @@ Vorrei costruire un software di gestione radiofonica completamente automatizzato
 - Auth: Emergent Google OAuth (free) for admin.
 
 ## What's implemented (2026-08 · v10 · Stability fixes)
-- **v10.3 · Satellite logo + neon track overlay** (2026-02, this session):
+- **v10.4 · Salvataggio permanente brani Suno su disco** (2026-02, this session):
+  - Nuova costante `SUNO_AUDIO_DIR = /app/backend/static/suno` (creata all'avvio).
+  - Nuova helper `download_and_save_suno_audio(url, track_id)`: scarica il mp3 con `httpx` (timeout 120 s, follow_redirects), lo salva come `track_<id>.mp3`, ritorna path relativo `/api/suno_audio/<file>.mp3` (idempotente: skip se il file esiste già).
+  - `_poll_suno_and_update()` esteso: appena Suno restituisce `audio_url`, scarica subito il file, salva in Mongo `audio_url=<path locale>`, `original_audio_url=<CDN Suno>`, `downloaded_at=<iso timestamp>`. Fallback all'URL Suno se il download fallisce.
+  - Nuovo `Track` model: campi `original_audio_url` e `downloaded_at` opzionali.
+  - Nuovo endpoint `GET /api/suno_audio/{filename}` con `Cache-Control: public, max-age=604800`, `Accept-Ranges: bytes`, guard anti-path-traversal.
+  - Nuovo endpoint `POST /api/admin/migrate_suno_audio?limit=200`: one-shot migration di tutte le tracce ready con audio_url ancora sulla CDN. **Risultato**: 18/18 tracce migrate, 0 fallimenti, ~67 MB su disco.
+  - Il segment endpoint ora restituisce `music_audio_url=/api/suno_audio/track_<id>.mp3` (già gestito dal frontend che risolve automaticamente le URL `/api/*`).
+- **v10.3 · Satellite logo + neon track overlay** (precedente):
   - Nuovo componente `frontend/src/components/SatelliteLogo.js`: watermark globale con `position: fixed` bottom-right (16 px), opacity 0.35 → 0.6 on hover, "NEURA" statico + "FM" in orbita ellittica (`@keyframes satOrbit` con `rotate + translateX(38px) + counter-rotate`). Cablato in `App.js` su tutte le route.
   - `AudioVisualizer.js`: nuova prop `trackOverlay={ visible, title, artist }` → sovrimpressione neon centrata (bottom 80 px) con `@keyframes neonPulse` (magenta ↔ cyan), `transition: opacity 0.8s`, `text-shadow` multipli. Titolo maiuscolo, artista in cyan.
   - `PublicRadio.js`: state `trackOverlay` + `overlayTimerRef`. All'inizio di ogni segmento `music` fa fade-in immediato con `track_meta.title/artist`, poi programma un `setTimeout(duration - 8s)` per il fade-out prima dell'outro. Reset garantito su unmount, stop e passaggio a segmento non-music.
