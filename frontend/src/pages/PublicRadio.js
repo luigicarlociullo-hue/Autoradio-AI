@@ -120,7 +120,12 @@ export default function PublicRadio() {
 
       while (!stopFlag.current) {
         setCurrent(seg);
-        setSegments(prev => [...prev, seg].slice(-30));
+        setSegments(prev => {
+          // De-dup by id (loop pushes locally + 5s refresh also fetches the same seg)
+          const map = new Map();
+          [...prev, seg].forEach(s => map.set(s.id, s));
+          return Array.from(map.values()).slice(-30);
+        });
         await radioEngine.playSegment(seg);
         if (stopFlag.current) break;
         // Await the already-in-flight next segment
