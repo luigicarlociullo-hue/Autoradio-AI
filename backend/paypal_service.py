@@ -83,7 +83,7 @@ async def create_order(amount_eur: float, description: str, return_url: str, can
             "description": description[:120],
         }],
         "application_context": {
-            "brand_name": "NEURA·FM",
+            "brand_name": "R-A.I.",
             "shipping_preference": "NO_SHIPPING",
             "user_action": "PAY_NOW",
             "return_url": return_url,

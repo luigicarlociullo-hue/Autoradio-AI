@@ -61,7 +61,7 @@ export default function Advertise() {
           </Link>
           <div className="flex items-center gap-2">
             <Megaphone className="w-5 h-5 text-pink-500" />
-            <span className="font-display font-black">NEURA·FM · Adv</span>
+            <span className="font-display font-black">R-A.I. · Adv</span>
           </div>
         </div>
       </header>

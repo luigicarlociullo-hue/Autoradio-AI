@@ -14,7 +14,12 @@ Vorrei costruire un software di gestione radiofonica completamente automatizzato
 - Auth: Emergent Google OAuth (free) for admin.
 
 ## What's implemented (2026-08 · v10 · Stability fixes)
-- **v10.4 · Salvataggio permanente brani Suno su disco** (2026-02, this session):
+- **v10.6 · Rebrand R-A.I. + bed dinamico + integrity check** (2026-02, this session):
+  - **BUG 1 (home non caricava)**: nessun problema riscontrato — verificato con curl (`HOME 200`, `API 200`) e headless browser (title `R-A.I. · Web Radio AI`, root HTML 125 KB, 0 errori console). Era cache lato utente.
+  - **Rebrand NEURA·FM → R-A.I.**: `sed` mass-replace su 7 file JS/JSX + `server.py` + `paypal_service.py` + `telegram_bot.py`. `<title>` aggiornato in `frontend/public/index.html`. `LogoWatermark.js` semplificato (rimossa orbita "FM", solo wordmark statico "R-A.I."). Migration DB Mongo: 98 segmenti storici aggiornati (script/outro_script/title) — 0 leftover. Prompt LLM riscritti (intro/outro musicali, ads, jingle, sundial, storia, interview, motivation) → ora dicono "R-A.I." nei nuovi segmenti.
+  - **Bed dinamico sotto il parlato**: nuovo campo `Segment.background_loop`. In `generate_segment`, per `kind != "music"` si pesca la traccia Suno round-robin (sort `last_played_at` ASC) e si valorizza il campo con path locale `/api/suno_audio/...`. Frontend: `_playSpeechWithBed` prova prima `segment.background_loop` (loop reale Suno via nuovo helper `_startAudioBed(url, 0.25)` — `audio.loop=true`, GainNode fade-in 0.4s / fade-out 0.5s), fallback al bed procedurale se non presente. Frontend risolve automaticamente le URL `/api/*` in absolute.
+  - **Integrity check settimanale**: nuovo `_suno_integrity_check()` (24h) che ri-scarica mp3 mancanti o < 100 KB da `original_audio_url`. Primo giro live: `0 tracks re-downloaded` su 18 tracce.
+- **v10.4 · Salvataggio permanente brani Suno su disco** (precedente):
   - Nuova costante `SUNO_AUDIO_DIR = /app/backend/static/suno` (creata all'avvio).
   - Nuova helper `download_and_save_suno_audio(url, track_id)`: scarica il mp3 con `httpx` (timeout 120 s, follow_redirects), lo salva come `track_<id>.mp3`, ritorna path relativo `/api/suno_audio/<file>.mp3` (idempotente: skip se il file esiste già).
   - `_poll_suno_and_update()` esteso: appena Suno restituisce `audio_url`, scarica subito il file, salva in Mongo `audio_url=<path locale>`, `original_audio_url=<CDN Suno>`, `downloaded_at=<iso timestamp>`. Fallback all'URL Suno se il download fallisce.

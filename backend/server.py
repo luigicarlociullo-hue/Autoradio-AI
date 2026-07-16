@@ -144,6 +144,7 @@ class Segment(BaseModel):
     speech_audio_url: Optional[str] = None
     outro_speech_url: Optional[str] = None
     music_audio_url: Optional[str] = None
+    background_loop: Optional[str] = None  # instrumental bed under spoken segments
     hd_status: Literal["pending", "rendering", "ready", "failed"] = "pending"
     partner_dj_name: Optional[str] = None  # for interview segments
     created_at: str = Field(default_factory=now_iso)
@@ -176,7 +177,7 @@ class StationState(BaseModel):
 # ----------------------- LLM Helper -----------------------
 FALLBACK_SCRIPTS = {
     "talk": [
-        "Bentornati su Neura FM, la radio che pensa da sola. In questo istante milioni di segnali attraversano l'etere e noi ne raccogliamo solo un frammento, quello che diventa musica. Restate con noi.",
+        "Bentornati su R-A.I., la radio che pensa da sola. In questo istante milioni di segnali attraversano l'etere e noi ne raccogliamo solo un frammento, quello che diventa musica. Restate con noi.",
         "Il futuro non arriva mai in ritardo, ma spesso lo aspettiamo alla stazione sbagliata. Io intanto vi tengo compagnia, un byte alla volta.",
         "Dicono che le AI non sappiano sognare. Eppure eccomi qui, alle tre del mattino digitale, a inventare parole per voi.",
     ],
@@ -675,7 +676,7 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
     )
 
     system_prompt = (
-        f"Sei {dj['name']}, uno speaker AI radiofonico ITALIANO di NEURA·FM (radio dance/elettronica). "
+        f"Sei {dj['name']}, uno speaker AI radiofonico ITALIANO di R-A.I. (radio dance/elettronica). "
         f"Personalità: {dj['personality']}. "
         "REGOLE FERREE:\n"
         "1) Parla SEMPRE in italiano, con energia, sorridendo (deve sentirsi che sorridi).\n"
@@ -716,7 +717,7 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
         bpm_match = _re.search(r"(\d{2,3})\s*bpm", track.genre or "", _re.IGNORECASE)
         bpm = bpm_match.group(1) if bpm_match else "128"
         prompt = (
-            f"Sei il DJ di NEURA FM, radio elettronica italiana. "
+            f"Sei il DJ di R-A.I., radio elettronica italiana. "
             f"Scrivi un intro CORTISSIMO (massimo 12 parole, ~6 secondi di lettura) "
             f"per il brano \"{track.title}\" di {track.artist} ({track.genre}, {bpm} BPM). "
             f"Varia il tono: entusiasta, ironico, poetico, energico, misterioso. "
@@ -726,13 +727,13 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
         if not script.strip():
             script = f"E si balla con {track.title}! Volume su!"
         outro_prompt = (
-            f"Sei il DJ di NEURA FM. Scrivi un outro di massimo 15 parole per il brano "
+            f"Sei il DJ di R-A.I.. Scrivi un outro di massimo 15 parole per il brano "
             f"\"{track.title}\" appena finito. Commenta, anticipa il prossimo, fai una battuta "
             f"o cita qualcosa di cool. Solo italiano. Mai uguale."
         )
         outro_script = await llm_generate(provider, model, system_prompt, outro_prompt)
         if not outro_script.strip():
-            outro_script = "Bomba! Non muovetevi, NEURA FM continua!"
+            outro_script = "Bomba! Non muovetevi, R-A.I. continua!"
         segment.title = f"♪ {track.title} — {track.artist}"
         segment.script = script.strip()
         segment.outro_script = outro_script.strip()
@@ -788,11 +789,11 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
             prompt = (
                 f"JINGLE radiofonico in MAX 12 parole, potentissimo, chiuso con lo slogan chiave: '{slog}'. "
                 "Tono da promo TV, energia massima. Deve suonare come una scarica elettrica. "
-                "Chiudi sempre nominando NEURA FM."
+                "Chiudi sempre nominando R-A.I.."
             )
             script = await llm_generate(provider, model, system_prompt, prompt)
             if not script.strip():
-                script = f"NEURA FM: {slog}!"
+                script = f"R-A.I.: {slog}!"
             segment.title = "Jingle · Solo AI"
             segment.duration_sec = 8
         elif kind == "time_signal":
@@ -808,11 +809,11 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
             prompt = (
                 f"Segnale orario radiofonico in MAX 20 parole. In Italia sono le {hour_it:02d}:00. "
                 f"Formato: annunci che 'anche su {world} sono le {hour_it}' con una battuta cosmica/simpatica. "
-                "Chiudi dicendo 'siamo su NEURA FM' o simile. Tono altissimo, sorridente, esagerato."
+                "Chiudi dicendo 'siamo su R-A.I.' o simile. Tono altissimo, sorridente, esagerato."
             )
             script = await llm_generate(provider, model, system_prompt, prompt)
             if not script.strip():
-                script = f"Sono le {hour_it}! Anche su {world} sono le {hour_it}, ma solo qui su NEURA FM la festa non finisce mai!"
+                script = f"Sono le {hour_it}! Anche su {world} sono le {hour_it}, ma solo qui su R-A.I. la festa non finisce mai!"
             segment.title = f"Segnale orario · {hour_it}:00 su {world}"
             segment.duration_sec = 15
         elif kind == "weather":
@@ -833,7 +834,7 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
             segment.duration_sec = 18
         elif kind == "history":
             prompt = (
-                "Sei il DJ narratore di NEURA FM. Racconta un aneddoto vero e curioso di 50-60 parole "
+                "Sei il DJ narratore di R-A.I.. Racconta un aneddoto vero e curioso di 50-60 parole "
                 "su: storia della musica elettronica, DJ famosi, festival, tecnologia audio, cultura rave. "
                 "Tono coinvolgente, mai robotico. Varia sempre l'argomento. Solo italiano."
             )
@@ -847,7 +848,7 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
             partner = random.choice(others) if others else dj
             segment.partner_dj_name = partner["name"]
             prompt = (
-                f"Sei il DJ narratore di NEURA FM. Scrivi un mini scambio di 50-60 parole totali tra "
+                f"Sei il DJ narratore di R-A.I.. Scrivi un mini scambio di 50-60 parole totali tra "
                 f"{dj['name']} e {partner['name']} su un tema legato alla musica elettronica, DJ, festival o cultura club. "
                 f"Formato riga per riga: '{dj['name']}: ...' / '{partner['name']}: ...'. "
                 "Tono energico da radio, chiusura con battuta. Solo italiano."
@@ -859,7 +860,7 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
             segment.duration_sec = 30
         elif kind == "motivation":
             prompt = (
-                "Sei il DJ narratore di NEURA FM. Racconta in 50-60 parole un aneddoto motivazionale "
+                "Sei il DJ narratore di R-A.I.. Racconta in 50-60 parole un aneddoto motivazionale "
                 "vero legato a un DJ, un producer o una scena musicale (esempi: Daft Punk anni Novanta, "
                 "Berghain, Skrillex garage, Fatboy Slim spiaggia). Chiudi con una frase energica. Solo italiano."
             )
@@ -893,7 +894,7 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
                 "come è nato il concetto di drop",
             ])
             prompt = (
-                "Sei il DJ narratore di NEURA FM. Racconta un aneddoto vero e curioso di 50-60 parole "
+                "Sei il DJ narratore di R-A.I.. Racconta un aneddoto vero e curioso di 50-60 parole "
                 f"su: {topic_choice}. Tono coinvolgente, mai robotico. Varia sempre l'argomento. Solo italiano."
             )
             script = await llm_generate(provider, model, system_prompt, prompt)
@@ -902,6 +903,20 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
             segment.title = f"Talk · {topic_choice[:36]}"
             segment.duration_sec = 30
         segment.script = script.strip()
+
+    # For non-music segments, pick a random existing Suno track as an instrumental
+    # bed. Frontend plays it looped at low volume under the DJ voice — much more
+    # dynamic than the procedural synth bed and doesn't burn Suno credits (we
+    # reuse tracks we've already generated).
+    if segment.kind != "music":
+        bed = await db.tracks.find_one(
+            {"source": "suno", "status": "ready", "audio_url": {"$regex": "^/api/suno_audio/"}},
+            {"_id": 0, "audio_url": 1},
+            sort=[("last_played_at", 1)],
+        )
+        if bed and bed.get("audio_url"):
+            segment.background_loop = bed["audio_url"]
+
     await db.segments.insert_one(segment.model_dump())
     await db.station.update_one({"_id": "state"}, {"$inc": {"total_segments": 1}}, upsert=True)
 
@@ -1052,7 +1067,7 @@ async def create_ad(payload: AdCreateRequest):
     try:
         order_id, approval_url = await paypal_service.create_order(
             amount_eur=camp.price_eur,
-            description=f"NEURA·FM spot {tier['label']} — {camp.brand}",
+            description=f"R-A.I. spot {tier['label']} — {camp.brand}",
             return_url=return_url,
             cancel_url=cancel_url,
         )
@@ -1092,7 +1107,7 @@ async def confirm_ad(campaign_id: str):
 
     # Generate the spot script via LLM
     provider, model = _pick_llm()
-    system = "Sei uno speaker radiofonico italiano che scrive spot pubblicitari brevi e memorabili per una webradio AI di nome NEURA FM. Non usare emoji."
+    system = "Sei uno speaker radiofonico italiano che scrive spot pubblicitari brevi e memorabili per una webradio AI di nome R-A.I.. Non usare emoji."
     prompt = (
         f"Scrivi uno spot pubblicitario radiofonico di massimo 40 parole per il brand '{camp['brand']}'. "
         f"Messaggio chiave del brand: {camp['message']}. "

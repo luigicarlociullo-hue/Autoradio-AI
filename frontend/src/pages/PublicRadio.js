@@ -134,6 +134,9 @@ export default function PublicRadio() {
       if (seg.music_audio_url && seg.music_audio_url.startsWith("/api/")) {
         seg.music_audio_url = endpoints.audioUrl(seg.music_audio_url);
       }
+      if (seg.background_loop && seg.background_loop.startsWith("/api/")) {
+        seg.background_loop = endpoints.audioUrl(seg.background_loop);
+      }
       return seg;
     };
 
@@ -248,7 +251,7 @@ export default function PublicRadio() {
           <div className="flex items-center gap-3">
             <Radio className="w-6 h-6 text-pink-500" />
             <div>
-              <div className="font-display font-black text-lg tracking-tight">NEURA·FM</div>
+              <div className="font-display font-black text-lg tracking-tight">R-A.I.</div>
               <div className="label-mono">Web Radio · AI Only</div>
             </div>
           </div>
@@ -282,7 +285,7 @@ export default function PublicRadio() {
           <AudioVisualizer
             isPlaying={isPlaying}
             currentKind={current?.kind || ""}
-            currentTitle={current ? current.title : (isPlaying ? "In diretta…" : "NEURA·FM · in stand-by")}
+            currentTitle={current ? current.title : (isPlaying ? "In diretta…" : "R-A.I. · in stand-by")}
             trackOverlay={trackOverlay}
           />
         </div>
@@ -476,7 +479,7 @@ export default function PublicRadio() {
       </section>
 
       <footer className="max-w-7xl mx-auto px-6 py-10 text-xs font-mono text-zinc-600 border-t border-white/5 mt-8">
-        NEURA·FM · prototipo beta · orchestrato da GPT-5.2 · Claude Sonnet 4.5 · Gemini 3 Flash · nessun umano è stato usato per registrare quest'audio.
+        R-A.I. · prototipo beta · orchestrato da GPT-5.2 · Claude Sonnet 4.5 · Gemini 3 Flash · nessun umano è stato usato per registrare quest'audio.
       </footer>
     </div>
   );

@@ -71,7 +71,7 @@ class TelegramBot:
                     # /start handshake
                     if text.startswith("/start"):
                         await self._reply(chat_id,
-                            "Ciao! Sono il bot di NEURA·FM. Scrivimi la tua domanda: "
+                            "Ciao! Sono il bot di R-A.I.. Scrivimi la tua domanda: "
                             "un DJ AI ti risponderà in diretta durante il palinsesto.")
                         continue
                     # Insert question

@@ -145,7 +145,7 @@ export default function AudioVisualizer({ isPlaying, currentKind = "", currentTi
     if (YOUTUBE_URL) {
       window.open(YOUTUBE_URL, "_blank", "noopener,noreferrer");
     } else {
-      toast.info("Il canale YouTube di NEURA·FM verrà collegato prossimamente", {
+      toast.info("Il canale YouTube di R-A.I. verrà collegato prossimamente", {
         description: "Torna qui: la stessa visual sarà anche in streaming sul canale.",
       });
     }

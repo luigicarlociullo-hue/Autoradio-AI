@@ -121,7 +121,7 @@ export default function Dashboard() {
           <Link to="/" className="flex items-center gap-3">
             <Radio className="w-5 h-5 text-pink-500" />
             <div>
-              <div className="font-display font-black text-base">NEURA·FM · Admin</div>
+              <div className="font-display font-black text-base">R-A.I. · Admin</div>
               <div className="label-mono">Control Room</div>
             </div>
           </Link>

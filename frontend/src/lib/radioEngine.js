@@ -266,12 +266,67 @@ class RadioEngine {
   }
 
   async _playSpeechWithBed(segment) {
-    const stopBed = this.startMusic(this._bedConfigFor(segment.kind));
+    // Prefer a real instrumental bed (looped Suno track at low volume) over the
+    // procedural synth. Falls back to the synth bed if no track is provided.
+    let stopBed;
+    if (segment.background_loop) {
+      stopBed = this._startAudioBed(segment.background_loop, 0.25);
+    } else {
+      stopBed = this.startMusic(this._bedConfigFor(segment.kind));
+    }
     try {
       await this.playAudioUrl(segment.speech_audio_url);
     } finally {
       stopBed();
     }
+  }
+
+  /**
+   * Start a looped audio bed at the given target volume via Web Audio GainNode.
+   * Returns a `stop()` function that fades out over 0.5s and cleans up.
+   */
+  _startAudioBed(url, targetVolume = 0.25) {
+    const ctx = this.ensureAudioCtx();
+    if (!ctx || !url) return () => {};
+    const audio = new Audio(url);
+    audio.crossOrigin = "anonymous";
+    audio.loop = true;
+    audio.preload = "auto";
+    audio.volume = 1.0;
+    let gainNode = null;
+    let srcNode = null;
+    try {
+      srcNode = ctx.createMediaElementSource(audio);
+      gainNode = ctx.createGain();
+      gainNode.gain.value = 0.0;
+      srcNode.connect(gainNode);
+      gainNode.connect(this.outputBus);
+      // Fade in to target over 0.4s
+      const now = ctx.currentTime;
+      gainNode.gain.linearRampToValueAtTime(targetVolume, now + 0.4);
+    } catch (e) {
+      // Fallback: use element volume
+      audio.volume = targetVolume;
+    }
+    audio.play().catch(() => {});
+    let stopped = false;
+    return () => {
+      if (stopped) return;
+      stopped = true;
+      try {
+        if (gainNode) {
+          const now = ctx.currentTime;
+          gainNode.gain.cancelScheduledValues(now);
+          gainNode.gain.setValueAtTime(gainNode.gain.value, now);
+          gainNode.gain.linearRampToValueAtTime(0.0, now + 0.5);
+        }
+        setTimeout(() => {
+          try { audio.pause(); audio.src = ""; } catch (e) {}
+          try { srcNode && srcNode.disconnect(); } catch (e) {}
+          try { gainNode && gainNode.disconnect(); } catch (e) {}
+        }, 550);
+      } catch (e) {}
+    };
   }
 
   async _playMusicWithVoice(segment) {
