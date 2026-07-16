@@ -77,6 +77,8 @@ class Track(BaseModel):
     audio_url: Optional[str] = None       # external URL (Suno mp3) or /api/audio/xxx.wav
     image_url: Optional[str] = None       # optional cover art URL (Suno)
     source: Literal["suno", "stable_audio", "procedural"] = "procedural"
+    suno_task_id: Optional[str] = None
+    status: Literal["ready", "pending", "failed"] = "ready"
     created_at: str = Field(default_factory=now_iso)
 
 
@@ -467,29 +469,51 @@ async def generate_track(hint: Optional[str] = None, genre: Optional[str] = None
         source="procedural",
     )
 
-    # If Suno is enabled, try to generate the real song
+    # If Suno is enabled, create a task (non-blocking) and let a background
+    # poller update the track when Suno finishes (~2 min).
     if suno_service.is_enabled():
         style_tags = data.get("style_tags") or f"{track.genre}, {track.mood}, vocals"
+        prompt_text = f"{track.genre}, {track.mood}, {track.title} — {track.artist}"
         try:
-            song = await suno_service.generate_song(
-                prompt=f"{track.title} — {track.artist}. Style: {style_tags}. Language: {lang or 'italian'}.",
+            task_id = await suno_service.create_task(
+                prompt=prompt_text,
                 style=style_tags,
                 title=track.title,
                 instrumental=instrumental,
                 custom_lyrics=track.lyrics_excerpt if not instrumental else "",
             )
-            if song and song.get("audio_url"):
-                track.audio_url = song["audio_url"]
-                track.image_url = song.get("image_url")
+            if task_id:
+                track.suno_task_id = task_id
                 track.source = "suno"
-                if song.get("duration"):
-                    track.duration_sec = int(song["duration"])
-                logger.info(f"Suno generated: {track.title}")
+                track.status = "pending"
+                asyncio.create_task(_poll_suno_and_update(track.id, task_id))
+                logger.info(f"Suno task submitted: {task_id} for track {track.id}")
         except Exception as e:
-            logger.warning(f"Suno failed, using fallback: {e}")
+            logger.warning(f"Suno task submit failed: {e}")
 
     await db.tracks.insert_one(track.model_dump())
     return track
+
+
+async def _poll_suno_and_update(track_id: str, task_id: str):
+    """Background: poll Suno task and update the track with audio_url."""
+    try:
+        song = await suno_service.poll_task(task_id, timeout_sec=300, interval_sec=10)
+        if song and song.get("audio_url"):
+            update = {
+                "audio_url": song["audio_url"],
+                "image_url": song.get("image_url"),
+                "status": "ready",
+            }
+            if song.get("duration"):
+                update["duration_sec"] = int(song["duration"])
+            await db.tracks.update_one({"id": track_id}, {"$set": update})
+            logger.info(f"Suno track {track_id} ready: {song['audio_url']}")
+        else:
+            await db.tracks.update_one({"id": track_id}, {"$set": {"status": "failed"}})
+    except Exception as e:
+        logger.warning(f"Suno polling for {track_id} failed: {e}")
+        await db.tracks.update_one({"id": track_id}, {"$set": {"status": "failed"}})
 
 
 @api_router.get("/suno/status")
@@ -580,7 +604,21 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
     )
 
     if kind == "music":
-        track = await generate_track()
+        # Prefer an already-ready Suno track from the library over generating a
+        # fresh one (which is pending for ~2 min). If none is ready, generate a
+        # new one and use metadata (music will play via Stable Audio fallback).
+        track = None
+        if suno_service.is_enabled():
+            ready = await db.tracks.find_one(
+                {"source": "suno", "status": "ready", "audio_url": {"$ne": None}},
+                {"_id": 0},
+                sort=[("created_at", -1)],
+            )
+            if ready:
+                track = Track(**ready)
+        if track is None:
+            track = await generate_track()
+
         prompt = (
             f"Introduci brevemente (max 50 parole) il prossimo brano musicale della radio. "
             f"Titolo: '{track.title}' di {track.artist}, genere {track.genre}, mood {track.mood}. "
@@ -593,7 +631,7 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
         segment.script = script.strip()
         segment.track_id = track.id
         segment.track_meta = track.model_dump()
-        segment.duration_sec = max(40, track.duration_sec // 3)  # shortened preview in prototype
+        segment.duration_sec = max(40, track.duration_sec // 3)
         # If the track has a real Suno audio URL, use it as the music audio for playback
         if track.audio_url and track.source == "suno":
             segment.music_audio_url = track.audio_url
@@ -1116,6 +1154,29 @@ app.add_middleware(
 async def on_startup():
     await ensure_seeded()
     await telegram_bot.start(db)
+    # Kick off background Suno music library filler
+    asyncio.create_task(_suno_library_filler())
+
+
+async def _suno_library_filler():
+    """Keep a small library of ready Suno tracks available for the radio.
+    Generates a new track in background whenever the ready-pool falls below 3."""
+    if not suno_service.is_enabled():
+        return
+    await asyncio.sleep(5)
+    while True:
+        try:
+            ready = await db.tracks.count_documents({"source": "suno", "status": "ready"})
+            pending = await db.tracks.count_documents({"source": "suno", "status": "pending"})
+            if ready < 3 and pending < 2:
+                # Randomize genre for variety
+                genre = random.choice(["italian pop", "electronic dance", "hip-hop trap", "synthwave", "indie pop", "future bass", "italian rap", "reggaeton"])
+                logger.info(f"Suno filler: generating {genre} (ready={ready}, pending={pending})")
+                await generate_track(genre=genre)
+            await asyncio.sleep(90)
+        except Exception as e:
+            logger.warning(f"Suno filler error: {e}")
+            await asyncio.sleep(60)
 
 
 @app.on_event("shutdown")
