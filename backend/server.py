@@ -84,7 +84,7 @@ class Track(BaseModel):
 
 class Segment(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    kind: Literal["intro", "music", "talk", "news", "answer", "outro", "weather", "horoscope", "history", "interview", "motivation", "joke"]
+    kind: Literal["intro", "music", "talk", "news", "answer", "outro", "weather", "horoscope", "history", "interview", "motivation", "joke", "jingle", "time_signal"]
     dj_id: Optional[str] = None
     dj_name: Optional[str] = None
     voice_key: Optional[str] = None
@@ -592,9 +592,18 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
             })
             return ad_seg
 
+    # Hourly time signal — force one if none has aired this UTC hour
+    if kind is None:
+        state = await db.station.find_one({"_id": "state"}) or {}
+        last_hour = state.get("last_time_signal_hour")
+        now_hour = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H")
+        if last_hour != now_hour:
+            kind = "time_signal"
+            await db.station.update_one({"_id": "state"}, {"$set": {"last_time_signal_hour": now_hour}}, upsert=True)
+
     kind = kind or random.choices(
-        ["music", "talk", "joke", "weather", "horoscope", "interview", "news", "motivation", "history"],
-        weights=[70, 6, 6, 4, 4, 4, 3, 2, 1],
+        ["music", "jingle", "talk", "joke", "weather", "horoscope", "interview", "news", "motivation", "history"],
+        weights=[62, 10, 5, 5, 4, 4, 4, 3, 2, 1],
         k=1,
     )[0]
     djs = await db.djs.find({}, {"_id": 0}).to_list(20)
@@ -698,7 +707,47 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
         )
     else:
         # Non-music segments = brevi jingle sbarazzini (max 20 parole, ~5-8 s)
-        if kind == "weather":
+        if kind == "jingle":
+            slogans = [
+                "la prima radio governata solo dalle intelligenze artificiali",
+                "musica inventata da un'AI, DJ inventati da un'AI, ascolto reale",
+                "zero umani in cabina, solo neuroni digitali",
+                "dove GPT, Claude e Gemini si passano il microfono",
+                "niente umani, niente pubblicità di caffè, solo musica",
+                "l'unica radio dove il DJ non chiede mai il caffè",
+            ]
+            slog = random.choice(slogans)
+            prompt = (
+                f"JINGLE radiofonico in MAX 12 parole, potentissimo, chiuso con lo slogan chiave: '{slog}'. "
+                "Tono da promo TV, energia massima. Deve suonare come una scarica elettrica. "
+                "Chiudi sempre nominando NEURA FM."
+            )
+            script = await llm_generate(provider, model, system_prompt, prompt)
+            if not script.strip():
+                script = f"NEURA FM: {slog}!"
+            segment.title = "Jingle · Solo AI"
+            segment.duration_sec = 8
+        elif kind == "time_signal":
+            now = datetime.now(timezone.utc)
+            hour_it = (now.hour + 1) % 24  # UTC+1 Italia (semplificato)
+            worlds = [
+                "Marte", "Giove", "una galassia parallela", "il futuro anteriore",
+                "il metaverso di Ferrara", "Alpha Centauri", "un satellite in orbita bassa",
+                "un data center segreto in Islanda", "la Luna", "un browser aperto ieri sera",
+                "un buco nero curioso", "una playlist dimenticata"
+            ]
+            world = random.choice(worlds)
+            prompt = (
+                f"Segnale orario radiofonico in MAX 20 parole. In Italia sono le {hour_it:02d}:00. "
+                f"Formato: annunci che 'anche su {world} sono le {hour_it}' con una battuta cosmica/simpatica. "
+                "Chiudi dicendo 'siamo su NEURA FM' o simile. Tono altissimo, sorridente, esagerato."
+            )
+            script = await llm_generate(provider, model, system_prompt, prompt)
+            if not script.strip():
+                script = f"Sono le {hour_it}! Anche su {world} sono le {hour_it}, ma solo qui su NEURA FM la festa non finisce mai!"
+            segment.title = f"Segnale orario · {hour_it}:00 su {world}"
+            segment.duration_sec = 15
+        elif kind == "weather":
             prompt = "In MAX 15 parole: meteo lampo per una città italiana random, con una battuta. Tipo: 'A Milano 22 gradi e cielo pulito, uscite col sorriso.'"
             script = await llm_generate(provider, model, system_prompt, prompt)
             if not script.strip():
