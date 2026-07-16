@@ -1,16 +1,16 @@
 import React from "react";
 
 /**
- * NEURA·FM channel bug (like TV channel logos in the top-right of broadcasts).
- * "NEURA" static + "FM" orbiting in an elliptical path below it.
- * Renders as absolute-positioned so it sits inside any container.
+ * NEURA·FM channel bug — appears inside the visualizer/YouTube visual area.
+ * "NEURA" static. "FM" orbits around it in a 3D-like path: for half of the
+ * cycle it passes IN FRONT of "NEURA", for the other half it passes BEHIND
+ * (smaller, dimmer, blurred) to fake depth.
  */
 export default function LogoWatermark({
   size = 1,
   position = "top-right",
   opacity = 0.9,
 }) {
-  const scale = size;
   const positionMap = {
     "top-right":    { top: 12, right: 14, bottom: "auto", left: "auto" },
     "top-left":     { top: 12, left: 14, bottom: "auto", right: "auto" },
@@ -25,7 +25,7 @@ export default function LogoWatermark({
       style={{
         position: "absolute",
         ...pos,
-        transform: `scale(${scale})`,
+        transform: `scale(${size})`,
         transformOrigin: position.startsWith("top-") ? "top" : "bottom",
         opacity,
         zIndex: 40,
@@ -33,106 +33,90 @@ export default function LogoWatermark({
       aria-hidden
       data-testid="logo-watermark"
     >
-      {/* Container is 88x60px */}
-      <div
-        style={{
-          position: "relative",
-          width: 88,
-          height: 60,
-          fontFamily: "'Unbounded', sans-serif",
-        }}
-      >
-        {/* Static NEURA */}
-        <div
-          style={{
-            position: "absolute",
-            top: 0,
-            left: 0,
-            right: 0,
-            textAlign: "center",
-            fontWeight: 900,
-            fontSize: 18,
-            letterSpacing: "0.02em",
-            color: "#ffffff",
-            textShadow:
-              "0 0 8px rgba(255, 20, 147, 0.55), 0 0 18px rgba(138, 43, 226, 0.35)",
-            lineHeight: 1,
-          }}
-        >
-          NEURA
-        </div>
+      <div className="logo-orbit-wrapper">
+        {/* FM passing BEHIND — dimmer, smaller, blurred, first half of the loop */}
+        <span className="fm-orbit fm-back">FM</span>
 
-        {/* Tiny separator dot with subtle pulse */}
-        <div
-          style={{
-            position: "absolute",
-            top: 21,
-            left: "50%",
-            width: 3,
-            height: 3,
-            marginLeft: -1.5,
-            borderRadius: "50%",
-            background: "#FF1493",
-            boxShadow: "0 0 6px #FF1493",
-            animation: "neuralPulse 1.6s ease-in-out infinite",
-          }}
-        />
+        {/* Static NEURA in the middle */}
+        <span className="neura-static">NEURA</span>
 
-        {/* Elliptical orbit path visualization (subtle) */}
-        <div
-          style={{
-            position: "absolute",
-            top: 34,
-            left: "50%",
-            width: 60,
-            height: 22,
-            marginLeft: -30,
-            border: "1px dashed rgba(34, 211, 238, 0.25)",
-            borderRadius: "50%",
-          }}
-        />
-
-        {/* "FM" orbiting in ellipse */}
-        <div
-          style={{
-            position: "absolute",
-            top: 41,
-            left: "50%",
-            width: 0,
-            height: 0,
-            animation: "fmOrbit 3.2s linear infinite",
-          }}
-        >
-          <div
-            style={{
-              position: "absolute",
-              transform: "translate(-50%, -50%)",
-              fontWeight: 900,
-              fontSize: 12,
-              letterSpacing: "0.08em",
-              color: "#22d3ee",
-              textShadow:
-                "0 0 6px rgba(34, 211, 238, 0.9), 0 0 14px rgba(34, 211, 238, 0.55)",
-              whiteSpace: "nowrap",
-            }}
-          >
-            FM
-          </div>
-        </div>
+        {/* FM passing IN FRONT — full brightness, second half of the loop */}
+        <span className="fm-orbit fm-front">FM</span>
       </div>
 
-      {/* keyframes injected once via inline style tag (safe – idempotent) */}
       <style>{`
-        @keyframes fmOrbit {
-          0%   { transform: translate(-30px, 0) scale(1); }
-          25%  { transform: translate(0, 6px) scale(1.12); }
-          50%  { transform: translate(30px, 0) scale(1); }
-          75%  { transform: translate(0, -6px) scale(0.86); }
-          100% { transform: translate(-30px, 0) scale(1); }
+        .logo-orbit-wrapper {
+          position: relative;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          width: 92px;
+          height: 60px;
+          font-family: 'Unbounded', sans-serif;
         }
-        @keyframes neuralPulse {
-          0%, 100% { transform: scale(1); opacity: 1; }
-          50%      { transform: scale(1.6); opacity: 0.6; }
+        .neura-static {
+          position: relative;
+          z-index: 2;
+          font-weight: 900;
+          font-size: 18px;
+          letter-spacing: 0.03em;
+          color: #ffffff;
+          text-shadow:
+            0 0 8px rgba(255, 20, 147, 0.55),
+            0 0 18px rgba(138, 43, 226, 0.35);
+          line-height: 1;
+        }
+        .fm-orbit {
+          position: absolute;
+          top: 50%;
+          left: 50%;
+          margin-left: -9px;
+          margin-top: -7px;
+          font-weight: 900;
+          letter-spacing: 0.08em;
+          color: #22d3ee;
+          transform-origin: center center;
+          will-change: transform, opacity;
+        }
+        /* Front pass: on top of NEURA (z-index 3), full brightness.
+           Visible only during the second half of the loop (behind → front). */
+        .fm-front {
+          z-index: 3;
+          font-size: 12px;
+          text-shadow:
+            0 0 6px rgba(34, 211, 238, 0.95),
+            0 0 14px rgba(34, 211, 238, 0.55);
+          animation: fmOrbitFront 3.6s linear infinite;
+        }
+        /* Back pass: behind NEURA (z-index 1), smaller + blurred + dimmer,
+           visible only during the first half of the loop (front → behind). */
+        .fm-back {
+          z-index: 1;
+          font-size: 10.5px;
+          color: rgba(34, 211, 238, 0.75);
+          text-shadow: 0 0 4px rgba(34, 211, 238, 0.5);
+          filter: blur(0.5px);
+          animation: fmOrbitBack 3.6s linear infinite;
+        }
+
+        /* Elliptical orbit. Both keyframes share the same path (rx=32px, ry=10px);
+           front/back visibility is toggled discretely at the 50% mark using
+           step-wise opacity so the switch happens at the "edge" of the ellipse. */
+        @keyframes fmOrbitFront {
+          0%   { transform: translate(32px, 0) scale(1);    opacity: 0; }
+          0.01%{ opacity: 1; }
+          25%  { transform: translate(0, 10px) scale(1.1); opacity: 1; }
+          49.99%{ transform: translate(-32px, 0) scale(1); opacity: 1; }
+          50%  { opacity: 0; }
+          100% { transform: translate(32px, 0) scale(1);   opacity: 0; }
+        }
+        @keyframes fmOrbitBack {
+          0%   { transform: translate(32px, 0) scale(0.85); opacity: 0; }
+          50%  { opacity: 0; }
+          50.01%{ transform: translate(-32px, 0) scale(0.85); opacity: 1; }
+          75%  { transform: translate(0, -10px) scale(0.72); opacity: 1; }
+          99.99%{ transform: translate(32px, 0) scale(0.85); opacity: 1; }
+          100% { opacity: 0; }
         }
       `}</style>
     </div>

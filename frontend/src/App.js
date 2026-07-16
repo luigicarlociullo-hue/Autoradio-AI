@@ -7,7 +7,6 @@ import AuthCallback from "@/pages/AuthCallback";
 import Advertise from "@/pages/Advertise";
 import AdReturn from "@/pages/AdReturn";
 import LogoWatermark from "@/components/LogoWatermark";
-import SatelliteLogo from "@/components/SatelliteLogo";
 import "@/App.css";
 
 function AppRouter() {
@@ -32,8 +31,6 @@ export default function App() {
     <div className="App">
       <BrowserRouter>
         <AppRouter />
-        {/* Persistent channel bug — satellite watermark bottom-right, all routes */}
-        <SatelliteLogo />
         <Toaster
           theme="dark"
           position="top-right"
