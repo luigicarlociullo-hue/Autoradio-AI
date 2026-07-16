@@ -13,6 +13,15 @@ Vorrei costruire un software di gestione radiofonica completamente automatizzato
 - Audio: Browser Web Speech API (TTS) + Web Audio API procedural synthesis (music) — 100 % client-side, zero cost. Ready to swap in ElevenLabs / Suno when the user activates paid keys.
 - Auth: Emergent Google OAuth (free) for admin.
 
+## What's implemented (2026-08 · v10 · Stability fixes)
+- **v10 · Timeline stability + ducking tuning** (2026-02, this session):
+  - `PublicRadio.js`: introdotto helper `mergeSegments(prev, incoming)` che deduplica per `id` (con fallback sintetico) e limita la timeline a 30 elementi → elimina l'errore React `Failed to execute 'insertBefore' on 'Node'` causato da chiavi duplicate.
+  - `refresh()` ora usa `mergeSegments` invece di sovrascrivere lo state, e il loop di playback usa lo stesso helper: nessun conflitto tra polling e push locale.
+  - Cleanup completo dell'`useEffect`: `mountedRef`, `clearInterval`, `stopFlag=true`, `radioEngine.stopAll()` allo smontaggio.
+  - Timeline `.map()` avvolta in nuovo `<RadioErrorBoundary>` (`/app/frontend/src/components/RadioErrorBoundary.js`) con `data-testid="radio-error-boundary"` per contenere eventuali errori di rendering.
+  - `radioEngine._playMusicWithVoice`: ducking aggiornato a **INTRO_DUCK=0.55**, **FULL=1.0**, **OUTRO_DUCK=0.60**; `audio.volume=1.0` quando c'è la sorgente Web Audio (ducking gestito esclusivamente dal `GainNode`).
+  - Verifica: `testing_agent_v3_fork` iterazione 3 → 100 % PASS su backend + frontend, 90 s di playback continuo senza errori console.
+
 ## What's implemented (2026-07-16 · v9 · ElevenLabs)
 - **v9 · ElevenLabs TTS in tutta la radio** (2026-07-16):
   - `elevenlabs_service.py` — chiama `https://api.elevenlabs.io/v1/text-to-speech/{voice_id}` con `eleven_multilingual_v2` (miglior qualità italiana).
