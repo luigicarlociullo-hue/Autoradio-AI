@@ -96,9 +96,15 @@ export default function PublicRadio() {
 
     const fetchSegment = async () => {
       let seg = await endpoints.generateSegment(hdMode ? { hd: true } : {});
-      if (hdMode) {
-        if (seg.speech_audio_url) seg.speech_audio_url = endpoints.audioUrl(seg.speech_audio_url);
-        if (seg.music_audio_url)  seg.music_audio_url  = endpoints.audioUrl(seg.music_audio_url);
+      // Always resolve backend-relative URLs to absolute (they come as /api/...)
+      if (seg.speech_audio_url && seg.speech_audio_url.startsWith("/api/")) {
+        seg.speech_audio_url = endpoints.audioUrl(seg.speech_audio_url);
+      }
+      if (seg.outro_speech_url && seg.outro_speech_url.startsWith("/api/")) {
+        seg.outro_speech_url = endpoints.audioUrl(seg.outro_speech_url);
+      }
+      if (seg.music_audio_url && seg.music_audio_url.startsWith("/api/")) {
+        seg.music_audio_url = endpoints.audioUrl(seg.music_audio_url);
       }
       return seg;
     };

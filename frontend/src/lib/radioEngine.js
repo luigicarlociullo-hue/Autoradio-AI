@@ -243,23 +243,49 @@ class RadioEngine {
       let resolved = false;
       const done = () => { if (!resolved) { resolved = true; resolve(); } };
       try {
-        const audio = new Audio(segment.music_audio_url);
+        // IMPORTANT: crossOrigin must be set BEFORE assigning src so the browser
+        // sends the CORS preflight/tainted-origin check correctly.
+        const audio = document.createElement("audio");
         audio.crossOrigin = "anonymous";
+        audio.preload = "auto";
+        audio.src = segment.music_audio_url;
         this.currentAudio = audio;
         // Route through analyser bus + a per-track gain so we can duck
         let src;
-        try { src = ctx.createMediaElementSource(audio); } catch (e) { src = null; }
+        try { src = ctx.createMediaElementSource(audio); } catch (e) {
+          // If MediaElementSource fails (cross-origin taint), fall back to
+          // playing the audio through the default output without analyser routing.
+          console.warn("createMediaElementSource failed, playing without analyser:", e);
+          src = null;
+        }
         const musicGain = ctx.createGain();
         musicGain.gain.value = 0.0;
-        if (src) src.connect(musicGain);
-        musicGain.connect(this.outputBus);
+        if (src) {
+          src.connect(musicGain);
+          musicGain.connect(this.outputBus);
+        }
 
         const rampTo = (target, seconds = 0.9) => {
-          const now = ctx.currentTime;
-          musicGain.gain.cancelScheduledValues(now);
-          musicGain.gain.setValueAtTime(musicGain.gain.value, now);
-          musicGain.gain.linearRampToValueAtTime(target, now + seconds);
+          if (src) {
+            const now = ctx.currentTime;
+            musicGain.gain.cancelScheduledValues(now);
+            musicGain.gain.setValueAtTime(musicGain.gain.value, now);
+            musicGain.gain.linearRampToValueAtTime(target, now + seconds);
+          } else {
+            // No Web Audio routing → use native element volume as fallback
+            const startVol = audio.volume;
+            const steps = 20;
+            const stepMs = (seconds * 1000) / steps;
+            let i = 0;
+            const iv = setInterval(() => {
+              i++;
+              audio.volume = Math.max(0, Math.min(1, startVol + (target - startVol) * (i / steps)));
+              if (i >= steps) clearInterval(iv);
+            }, stepMs);
+          }
         };
+        // start at 0 volume regardless of routing mode
+        if (!src) audio.volume = 0;
 
         const INTRO_DUCK = 0.40;   // music under voice
         const FULL = 1.0;          // music at full while nobody speaks
