@@ -21,6 +21,7 @@ from emergentintegrations.llm.chat import LlmChat, UserMessage
 from hf_audio import synth_speech, synth_music, audio_path, cleanup_old, AUDIO_DIR
 import paypal_service
 import telegram_bot
+import suno_service
 
 # MongoDB
 mongo_url = os.environ['MONGO_URL']
@@ -73,6 +74,9 @@ class Track(BaseModel):
     duration_sec: int
     llm_provider: str
     cover_seed: str
+    audio_url: Optional[str] = None       # external URL (Suno mp3) or /api/audio/xxx.wav
+    image_url: Optional[str] = None       # optional cover art URL (Suno)
+    source: Literal["suno", "stable_audio", "procedural"] = "procedural"
     created_at: str = Field(default_factory=now_iso)
 
 
@@ -422,20 +426,17 @@ async def list_tracks(limit: int = 20):
 
 
 @api_router.post("/tracks/generate", response_model=Track)
-async def generate_track(hint: Optional[str] = None):
+async def generate_track(hint: Optional[str] = None, genre: Optional[str] = None, lang: Optional[str] = None, instrumental: bool = False):
     provider, model = _pick_llm()
-    hint_text = hint or random.choice([
-        "una ballata malinconica ambient con voce femminile",
-        "un pezzo synthwave notturno con basso pulsante",
-        "una traccia jazz-hop rilassata con sax",
-        "un brano elettronico sperimentale con glitch",
-        "una canzone italiana indie pop estiva",
-        "un pezzo darkwave con sintetizzatori vintage",
-    ])
+    genres_pool = ["italian pop", "electronic dance", "hip-hop trap", "synthwave", "indie pop", "jazz-hop", "reggaeton", "future bass", "italian rap"]
+    chosen_genre = (genre or random.choice(genres_pool))
+    hint_text = hint or f"a catchy {chosen_genre} song with memorable hook"
     prompt = (
-        f"Inventa una traccia musicale mai esistita ispirata a: '{hint_text}'. "
+        f"Inventa metadati per una traccia musicale mai esistita: '{hint_text}'. "
         "Rispondi ESCLUSIVAMENTE in JSON valido con queste chiavi: "
-        "title (string), artist (nome inventato), genre, mood, lyrics_excerpt (4 versi brevi in italiano), duration_sec (int tra 90 e 220). "
+        "title (string, 3-5 parole), artist (nome inventato), genre, mood, "
+        f"lyrics_excerpt (4 versi brevi in {'italiano' if (lang or 'it') == 'it' else 'inglese'}), "
+        "duration_sec (int tra 90 e 220), style_tags (stringa breve tipo 'pop, catchy, vocals, 128bpm'). "
         "Nessun testo aggiuntivo, solo JSON."
     )
     raw = await llm_generate(provider, model, "Sei un compositore AI di una webradio esclusiva.", prompt)
@@ -457,15 +458,47 @@ async def generate_track(hint: Optional[str] = None):
     track = Track(
         title=data.get("title") or random.choice(fallback_titles),
         artist=data.get("artist") or random.choice(fallback_artists),
-        genre=data.get("genre") or random.choice(["synthwave", "ambient", "jazz-hop", "darkwave", "electronic"]),
+        genre=data.get("genre") or chosen_genre,
         mood=data.get("mood") or random.choice(["notturno", "malinconico", "sognante", "elettrico"]),
         lyrics_excerpt=data.get("lyrics_excerpt") or random.choice(fallback_lyrics),
         duration_sec=int(data.get("duration_sec") or random.randint(110, 200)),
         llm_provider=f"{provider}/{model}" + ("" if raw else " · fallback"),
         cover_seed=uuid.uuid4().hex[:8],
+        source="procedural",
     )
+
+    # If Suno is enabled, try to generate the real song
+    if suno_service.is_enabled():
+        style_tags = data.get("style_tags") or f"{track.genre}, {track.mood}, vocals"
+        try:
+            song = await suno_service.generate_song(
+                prompt=f"{track.title} — {track.artist}. Style: {style_tags}. Language: {lang or 'italian'}.",
+                style=style_tags,
+                title=track.title,
+                instrumental=instrumental,
+                custom_lyrics=track.lyrics_excerpt if not instrumental else "",
+            )
+            if song and song.get("audio_url"):
+                track.audio_url = song["audio_url"]
+                track.image_url = song.get("image_url")
+                track.source = "suno"
+                if song.get("duration"):
+                    track.duration_sec = int(song["duration"])
+                logger.info(f"Suno generated: {track.title}")
+        except Exception as e:
+            logger.warning(f"Suno failed, using fallback: {e}")
+
     await db.tracks.insert_one(track.model_dump())
     return track
+
+
+@api_router.get("/suno/status")
+async def suno_status():
+    return {
+        "enabled": suno_service.is_enabled(),
+        "base_url": os.environ.get("SUNO_BASE_URL", ""),
+        "model": os.environ.get("SUNO_MODEL", "V4"),
+    }
 
 
 # ----------------------- Segments (schedule) -----------------------
@@ -561,6 +594,11 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
         segment.track_id = track.id
         segment.track_meta = track.model_dump()
         segment.duration_sec = max(40, track.duration_sec // 3)  # shortened preview in prototype
+        # If the track has a real Suno audio URL, use it as the music audio for playback
+        if track.audio_url and track.source == "suno":
+            segment.music_audio_url = track.audio_url
+            segment.hd_status = "ready"
+            segment.duration_sec = min(track.duration_sec, 90)
     elif kind == "news":
         prompt = (
             "Improvvisa un breve bollettino di 'notizie inventate dal futuro' (max 80 parole) "
