@@ -14,7 +14,13 @@ Vorrei costruire un software di gestione radiofonica completamente automatizzato
 - Auth: Emergent Google OAuth (free) for admin.
 
 ## What's implemented (2026-08 · v10 · Stability fixes)
-- **v10.1 · Loading spinner + random track rotation** (2026-02, this session):
+- **v10.2 · Volume 1.0 esplicito + round-robin perfetto** (2026-02, this session):
+  - `radioEngine.playAudioUrl`: `audio.volume = 1.0` esplicito e nuovo `voiceGain` (GainNode a 1.0) tra `MediaElementSource` e `outputBus`. Catena voce: `src → voiceGain(1.0) → outputBus(1.0) → analyser → destination`. Nessun nodo intermedio attenua il segnale.
+  - `outputBus.gain.value` confermato a `1.0` in `ensureAudioCtx()`.
+  - `server.py` `generate_segment(kind="music")`: **round-robin puro** — `find(...).sort([("last_played_at", 1), ("created_at", 1)]).to_list(50)` prende sempre la traccia meno-suonata (i mai-suonati vengono prima grazie a `null < any`). Ogni brano gira una volta prima che qualsiasi altro si ripeta.
+  - `_suno_library_filler`: `TARGET_READY=8`, `TRIGGER_THRESHOLD=5` (era `ready < 4`, `pending < 2`). Buffer più ampio + pending fino a 3 in parallelo per rifornire più velocemente.
+  - Verifica curl: 6 chiamate consecutive con 5 tracce in libreria → tutte 5 tracce cyclano prima di ripetere Baila Sotto La Luna.
+- **v10.1 · Loading spinner + random rotation** (2026-02, precedente):
   - `PublicRadio.js`: nuovo state `isPreparing`. Impostato a `true` all'avvio del loop, `false` non appena il primo segmento inizia a suonare, sempre resettato nel `finally` (successo/errore/eccezione) e su Stop. UI mostra `<Loader2 data-testid="loading-spinner">` cyan animato accanto al titolo durante la preparazione.
   - `server.py` `generate_segment(kind="music")`: sostituito `find_one` che pescava sempre l'ultima traccia con selezione **casuale** su fino a 20 candidate; cooldown di 2 ore via campo `last_played_at` (fallback all'intero pool se tutte suonate di recente). La traccia scelta viene marcata `last_played_at=now` in Mongo → niente più ripetizioni back-to-back.
 - **v10 · Timeline stability + ducking tuning** (2026-02, precedente):

@@ -184,14 +184,22 @@ class RadioEngine {
         const ctx = this.ensureAudioCtx();
         const a = new Audio(url);
         a.crossOrigin = "anonymous";
+        a.preload = "auto";
+        // Explicit full element volume — the GainNode chain controls dynamics.
+        a.volume = 1.0;
         this.currentAudio = a;
-        // Route through analyser bus so the visualizer reacts
+        // Route: source -> voiceGain(1.0) -> outputBus(1.0) -> analyser -> destination
         try {
           const src = ctx.createMediaElementSource(a);
-          src.connect(this.outputBus);
+          const voiceGain = ctx.createGain();
+          voiceGain.gain.value = 1.0;
+          src.connect(voiceGain);
+          voiceGain.connect(this.outputBus);
           a._srcNode = src;
+          a._voiceGain = voiceGain;
         } catch (e) {
-          // Some browsers throw if the element already has a source. Fall back to native output.
+          // Some browsers throw if the element already has a source. Fall back
+          // to native output — element volume already at 1.0.
         }
         a.onended = () => { this.currentAudio = null; resolve(); };
         a.onerror = () => { this.currentAudio = null; resolve(); };

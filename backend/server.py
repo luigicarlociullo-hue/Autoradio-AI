@@ -655,31 +655,19 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
         # new one and use metadata (music will play via Stable Audio fallback).
         track = None
         if suno_service.is_enabled():
-            # Random selection with recency cooldown: avoid replaying the same
-            # track back-to-back. Skip tracks played in the last 2 hours; if
-            # every ready track was played recently, fall back to the full pool.
-            two_hours_ago = datetime.now(timezone.utc) - timedelta(hours=2)
-            two_hours_ago_iso = two_hours_ago.isoformat()
-            base_filter = {
-                "source": "suno",
-                "status": "ready",
-                "audio_url": {"$ne": None},
-            }
-            fresh_filter = {
-                **base_filter,
-                "$or": [
-                    {"last_played_at": {"$exists": False}},
-                    {"last_played_at": None},
-                    {"last_played_at": {"$lt": two_hours_ago_iso}},
-                ],
-            }
-            candidates = await db.tracks.find(fresh_filter, {"_id": 0}).to_list(length=20)
-            if not candidates:
-                candidates = await db.tracks.find(base_filter, {"_id": 0}).to_list(length=20)
+            # Perfect round-robin: sort by last_played_at ASC → tracks never
+            # played (missing field / null) come first, then the oldest-played.
+            # Guarantees every track cycles once before any repeats, regardless
+            # of library size.
+            candidates = await db.tracks.find(
+                {"source": "suno", "status": "ready", "audio_url": {"$ne": None}},
+                {"_id": 0},
+                sort=[("last_played_at", 1), ("created_at", 1)],
+            ).to_list(length=50)
             if candidates:
-                chosen = random.choice(candidates)
+                chosen = candidates[0]
                 track = Track(**chosen)
-                # Mark as just played so it isn't picked again immediately
+                # Mark as just played so the next call picks a different one
                 await db.tracks.update_one(
                     {"id": track.id},
                     {"$set": {"last_played_at": datetime.now(timezone.utc).isoformat()}},
@@ -1294,13 +1282,18 @@ async def _suno_library_filler():
         "afro house 122 bpm",
         "dance pop 124 bpm",
     ]
+    # Target: keep at least 8 ready Suno tracks in the library, trigger a new
+    # generation as soon as we drop 3 below target (ready < 5). This gives the
+    # round-robin rotation enough variety to avoid perceived repetitions.
+    TARGET_READY = 8
+    TRIGGER_THRESHOLD = 5   # start refilling when ready count falls to this
     while True:
         try:
             ready = await db.tracks.count_documents({"source": "suno", "status": "ready"})
             pending = await db.tracks.count_documents({"source": "suno", "status": "pending"})
-            if ready < 4 and pending < 2:
+            if ready < TRIGGER_THRESHOLD and pending < 3:
                 genre = random.choice(dance_genres)
-                logger.info(f"Suno filler: generating {genre} (ready={ready}, pending={pending})")
+                logger.info(f"Suno filler: generating {genre} (ready={ready}/{TARGET_READY}, pending={pending})")
                 await generate_track(genre=genre)
             await asyncio.sleep(90)
         except Exception as e:
