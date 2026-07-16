@@ -69,10 +69,12 @@ export default function PublicRadio() {
   const [questionName, setQuestionName] = useState("");
   const [questionText, setQuestionText] = useState("");
   const [tick, setTick] = useState(0);
+  const [trackOverlay, setTrackOverlay] = useState({ visible: false, title: "", artist: "" });
 
   const playingRef = useRef(false);
   const stopFlag = useRef(false);
   const mountedRef = useRef(true);
+  const overlayTimerRef = useRef(null);
 
   // Merge helper: dedupe segments by id (fallback to a stable synthetic id when
   // backend didn't send one) and cap the timeline length so React never has to
@@ -107,6 +109,7 @@ export default function PublicRadio() {
       clearInterval(iv);
       stopFlag.current = true;
       try { radioEngine.stopAll(); } catch (e) {}
+      if (overlayTimerRef.current) { clearTimeout(overlayTimerRef.current); overlayTimerRef.current = null; }
     };
   }, []);
 
@@ -148,8 +151,28 @@ export default function PublicRadio() {
         setSegments(prev => mergeSegments(prev, seg));
         // First segment is about to play → dismiss the loading spinner in EVERY branch.
         setIsPreparing(false);
+
+        // Neon track overlay: fade IN when a music segment starts, fade OUT
+        // ~8s before the end (approximating the outro transition).
+        if (overlayTimerRef.current) { clearTimeout(overlayTimerRef.current); overlayTimerRef.current = null; }
+        if (seg.kind === "music") {
+          const meta = seg.track_meta || {};
+          const rawTitle = meta.title || (seg.title || "").replace(/^♪\s*/, "").split(" — ")[0];
+          const rawArtist = meta.artist || (seg.title || "").split(" — ")[1] || "";
+          setTrackOverlay({ visible: true, title: rawTitle, artist: rawArtist });
+          const duration = Math.max(20, seg.duration_sec || 60);
+          const hideAfterMs = Math.max(2000, (duration - 8) * 1000);
+          overlayTimerRef.current = setTimeout(() => {
+            if (mountedRef.current) setTrackOverlay(o => ({ ...o, visible: false }));
+          }, hideAfterMs);
+        } else {
+          setTrackOverlay(o => (o.visible ? { ...o, visible: false } : o));
+        }
+
         await radioEngine.playSegment(seg);
         if (stopFlag.current) break;
+        // Ensure overlay is hidden between segments regardless of the timer.
+        setTrackOverlay(o => (o.visible ? { ...o, visible: false } : o));
         // Await the already-in-flight next segment
         try {
           seg = await nextPromise;
@@ -170,6 +193,8 @@ export default function PublicRadio() {
       setIsPreparing(false);
       setCurrent(null);
       setRenderingHd(false);
+      if (overlayTimerRef.current) { clearTimeout(overlayTimerRef.current); overlayTimerRef.current = null; }
+      setTrackOverlay({ visible: false, title: "", artist: "" });
     }
   };
 
@@ -258,6 +283,7 @@ export default function PublicRadio() {
             isPlaying={isPlaying}
             currentKind={current?.kind || ""}
             currentTitle={current ? current.title : (isPlaying ? "In diretta…" : "NEURA·FM · in stand-by")}
+            trackOverlay={trackOverlay}
           />
         </div>
 

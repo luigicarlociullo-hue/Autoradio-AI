@@ -14,7 +14,11 @@ Vorrei costruire un software di gestione radiofonica completamente automatizzato
 - Auth: Emergent Google OAuth (free) for admin.
 
 ## What's implemented (2026-08 · v10 · Stability fixes)
-- **v10.2 · Volume 1.0 esplicito + round-robin perfetto** (2026-02, this session):
+- **v10.3 · Satellite logo + neon track overlay** (2026-02, this session):
+  - Nuovo componente `frontend/src/components/SatelliteLogo.js`: watermark globale con `position: fixed` bottom-right (16 px), opacity 0.35 → 0.6 on hover, "NEURA" statico + "FM" in orbita ellittica (`@keyframes satOrbit` con `rotate + translateX(38px) + counter-rotate`). Cablato in `App.js` su tutte le route.
+  - `AudioVisualizer.js`: nuova prop `trackOverlay={ visible, title, artist }` → sovrimpressione neon centrata (bottom 80 px) con `@keyframes neonPulse` (magenta ↔ cyan), `transition: opacity 0.8s`, `text-shadow` multipli. Titolo maiuscolo, artista in cyan.
+  - `PublicRadio.js`: state `trackOverlay` + `overlayTimerRef`. All'inizio di ogni segmento `music` fa fade-in immediato con `track_meta.title/artist`, poi programma un `setTimeout(duration - 8s)` per il fade-out prima dell'outro. Reset garantito su unmount, stop e passaggio a segmento non-music.
+- **v10.2 · Volume 1.0 esplicito + round-robin perfetto** (2026-02, precedente):
   - `radioEngine.playAudioUrl`: `audio.volume = 1.0` esplicito e nuovo `voiceGain` (GainNode a 1.0) tra `MediaElementSource` e `outputBus`. Catena voce: `src → voiceGain(1.0) → outputBus(1.0) → analyser → destination`. Nessun nodo intermedio attenua il segnale.
   - `outputBus.gain.value` confermato a `1.0` in `ensureAudioCtx()`.
   - `server.py` `generate_segment(kind="music")`: **round-robin puro** — `find(...).sort([("last_played_at", 1), ("created_at", 1)]).to_list(50)` prende sempre la traccia meno-suonata (i mai-suonati vengono prima grazie a `null < any`). Ogni brano gira una volta prima che qualsiasi altro si ripeta.

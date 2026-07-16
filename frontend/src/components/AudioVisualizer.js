@@ -6,7 +6,7 @@ import LogoWatermark from "@/components/LogoWatermark";
 
 const YOUTUBE_URL = process.env.REACT_APP_YOUTUBE_URL || "";
 
-export default function AudioVisualizer({ isPlaying, currentKind = "", currentTitle = "" }) {
+export default function AudioVisualizer({ isPlaying, currentKind = "", currentTitle = "", trackOverlay = null }) {
   const canvasRef = useRef(null);
   const rafRef = useRef(null);
   const rotationRef = useRef(0);
@@ -190,6 +190,56 @@ export default function AudioVisualizer({ isPlaying, currentKind = "", currentTi
           </div>
         </div>
       )}
+      {/* Neon track overlay — music-segment sovrimpressione with fade in/out */}
+      {trackOverlay && (
+        <div
+          className="track-overlay"
+          data-testid="track-overlay"
+          style={{
+            position: "absolute",
+            bottom: 80,
+            left: 0,
+            right: 0,
+            textAlign: "center",
+            pointerEvents: "none",
+            opacity: trackOverlay.visible ? 1 : 0,
+            transition: "opacity 0.8s ease",
+          }}
+        >
+          <div className="track-title" data-testid="track-overlay-title">
+            {trackOverlay.title}
+          </div>
+          {trackOverlay.artist && (
+            <div className="track-artist" data-testid="track-overlay-artist">
+              {trackOverlay.artist}
+            </div>
+          )}
+        </div>
+      )}
+      <style>{`
+        @keyframes neonPulse {
+          0%, 100% { text-shadow: 0 0 8px #ff00ff, 0 0 20px #ff00ff, 0 0 40px #ff00ff; }
+          50%      { text-shadow: 0 0 4px #00eaff, 0 0 12px #00eaff, 0 0 24px #00eaff; }
+        }
+        .track-title {
+          font-family: 'Unbounded', sans-serif;
+          font-size: clamp(1.1em, 2.2vw, 1.8em);
+          font-weight: 900;
+          color: #fff;
+          animation: neonPulse 2s ease-in-out infinite;
+          letter-spacing: 3px;
+          text-transform: uppercase;
+        }
+        .track-artist {
+          font-family: 'Unbounded', sans-serif;
+          font-size: clamp(0.75em, 1vw, 0.95em);
+          color: #00eaff;
+          text-shadow: 0 0 8px #00eaff, 0 0 18px rgba(0,234,255,0.5);
+          margin-top: 6px;
+          letter-spacing: 2px;
+          font-weight: 700;
+        }
+      `}</style>
       {/* YouTube CTA hover overlay */}
       <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none">
         <div className="flex items-center gap-3 px-5 py-3 rounded-full bg-black/70 backdrop-blur-md border border-white/15">
