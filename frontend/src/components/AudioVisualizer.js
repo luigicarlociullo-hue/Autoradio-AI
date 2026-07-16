@@ -183,13 +183,6 @@ export default function AudioVisualizer({ isPlaying, currentKind = "", currentTi
           <span className="live-dot" style={{ background: "#22d3ee", boxShadow: "0 0 8px #22d3ee" }} />
         )}
       </div>
-      {currentTitle && (
-        <div className="absolute bottom-3 left-4 right-4 flex items-end justify-between gap-3 pointer-events-none">
-          <div className="font-display text-white text-sm sm:text-base drop-shadow-md line-clamp-1">
-            {currentTitle}
-          </div>
-        </div>
-      )}
       {/* Neon track overlay — music-segment sovrimpressione with fade in/out */}
       {trackOverlay && (
         <div

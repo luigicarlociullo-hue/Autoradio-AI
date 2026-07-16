@@ -82,7 +82,7 @@ class RadioEngine {
   }
 
   // Procedural ambient music generator (algorithmic AI-invented music)
-  startMusic({ genre = "electronic", durationSec = 30, seed = 0 } = {}) {
+  startMusic({ genre = "electronic", durationSec = 30, seed = 0, bedGain = 0.16 } = {}) {
     const ctx = this.ensureAudioCtx();
     if (!ctx) return () => {};
     const dest = this.outputBus || ctx.destination;
@@ -90,7 +90,7 @@ class RadioEngine {
     const master = ctx.createGain();
     master.gain.value = 0.0;
     master.connect(dest);
-    master.gain.linearRampToValueAtTime(0.16, ctx.currentTime + 1.2);
+    master.gain.linearRampToValueAtTime(bedGain, ctx.currentTime + 1.2);
 
     // Scale selection based on mood
     const scales = {
@@ -223,9 +223,10 @@ class RadioEngine {
     if (segment.kind === "music" && segment.music_audio_url) {
       return this._playMusicWithVoice(segment);
     }
-    // Pure speech-only segment (short jingle-style) — play the pre-rendered ElevenLabs mp3 if available
+    // Pure speech segment — ALWAYS play a subtle instrumental bed under the DJ voice
+    // (no "dry" spoken-only content, like a real radio station).
     if (segment.speech_audio_url) {
-      return this.playAudioUrl(segment.speech_audio_url);
+      return this._playSpeechWithBed(segment);
     }
     // Fallback: browser Web Speech + procedural synth
     if (segment.kind === "music") {
@@ -239,7 +240,37 @@ class RadioEngine {
       await new Promise(res => setTimeout(res, Math.max(4000, dur * 500)));
       stop();
     } else {
+      // Even for Web Speech fallback, drop a low bed under the voice.
+      const stopBed = this.startMusic(this._bedConfigFor(segment.kind));
       await this.speak(segment.script || segment.title || "", segment.voice_key, { rate: 1.06 });
+      stopBed();
+    }
+  }
+
+  // Pick a mood-appropriate bed for each spoken segment kind.
+  _bedConfigFor(kind) {
+    const map = {
+      news:       { genre: "darkwave",   bedGain: 0.11 },
+      history:    { genre: "ambient",    bedGain: 0.10 },
+      interview:  { genre: "jazz-hop",   bedGain: 0.12 },
+      motivation: { genre: "synthwave",  bedGain: 0.14 },
+      joke:       { genre: "synthwave",  bedGain: 0.13 },
+      weather:    { genre: "ambient",    bedGain: 0.10 },
+      horoscope:  { genre: "ambient",    bedGain: 0.11 },
+      talk:       { genre: "electronic", bedGain: 0.13 },
+      answer:     { genre: "jazz-hop",   bedGain: 0.12 },
+      intro:      { genre: "electronic", bedGain: 0.13 },
+      outro:      { genre: "electronic", bedGain: 0.13 },
+    };
+    return { durationSec: 60, ...(map[kind] || map.talk) };
+  }
+
+  async _playSpeechWithBed(segment) {
+    const stopBed = this.startMusic(this._bedConfigFor(segment.kind));
+    try {
+      await this.playAudioUrl(segment.speech_audio_url);
+    } finally {
+      stopBed();
     }
   }
 
@@ -313,11 +344,23 @@ class RadioEngine {
           try {
             // fade in music to duck level
             rampTo(INTRO_DUCK, 0.6);
-            // Play intro speech: prefer pre-rendered ElevenLabs mp3, fallback to Web Speech
-            if (segment.speech_audio_url) {
-              await this.playAudioUrl(segment.speech_audio_url);
-            } else if (segment.script) {
-              await this.speak(segment.script, segment.voice_key, { rate: 1.08 });
+            // Play intro speech, but cap the whole DJ intro to MAX_INTRO_MS so
+            // the speaker "wraps up" right around when the vocals typically
+            // kick in. If the LLM script is too long, we cut it and ramp the
+            // music to full — exactly like a real radio DJ.
+            const MAX_INTRO_MS = 14000; // ~14s: dance tracks usually start vocals ≈15–18s
+            const speechPromise = segment.speech_audio_url
+              ? this.playAudioUrl(segment.speech_audio_url)
+              : (segment.script
+                  ? this.speak(segment.script, segment.voice_key, { rate: 1.08 })
+                  : Promise.resolve());
+            let timedOut = false;
+            const timeoutPromise = new Promise((r) => setTimeout(() => { timedOut = true; r("timeout"); }, MAX_INTRO_MS));
+            await Promise.race([speechPromise, timeoutPromise]);
+            if (timedOut) {
+              // Cut the DJ off cleanly — vocals are about to start.
+              try { this.stopAudio(); } catch (e) {}
+              try { this.stopSpeech(); } catch (e) {}
             }
             // Ramp up music to full
             rampTo(FULL, 1.2);

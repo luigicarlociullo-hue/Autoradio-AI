@@ -681,10 +681,10 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
         bpm = bpm_match.group(1) if bpm_match else "128"
         prompt = (
             f"Sei il DJ di NEURA FM, radio elettronica italiana. "
-            f"Scrivi un intro di massimo 20 parole per il brano \"{track.title}\" di {track.artist} "
-            f"({track.genre}, {bpm} BPM). "
-            f"Varia il tono ogni volta: entusiasta, ironico, poetico, energico, misterioso. "
-            f"Riferisci ora del giorno, energia, dancefloor. Mai uguale alle volte precedenti. Solo italiano."
+            f"Scrivi un intro CORTISSIMO (massimo 12 parole, ~6 secondi di lettura) "
+            f"per il brano \"{track.title}\" di {track.artist} ({track.genre}, {bpm} BPM). "
+            f"Varia il tono: entusiasta, ironico, poetico, energico, misterioso. "
+            f"Devi finire di parlare PRIMA che partano le voci del brano. Solo italiano."
         )
         script = await llm_generate(provider, model, system_prompt, prompt)
         if not script.strip():
