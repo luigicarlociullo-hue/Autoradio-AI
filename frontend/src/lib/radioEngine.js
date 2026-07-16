@@ -211,15 +211,15 @@ class RadioEngine {
 
   async playSegment(segment) {
     this.currentKind = segment.kind;
-    // Music segment with real audio + optional intro/outro speech (DJ over intro/outro of song)
+    // Music segment with real audio + optional pre-rendered intro/outro speech
     if (segment.kind === "music" && segment.music_audio_url) {
       return this._playMusicWithVoice(segment);
     }
-    // Pure speech-only segment (short jingle-style)
+    // Pure speech-only segment (short jingle-style) — play the pre-rendered ElevenLabs mp3 if available
     if (segment.speech_audio_url) {
       return this.playAudioUrl(segment.speech_audio_url);
     }
-    // Music fallback (procedural + Web Speech)
+    // Fallback: browser Web Speech + procedural synth
     if (segment.kind === "music") {
       const dur = Math.min(segment.duration_sec || 40, 45);
       const stop = this.startMusic({
@@ -231,7 +231,6 @@ class RadioEngine {
       await new Promise(res => setTimeout(res, Math.max(4000, dur * 500)));
       stop();
     } else {
-      // pure talk fallback via Web Speech
       await this.speak(segment.script || segment.title || "", segment.voice_key, { rate: 1.06 });
     }
   }
@@ -278,7 +277,10 @@ class RadioEngine {
           try {
             // fade in music to duck level
             rampTo(INTRO_DUCK, 0.6);
-            if (segment.script) {
+            // Play intro speech: prefer pre-rendered ElevenLabs mp3, fallback to Web Speech
+            if (segment.speech_audio_url) {
+              await this.playAudioUrl(segment.speech_audio_url);
+            } else if (segment.script) {
               await this.speak(segment.script, segment.voice_key, { rate: 1.08 });
             }
             // Ramp up music to full
@@ -294,7 +296,9 @@ class RadioEngine {
             await waitOutro();
             // Duck for outro and speak
             rampTo(OUTRO_DUCK, 0.8);
-            if (segment.outro_script) {
+            if (segment.outro_speech_url) {
+              await this.playAudioUrl(segment.outro_speech_url);
+            } else if (segment.outro_script) {
               await this.speak(segment.outro_script, segment.voice_key, { rate: 1.1 });
             }
             // Small buffer then let audio ended fire

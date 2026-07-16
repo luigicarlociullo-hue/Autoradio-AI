@@ -18,10 +18,25 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
 from emergentintegrations.llm.chat import LlmChat, UserMessage
-from hf_audio import synth_speech, synth_music, audio_path, cleanup_old, AUDIO_DIR
+from hf_audio import synth_speech as bark_synth_speech, synth_music, audio_path, cleanup_old, AUDIO_DIR
 import paypal_service
 import telegram_bot
 import suno_service
+import elevenlabs_service
+
+
+async def synth_speech(text: str, voice_key: str = "female-1"):
+    """Preferred TTS pipeline: ElevenLabs first (best Italian quality), then Bark as fallback.
+    Returns (filename, subpath) where subpath is 'tts' or 'audio' for URL routing."""
+    if elevenlabs_service.is_enabled():
+        fn = await elevenlabs_service.synth_speech(text, voice_key)
+        if fn:
+            return fn, "tts"
+    # fallback to Bark HF space (open-source)
+    fn = await bark_synth_speech(text, voice_key)
+    if fn:
+        return fn, "audio"
+    return None, None
 
 # MongoDB
 mongo_url = os.environ['MONGO_URL']
@@ -96,6 +111,7 @@ class Segment(BaseModel):
     duration_sec: int = 30
     llm_provider: Optional[str] = None
     speech_audio_url: Optional[str] = None
+    outro_speech_url: Optional[str] = None
     music_audio_url: Optional[str] = None
     hd_status: Literal["pending", "rendering", "ready", "failed"] = "pending"
     partner_dj_name: Optional[str] = None  # for interview segments
@@ -843,34 +859,40 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
     await db.segments.insert_one(segment.model_dump())
     await db.station.update_one({"_id": "state"}, {"$inc": {"total_segments": 1}}, upsert=True)
 
-    # Inline HD render (used by the prefetch pipeline so the frontend gets
-    # ready-to-play audio in a single call)
-    if hd:
+    # Always render speech via ElevenLabs (or Bark fallback) so voices are consistent
+    # HD quality across every segment, not only when hd=true is explicitly requested.
+    if elevenlabs_service.is_enabled() and segment.script:
         try:
-            speech_url = None
-            music_url = None
-            if segment.script:
-                fn = await synth_speech(segment.script, segment.voice_key or "female-1")
-                if fn:
-                    speech_url = f"/api/audio/{fn}"
-            if segment.kind == "music" and segment.track_meta:
-                tm = segment.track_meta
-                mprompt = f"{tm.get('genre','electronic')} {tm.get('mood','')} music, {tm.get('title','')}"
-                fn = await synth_music(mprompt, seconds=15)
-                if fn:
-                    music_url = f"/api/audio/{fn}"
-            update = {"hd_status": "ready" if (speech_url or music_url) else "failed"}
-            if speech_url:
-                update["speech_audio_url"] = speech_url
-                segment.speech_audio_url = speech_url
-            if music_url:
-                update["music_audio_url"] = music_url
-                segment.music_audio_url = music_url
-            segment.hd_status = update["hd_status"]
-            await db.segments.update_one({"id": segment.id}, {"$set": update})
-            cleanup_old(120)
+            fn, subpath = await synth_speech(segment.script, segment.voice_key or "female-1")
+            if fn:
+                segment.speech_audio_url = f"/api/{subpath}/{fn}"
+                update = {"speech_audio_url": segment.speech_audio_url}
+                # For music segments, also render outro
+                if segment.kind == "music" and segment.outro_script:
+                    of, os_ = await synth_speech(segment.outro_script, segment.voice_key or "female-1")
+                    if of:
+                        segment.outro_speech_url = f"/api/{os_}/{of}"
+                        update["outro_speech_url"] = segment.outro_speech_url
+                if segment.speech_audio_url and segment.kind == "music" and segment.music_audio_url:
+                    update["hd_status"] = "ready"
+                await db.segments.update_one({"id": segment.id}, {"$set": update})
+                elevenlabs_service.cleanup_old(200)
         except Exception as e:
-            logger.warning(f"inline hd render failed: {e}")
+            logger.warning(f"ElevenLabs synth failed for {segment.id}: {e}")
+
+    # Legacy inline HD render for Stable Audio music (only when explicitly requested)
+    if hd and segment.kind == "music" and segment.track_meta and not segment.music_audio_url:
+        try:
+            tm = segment.track_meta
+            mprompt = f"{tm.get('genre','electronic')} {tm.get('mood','')} music, {tm.get('title','')}"
+            mfn = await synth_music(mprompt, seconds=15)
+            if mfn:
+                segment.music_audio_url = f"/api/audio/{mfn}"
+                segment.hd_status = "ready"
+                await db.segments.update_one({"id": segment.id}, {"$set": {"music_audio_url": segment.music_audio_url, "hd_status": "ready"}})
+                cleanup_old(120)
+        except Exception as e:
+            logger.warning(f"inline hd music render failed: {e}")
     return segment
 
 
@@ -1037,12 +1059,13 @@ async def confirm_ad(campaign_id: str):
 
     # Try to synth audio via Bark (HD open source)
     audio_fname = None
+    audio_subpath = None
     try:
-        audio_fname = await synth_speech(script.strip(), voice_key="male-1")
+        audio_fname, audio_subpath = await synth_speech(script.strip(), voice_key="male-1")
     except Exception as e:
-        logger.warning(f"Ad Bark synth failed: {e}")
+        logger.warning(f"Ad TTS synth failed: {e}")
 
-    audio_url = f"/api/audio/{audio_fname}" if audio_fname else None
+    audio_url = f"/api/{audio_subpath}/{audio_fname}" if audio_fname else None
     update = {
         "status": "active",
         "paypal_capture_id": capture_id,
@@ -1157,6 +1180,14 @@ async def get_audio(filename: str):
     return FileResponse(str(p), media_type="audio/wav")
 
 
+@api_router.get("/tts/{filename}")
+async def get_tts_audio(filename: str):
+    p = elevenlabs_service.tts_path(filename)
+    if not p:
+        raise HTTPException(404, "TTS audio not found")
+    return FileResponse(str(p), media_type="audio/mpeg")
+
+
 @api_router.post("/segments/{seg_id}/render_hd")
 async def render_segment_hd(seg_id: str):
     """Generate real AI audio (Bark speech + Stable Audio music) for a segment."""
@@ -1168,11 +1199,11 @@ async def render_segment_hd(seg_id: str):
     speech_url = None
     music_url = None
     try:
-        # Speech (Bark)
+        # Speech (ElevenLabs preferred, Bark fallback)
         if seg.get("script"):
-            fname = await synth_speech(seg["script"], seg.get("voice_key") or "female-1")
+            fname, subpath = await synth_speech(seg["script"], seg.get("voice_key") or "female-1")
             if fname:
-                speech_url = f"/api/audio/{fname}"
+                speech_url = f"/api/{subpath}/{fname}"
         # Music (Stable Audio) only for music segments
         if seg.get("kind") == "music" and seg.get("track_meta"):
             tm = seg["track_meta"]
