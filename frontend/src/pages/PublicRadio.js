@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { Play, Pause, SkipForward, Radio, Send, Volume2, Sparkles, Users, Music2, Newspaper, MessageCircle } from "lucide-react";
+import { Play, Pause, SkipForward, Radio, Send, Volume2, Sparkles, Users, Music2, Newspaper, MessageCircle, Loader2 } from "lucide-react";
 import { endpoints } from "@/lib/api";
 import radioEngine from "@/lib/radioEngine";
 import { toast } from "sonner";
@@ -61,6 +61,7 @@ export default function PublicRadio() {
   const [segments, setSegments] = useState([]);
   const [current, setCurrent] = useState(null);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [isPreparing, setIsPreparing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [hdMode, setHdMode] = useState(false);
   const [renderingHd, setRenderingHd] = useState(false);
@@ -116,6 +117,7 @@ export default function PublicRadio() {
     playingRef.current = true;
     stopFlag.current = false;
     setIsPlaying(true);
+    setIsPreparing(true);
 
     const fetchSegment = async () => {
       let seg = await endpoints.generateSegment(hdMode ? { hd: true } : {});
@@ -144,6 +146,8 @@ export default function PublicRadio() {
       while (!stopFlag.current) {
         setCurrent(seg);
         setSegments(prev => mergeSegments(prev, seg));
+        // First segment is about to play → dismiss the loading spinner in EVERY branch.
+        setIsPreparing(false);
         await radioEngine.playSegment(seg);
         if (stopFlag.current) break;
         // Await the already-in-flight next segment
@@ -163,6 +167,7 @@ export default function PublicRadio() {
       radioEngine.stopAll();
       playingRef.current = false;
       setIsPlaying(false);
+      setIsPreparing(false);
       setCurrent(null);
       setRenderingHd(false);
     }
@@ -173,6 +178,7 @@ export default function PublicRadio() {
       stopFlag.current = true;
       radioEngine.stopAll();
       setIsPlaying(false);
+      setIsPreparing(false);
       return;
     }
     if (!station.is_live) {
@@ -273,8 +279,11 @@ export default function PublicRadio() {
                 )}
               </div>
               <div className="overflow-hidden">
-                <div className="font-display text-2xl sm:text-3xl font-bold min-h-[3rem]" data-testid="now-playing-title">
-                  {current ? current.title : (isPlaying ? "Preparazione…" : "Radio in stand-by")}
+                <div className="font-display text-2xl sm:text-3xl font-bold min-h-[3rem] flex items-center gap-3" data-testid="now-playing-title">
+                  {isPreparing && !current && (
+                    <Loader2 className="w-6 h-6 text-cyan-400 animate-spin shrink-0" data-testid="loading-spinner" />
+                  )}
+                  <span>{current ? current.title : (isPreparing ? "Preparazione…" : (isPlaying ? "Un attimo…" : "Radio in stand-by"))}</span>
                 </div>
               </div>
               {current?.script && (

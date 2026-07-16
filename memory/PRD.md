@@ -14,7 +14,10 @@ Vorrei costruire un software di gestione radiofonica completamente automatizzato
 - Auth: Emergent Google OAuth (free) for admin.
 
 ## What's implemented (2026-08 · v10 · Stability fixes)
-- **v10 · Timeline stability + ducking tuning** (2026-02, this session):
+- **v10.1 · Loading spinner + random track rotation** (2026-02, this session):
+  - `PublicRadio.js`: nuovo state `isPreparing`. Impostato a `true` all'avvio del loop, `false` non appena il primo segmento inizia a suonare, sempre resettato nel `finally` (successo/errore/eccezione) e su Stop. UI mostra `<Loader2 data-testid="loading-spinner">` cyan animato accanto al titolo durante la preparazione.
+  - `server.py` `generate_segment(kind="music")`: sostituito `find_one` che pescava sempre l'ultima traccia con selezione **casuale** su fino a 20 candidate; cooldown di 2 ore via campo `last_played_at` (fallback all'intero pool se tutte suonate di recente). La traccia scelta viene marcata `last_played_at=now` in Mongo → niente più ripetizioni back-to-back.
+- **v10 · Timeline stability + ducking tuning** (2026-02, precedente):
   - `PublicRadio.js`: introdotto helper `mergeSegments(prev, incoming)` che deduplica per `id` (con fallback sintetico) e limita la timeline a 30 elementi → elimina l'errore React `Failed to execute 'insertBefore' on 'Node'` causato da chiavi duplicate.
   - `refresh()` ora usa `mergeSegments` invece di sovrascrivere lo state, e il loop di playback usa lo stesso helper: nessun conflitto tra polling e push locale.
   - Cleanup completo dell'`useEffect`: `mountedRef`, `clearInterval`, `stopFlag=true`, `radioEngine.stopAll()` allo smontaggio.

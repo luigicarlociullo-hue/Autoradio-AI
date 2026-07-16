@@ -655,13 +655,35 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
         # new one and use metadata (music will play via Stable Audio fallback).
         track = None
         if suno_service.is_enabled():
-            ready = await db.tracks.find_one(
-                {"source": "suno", "status": "ready", "audio_url": {"$ne": None}},
-                {"_id": 0},
-                sort=[("created_at", -1)],
-            )
-            if ready:
-                track = Track(**ready)
+            # Random selection with recency cooldown: avoid replaying the same
+            # track back-to-back. Skip tracks played in the last 2 hours; if
+            # every ready track was played recently, fall back to the full pool.
+            two_hours_ago = datetime.now(timezone.utc) - timedelta(hours=2)
+            two_hours_ago_iso = two_hours_ago.isoformat()
+            base_filter = {
+                "source": "suno",
+                "status": "ready",
+                "audio_url": {"$ne": None},
+            }
+            fresh_filter = {
+                **base_filter,
+                "$or": [
+                    {"last_played_at": {"$exists": False}},
+                    {"last_played_at": None},
+                    {"last_played_at": {"$lt": two_hours_ago_iso}},
+                ],
+            }
+            candidates = await db.tracks.find(fresh_filter, {"_id": 0}).to_list(length=20)
+            if not candidates:
+                candidates = await db.tracks.find(base_filter, {"_id": 0}).to_list(length=20)
+            if candidates:
+                chosen = random.choice(candidates)
+                track = Track(**chosen)
+                # Mark as just played so it isn't picked again immediately
+                await db.tracks.update_one(
+                    {"id": track.id},
+                    {"$set": {"last_played_at": datetime.now(timezone.utc).isoformat()}},
+                )
         if track is None:
             track = await generate_track()
 
