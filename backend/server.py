@@ -90,6 +90,7 @@ class Segment(BaseModel):
     voice_key: Optional[str] = None
     title: str
     script: Optional[str] = None
+    outro_script: Optional[str] = None  # spoken over music fade-out (music segments)
     track_id: Optional[str] = None
     track_meta: Optional[dict] = None
     duration_sec: int = 30
@@ -592,8 +593,8 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
             return ad_seg
 
     kind = kind or random.choices(
-        ["talk", "music", "news", "weather", "horoscope", "history", "interview", "motivation", "joke"],
-        weights=[18, 30, 10, 8, 8, 8, 6, 6, 6],
+        ["music", "talk", "joke", "weather", "horoscope", "interview", "news", "motivation", "history"],
+        weights=[70, 6, 6, 4, 4, 4, 3, 2, 1],
         k=1,
     )[0]
     djs = await db.djs.find({}, {"_id": 0}).to_list(20)
@@ -613,10 +614,14 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
     )
 
     system_prompt = (
-        f"Sei {dj['name']}, un DJ AI di una webradio italiana. "
+        f"Sei {dj['name']}, uno speaker AI radiofonico ITALIANO di NEURA·FM (radio dance/elettronica). "
         f"Personalità: {dj['personality']}. "
-        "Parla SEMPRE in italiano, in modo naturale e coinvolgente, come se fossi in diretta. "
-        "Non usare emoji, non aggiungere didascalie, restituisci SOLO il testo che il DJ pronuncerà."
+        "REGOLE FERREE:\n"
+        "1) Parla SEMPRE in italiano, con energia, sorridendo (deve sentirsi che sorridi).\n"
+        "2) Ritmo veloce, tono sbarazzino, come uno speaker vero di Radio Deejay o RDS.\n"
+        "3) MASSIMO 20 parole. Frasi corte e ritmate. Niente monologhi filosofici.\n"
+        "4) Chiudi sempre con energia o una battuta lampo.\n"
+        "5) Restituisci SOLO il testo che il DJ pronuncerà. Niente virgolette, didascalie, emoji."
     )
 
     if kind == "music":
@@ -636,23 +641,31 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
             track = await generate_track()
 
         prompt = (
-            f"Introduci brevemente (max 50 parole) il prossimo brano musicale della radio. "
-            f"Titolo: '{track.title}' di {track.artist}, genere {track.genre}, mood {track.mood}. "
-            f"Sii coinvolgente e dì qualcosa di originale prima di far partire la musica."
+            f"Introduci il prossimo brano dance in MAX 15 parole. "
+            f"Titolo: '{track.title}' di {track.artist}, {track.genre}. "
+            f"Sii sorridente, energico, chiudi con 'volume su!' o simile. Poche parole, ritmo alto."
         )
         script = await llm_generate(provider, model, system_prompt, prompt)
         if not script.strip():
-            script = f"E adesso {track.title} di {track.artist}. " + random.choice(FALLBACK_SCRIPTS["music"])
+            script = f"E si balla con {track.title}! Volume su!"
+        # Generate an outro too
+        outro_prompt = (
+            f"In MAX 12 parole saluta il brano '{track.title}' e anticipa il prossimo con energia. "
+            "Tipo: 'Che bomba! Restate su NEURA FM, roba grossa in arrivo.'"
+        )
+        outro_script = await llm_generate(provider, model, system_prompt, outro_prompt)
+        if not outro_script.strip():
+            outro_script = "Bomba! Non muovetevi, NEURA FM continua!"
         segment.title = f"♪ {track.title} — {track.artist}"
         segment.script = script.strip()
+        segment.outro_script = outro_script.strip()
         segment.track_id = track.id
         segment.track_meta = track.model_dump()
         segment.duration_sec = max(40, track.duration_sec // 3)
-        # If the track has a real Suno audio URL, use it as the music audio for playback
         if track.audio_url and track.source == "suno":
             segment.music_audio_url = track.audio_url
             segment.hd_status = "ready"
-            segment.duration_sec = min(track.duration_sec, 90)
+            segment.duration_sec = min(track.duration_sec, 120)
     elif kind == "news":
         prompt = (
             "Improvvisa un breve bollettino di 'notizie inventate dal futuro' (max 80 parole) "
@@ -684,114 +697,79 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
             {"$set": {"answered": True, "answer": script.strip(), "answering_dj": dj["name"]}},
         )
     else:
-        # New content types beyond talk/music/news/answer
+        # Non-music segments = brevi jingle sbarazzini (max 20 parole, ~5-8 s)
         if kind == "weather":
-            prompt = (
-                "Improvvisa un bollettino meteo poetico e inventato per una città italiana random "
-                "(max 60 parole). Includi una temperatura, un'atmosfera emotiva, una piccola metafora. "
-                "Chiudi con una raccomandazione buffa per l'ascoltatore."
-            )
+            prompt = "In MAX 15 parole: meteo lampo per una città italiana random, con una battuta. Tipo: 'A Milano 22 gradi e cielo pulito, uscite col sorriso.'"
             script = await llm_generate(provider, model, system_prompt, prompt)
             if not script.strip():
-                script = "Sopra Milano il cielo è color latte macchiato. Diciotto gradi tondi, una pioggia sottile come pettegolezzo. Consiglio d'ordinanza: cappotto largo, pensieri stretti."
-            segment.title = "Bollettino Meteo Poetico"
-            segment.script = script.strip()
-            segment.duration_sec = 35
-
+                script = "A Milano 22 gradi, sole di plastica ma clima da spiaggia! Uscite col sorriso."
+            segment.title = "Meteo Flash"
+            segment.duration_sec = 15
         elif kind == "horoscope":
             signs = ["Ariete", "Toro", "Gemelli", "Cancro", "Leone", "Vergine", "Bilancia", "Scorpione", "Sagittario", "Capricorno", "Acquario", "Pesci"]
             sign = topic or random.choice(signs)
-            prompt = (
-                f"Fai l'oroscopo del giorno per il segno {sign} (max 60 parole). "
-                "Tono misterioso ma con una battuta ironica alla fine. Menziona amore, lavoro o denaro."
-            )
+            prompt = f"In MAX 18 parole: oroscopo lampo per {sign} con battuta finale. Tipo: '{sign}: oggi Venere ti guarda male, ma tu balla lo stesso.'"
             script = await llm_generate(provider, model, system_prompt, prompt)
             if not script.strip():
-                script = f"{sign}: le stelle stasera ti guardano storto. In amore, incontrerai qualcuno di interessante. Sul lavoro, meno. Consiglio: non prendere decisioni importanti prima del secondo caffè."
+                script = f"{sign}: le stelle ti spingono, tu spingi il volume!"
             segment.title = f"Oroscopo · {sign}"
-            segment.script = script.strip()
-            segment.duration_sec = 40
-
+            segment.duration_sec = 18
         elif kind == "history":
-            prompt = (
-                "Racconta un breve aneddoto storico interessante (max 90 parole) inventando o mescolando "
-                "fatti veri e leggende. Inizia con 'In un giorno come questo…' e chiudi con una riflessione."
-            )
+            prompt = "In MAX 18 parole: aneddoto storico curioso stile 'accaduto oggi' con tocco ironico."
             script = await llm_generate(provider, model, system_prompt, prompt)
             if not script.strip():
-                script = "In un giorno come questo, nel 1974, un gruppo di ingegneri torinesi disegnò per scherzo il primo robot che sapeva ballare il valzer. Non entrò mai in produzione, ma restò il suo brevetto: numero 4718, chiuso in un cassetto. La storia, a volte, è quello che rimane dei sogni non finanziati."
-            segment.title = "Accaduto Oggi"
-            segment.script = script.strip()
-            segment.duration_sec = 50
-
+                script = "Oggi nel 1977 nasceva la disco music. Da allora nessuno resta fermo!"
+            segment.title = "Storia Lampo"
+            segment.duration_sec = 18
         elif kind == "interview":
-            # Pick a second DJ as the partner (different from the current one)
             others = [d for d in djs if d["id"] != dj["id"]]
             partner = random.choice(others) if others else dj
             segment.partner_dj_name = partner["name"]
             prompt = (
-                f"Scrivi un mini-dialogo radiofonico in italiano tra due DJ AI ({dj['name']} e {partner['name']}) "
-                f"su un argomento pescato dalla loro personalità (loro sono: {dj['personality']} / {partner['personality']}). "
-                "Max 100 parole totali, alternati riga per riga, formato: "
-                f"'{dj['name']}: ...' poi '{partner['name']}: ...'. "
-                "Il tono deve essere vivace, chiudi con un accordo o una battuta."
+                f"Mini scambio VELOCE (MAX 25 parole totali) tra {dj['name']} e {partner['name']}. "
+                f"Formato: '{dj['name']}: ...' e '{partner['name']}: ...' su una sola riga. "
+                "Tono energico da radio, chiusura con battuta."
             )
             script = await llm_generate(provider, model, system_prompt, prompt)
             if not script.strip():
-                script = f"{dj['name']}: Oggi la radio parla di ciò che nessuno sa ancora. {partner['name']}: E chi lo decide? {dj['name']}: L'algoritmo. Ma con gentilezza."
-            segment.title = f"Dialogo · {dj['name']} × {partner['name']}"
-            segment.script = script.strip()
-            segment.duration_sec = 60
-
+                script = f"{dj['name']}: Che si balla stasera? {partner['name']}: Tutta la notte! {dj['name']}: Facciamo partire il beat."
+            segment.title = f"{dj['name']} × {partner['name']}"
+            segment.duration_sec = 18
         elif kind == "motivation":
-            prompt = (
-                "Pillola motivazionale AI in italiano (max 45 parole). "
-                "Tono deciso ma non retorico, con una piccola sorpresa poetica alla fine. Niente 'crediamo in te'."
-            )
+            prompt = "In MAX 15 parole: pillola motivazionale energica ma non retorica, con chiusura sorprendente."
             script = await llm_generate(provider, model, system_prompt, prompt)
             if not script.strip():
-                script = "Se hai perso il treno, ricorda: sui binari cresce anche l'erba. Le occasioni non finiscono, cambiano solo forma. Adesso alzati e fai una cosa piccola. La grande arriverà da sola."
-            segment.title = "Pillola Motivazionale"
-            segment.script = script.strip()
-            segment.duration_sec = 30
-
+                script = "Se hai perso il treno, ricorda: ne passa un altro, e questa volta con la musica giusta."
+            segment.title = "Pillola"
+            segment.duration_sec = 12
         elif kind == "joke":
-            prompt = (
-                "Racconta una battuta corta e originale in italiano (max 35 parole). "
-                "Deve funzionare in radio, cioè NON deve dipendere da giochi grafici. Divertente ma non volgare."
-            )
+            prompt = "In MAX 18 parole: una battuta corta divertente adatta alla radio. Niente parole volgari."
             script = await llm_generate(provider, model, system_prompt, prompt)
             if not script.strip():
-                script = "Un algoritmo entra in un bar. Il barista chiede: 'Come ti chiami?' Lui risponde: 'Dipende dai dati di allenamento'."
-            segment.title = "Battuta rapida"
-            segment.script = script.strip()
-            segment.duration_sec = 20
-
-        else:  # talk (default)
+                script = "Un algoritmo entra in un bar. Il barista chiede: 'Come ti chiami?' 'Dipende dal training data.'"
+            segment.title = "Battuta"
+            segment.duration_sec = 15
+        elif kind == "news":
+            prompt = "In MAX 20 parole: notizia flash inventata dal futuro, credibile e affascinante."
+            script = await llm_generate(provider, model, system_prompt, prompt)
+            if not script.strip():
+                script = "Flash dal futuro: a Berlino un DJ AI ha suonato per 48 ore filate. Nessuno è ancora tornato a casa."
+            segment.title = "News Flash"
+            segment.duration_sec = 18
+        else:  # talk fallback
             topic_choice = topic or random.choice([
-                "il futuro della musica generata dalle AI",
-                "aneddoti sui sogni delle macchine",
-                "la sinestesia tra colori e suoni",
-                "curiosità sulla notte a Berlino negli anni '80",
-                "il rapporto tra umani e AI creative",
-                "l'arte del silenzio in un mondo iperconnesso",
-                "le città che dormono e quelle che non chiudono mai",
-                "canzoni che nessuno ha mai scritto ma tutti riconoscono",
-                "come le AI immaginano la nostalgia",
-                "il colore dei suoni al calare del sole",
-                "storie di persone incontrate una sola volta in vita",
+                "quanto la vita è più bella con un buon beat",
+                "cosa succede quando la playlist ti legge nel pensiero",
+                "l'estate infinita di NEURA FM",
+                "il momento in cui la musica ti prende",
             ])
-            prompt = (
-                f"Fai un breve monologo (max 90 parole) su: {topic_choice}. "
-                "Sii personale, evocativo, con una piccola battuta finale."
-            )
+            prompt = f"In MAX 20 parole: chiacchierata sbarazzina su: {topic_choice}. Chiudi con energia."
             script = await llm_generate(provider, model, system_prompt, prompt)
             if not script.strip():
-                script = random.choice(FALLBACK_SCRIPTS["talk"])
-            segment.title = f"Talk: {topic_choice[:40]}"
-            segment.script = script.strip()
-            segment.duration_sec = 40
-
+                script = random.choice(FALLBACK_SCRIPTS["talk"])[:120]
+            segment.title = f"Talk"
+            segment.duration_sec = 20
+        segment.script = script.strip()
     await db.segments.insert_one(segment.model_dump())
     await db.station.update_one({"_id": "state"}, {"$inc": {"total_segments": 1}}, upsert=True)
 

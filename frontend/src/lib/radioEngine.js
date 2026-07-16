@@ -211,17 +211,15 @@ class RadioEngine {
 
   async playSegment(segment) {
     this.currentKind = segment.kind;
-    // HD mode: play pre-rendered speech audio + music audio if present
-    if (segment.speech_audio_url || segment.music_audio_url) {
-      if (segment.speech_audio_url) {
-        await this.playAudioUrl(segment.speech_audio_url);
-      }
-      if (segment.music_audio_url) {
-        await this.playAudioUrl(segment.music_audio_url);
-      }
-      return;
+    // Music segment with real audio + optional intro/outro speech (DJ over intro/outro of song)
+    if (segment.kind === "music" && segment.music_audio_url) {
+      return this._playMusicWithVoice(segment);
     }
-    // Fallback: browser Web Speech + procedural synth
+    // Pure speech-only segment (short jingle-style)
+    if (segment.speech_audio_url) {
+      return this.playAudioUrl(segment.speech_audio_url);
+    }
+    // Music fallback (procedural + Web Speech)
     if (segment.kind === "music") {
       const dur = Math.min(segment.duration_sec || 40, 45);
       const stop = this.startMusic({
@@ -229,14 +227,86 @@ class RadioEngine {
         durationSec: dur,
         seed: (segment.id || "").charCodeAt(0) || 0,
       });
-      if (segment.script) {
-        await this.speak(segment.script, segment.voice_key, { rate: 1.05 });
-      }
+      if (segment.script) await this.speak(segment.script, segment.voice_key, { rate: 1.08 });
       await new Promise(res => setTimeout(res, Math.max(4000, dur * 500)));
       stop();
     } else {
-      await this.speak(segment.script || segment.title || "", segment.voice_key, { rate: 1.02 });
+      // pure talk fallback via Web Speech
+      await this.speak(segment.script || segment.title || "", segment.voice_key, { rate: 1.06 });
     }
+  }
+
+  async _playMusicWithVoice(segment) {
+    const ctx = this.ensureAudioCtx();
+    if (!ctx) return this.playAudioUrl(segment.music_audio_url);
+
+    return new Promise((resolve) => {
+      let resolved = false;
+      const done = () => { if (!resolved) { resolved = true; resolve(); } };
+      try {
+        const audio = new Audio(segment.music_audio_url);
+        audio.crossOrigin = "anonymous";
+        this.currentAudio = audio;
+        // Route through analyser bus + a per-track gain so we can duck
+        let src;
+        try { src = ctx.createMediaElementSource(audio); } catch (e) { src = null; }
+        const musicGain = ctx.createGain();
+        musicGain.gain.value = 0.0;
+        if (src) src.connect(musicGain);
+        musicGain.connect(this.outputBus);
+
+        const rampTo = (target, seconds = 0.9) => {
+          const now = ctx.currentTime;
+          musicGain.gain.cancelScheduledValues(now);
+          musicGain.gain.setValueAtTime(musicGain.gain.value, now);
+          musicGain.gain.linearRampToValueAtTime(target, now + seconds);
+        };
+
+        const INTRO_DUCK = 0.28;   // music under voice
+        const FULL = 1.0;          // music at full while nobody speaks
+        const OUTRO_DUCK = 0.32;
+
+        audio.onended = () => { rampTo(0.0, 0.6); setTimeout(done, 700); };
+        audio.onerror = () => done();
+
+        audio.oncanplay = async () => {
+          audio.play().catch(() => done());
+        };
+
+        // Start intro DJ over music fade-in
+        const startPipeline = async () => {
+          try {
+            // fade in music to duck level
+            rampTo(INTRO_DUCK, 0.6);
+            if (segment.script) {
+              await this.speak(segment.script, segment.voice_key, { rate: 1.08 });
+            }
+            // Ramp up music to full
+            rampTo(FULL, 1.2);
+            // Wait until near-end
+            const waitOutro = () => new Promise((r) => {
+              const iv = setInterval(() => {
+                if (!audio || audio.paused || audio.ended) { clearInterval(iv); r(); return; }
+                const remaining = (audio.duration || 60) - (audio.currentTime || 0);
+                if (remaining <= 8 || (this.stopRequested)) { clearInterval(iv); r(); }
+              }, 250);
+            });
+            await waitOutro();
+            // Duck for outro and speak
+            rampTo(OUTRO_DUCK, 0.8);
+            if (segment.outro_script) {
+              await this.speak(segment.outro_script, segment.voice_key, { rate: 1.1 });
+            }
+            // Small buffer then let audio ended fire
+            rampTo(0.0, 0.6);
+            setTimeout(() => { try { audio.pause(); } catch(e){} done(); }, 700);
+          } catch (e) { done(); }
+        };
+        startPipeline();
+      } catch (e) {
+        done();
+      }
+    });
   }
 
   stopAll() {
