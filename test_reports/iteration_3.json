@@ -1,0 +1,26 @@
+{
+  "summary": "Verified both bug fixes: (1) React duplicate-key/insertBefore crash on segments timeline and (2) Suno ducking volume levels in radioEngine._playMusicWithVoice. Backend smoke + 90s continuous playback frontend test both PASS.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "verification_results": {
+    "BUG1_no_insertBefore_or_key_warning": "PASS — 0 console errors, 0 warnings, 0 'insertBefore' hits, 0 'unique key' hits during 90s of playback with refresh() ticking every 5s and setSegments(mergeSegments,...) running in the loop.",
+    "BUG1_dedup_by_id": "PASS — mergeSegments() in PublicRadio.js uses a Map keyed by s.id (fallback synthetic id) and slices last 30. After 90s: 12 timeline-segment DOM nodes, all data-testids unique (12 unique / 12 total).",
+    "BUG1_error_boundary_present": "PASS — RadioErrorBoundary imported (line 8) and wraps <Timeline> block (lines 376-399). data-testid='radio-error-boundary' exists in component. Boundary was NEVER triggered during 90s test (no crash occurred), which is the desired outcome.",
+    "BUG1_cleanup_useEffect": "PASS — mountedRef.current guard in refresh(); cleanup sets mountedRef=false, clearInterval, stopFlag=true, radioEngine.stopAll() (lines 100-110).",
+    "BUG2_ducking_volumes": "PASS — radioEngine.js lines 290-294: audio.volume = src ? 1.0 : 0 (line 290), INTRO_DUCK=0.55, FULL=1.0, OUTRO_DUCK=0.60 — matches spec exactly. No override of audio.volume during intro/outro when Web Audio source is present (rampTo mutates musicGain, not audio.volume, when src truthy).",
+    "PLAYBACK_no_crash": "PASS — now-playing-title, live-waveform, KindBadge (MUSIC) all render. Segment cycle progressed from 'Segnale orario' → 'Light Up The Night — NVRMIND' Suno music playing through _playMusicWithVoice pipeline. Segment count grew from 255 → 258 on backend during test. Page never went blank.",
+    "BACKEND_smoke": "PASS — GET /api/station 200, /api/segments 200, /api/djs 200. All return valid JSON."
+  },
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "mergeSegments cap of 30 is fine but note that Timeline only shows .slice(-12).reverse(), so effective visible list stays small — good.",
+    "playingRef guard prevents double-loop start; skip-button only stops current audio but doesn't advance nextPromise — user might expect immediate next segment. Minor UX polish, not a bug."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "seed_data_creation": "None",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Both bugs fully verified. PublicRadio.js mergeSegments dedup + RadioErrorBoundary wrapper are in place and effective. radioEngine ducking volumes 0.55/1.0/0.60 with audio.volume=1.0 (element) so GainNode controls the duck. No console errors during 90s continuous playback with 5s refresh polling."
+}

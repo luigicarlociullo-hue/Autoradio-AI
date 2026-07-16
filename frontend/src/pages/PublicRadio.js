@@ -5,6 +5,7 @@ import { endpoints } from "@/lib/api";
 import radioEngine from "@/lib/radioEngine";
 import { toast } from "sonner";
 import AudioVisualizer from "@/components/AudioVisualizer";
+import RadioErrorBoundary from "@/components/RadioErrorBoundary";
 
 const HERO_BG = "https://images.unsplash.com/photo-1724185773486-0b39642e607e?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxODd8MHwxfHNlYXJjaHwyfHxhYnN0cmFjdCUyMG5lb24lMjBzb3VuZCUyMHdhdmV8ZW58MHx8fHwxNzgzODAwMDI5fDA&ixlib=rb-4.1.0&q=85";
 
@@ -70,20 +71,42 @@ export default function PublicRadio() {
 
   const playingRef = useRef(false);
   const stopFlag = useRef(false);
+  const mountedRef = useRef(true);
+
+  // Merge helper: dedupe segments by id (fallback to a stable synthetic id when
+  // backend didn't send one) and cap the timeline length so React never has to
+  // reconcile huge arrays with colliding keys.
+  const mergeSegments = (prev, incoming) => {
+    const list = Array.isArray(incoming) ? [...prev, ...incoming] : [...prev, incoming];
+    const map = new Map();
+    list.forEach((s, i) => {
+      if (!s) return;
+      const key = s.id || `${s.kind || "seg"}-${s.created_at || ""}-${i}`;
+      map.set(key, { ...s, id: key });
+    });
+    return Array.from(map.values()).slice(-30);
+  };
 
   const refresh = async () => {
     try {
       const [s, seg, d] = await Promise.all([endpoints.station(), endpoints.segments(), endpoints.djs()]);
+      if (!mountedRef.current) return;
       setStation(s);
-      setSegments(seg);
-      setDjs(d);
+      setSegments(prev => mergeSegments(prev, seg || []));
+      setDjs(d || []);
     } catch (e) { /* noop */ }
   };
 
   useEffect(() => {
+    mountedRef.current = true;
     refresh();
     const iv = setInterval(() => setTick(t => t + 1), 5000);
-    return () => clearInterval(iv);
+    return () => {
+      mountedRef.current = false;
+      clearInterval(iv);
+      stopFlag.current = true;
+      try { radioEngine.stopAll(); } catch (e) {}
+    };
   }, []);
 
   useEffect(() => { refresh(); /* eslint-disable-next-line */ }, [tick]);
@@ -120,12 +143,7 @@ export default function PublicRadio() {
 
       while (!stopFlag.current) {
         setCurrent(seg);
-        setSegments(prev => {
-          // De-dup by id (loop pushes locally + 5s refresh also fetches the same seg)
-          const map = new Map();
-          [...prev, seg].forEach(s => map.set(s.id, s));
-          return Array.from(map.values()).slice(-30);
-        });
+        setSegments(prev => mergeSegments(prev, seg));
         await radioEngine.playSegment(seg);
         if (stopFlag.current) break;
         // Await the already-in-flight next segment
@@ -355,25 +373,30 @@ export default function PublicRadio() {
       <section className="max-w-7xl mx-auto px-6 py-10">
         <div className="label-mono mb-2">Timeline</div>
         <h2 className="font-display font-bold text-2xl sm:text-3xl mb-6">Cosa è appena successo in radio</h2>
-        <div className="space-y-3">
-          {segments.length === 0 && (
-            <div className="card-surface p-6 text-zinc-500 text-sm">
-              Nessun segmento ancora trasmesso. Premi <span className="text-pink-400">Ascolta ora</span> per far partire la radio.
-            </div>
-          )}
-          {segments.slice(-12).reverse().map((s) => (
-            <div key={s.id} className="card-surface p-4 flex items-start gap-4" data-testid={`timeline-segment-${s.id}`}>
-              <KindBadge kind={s.kind} />
-              <div className="min-w-0 flex-1">
-                <div className="font-display font-semibold truncate">{s.title}</div>
-                <div className="text-xs font-mono text-zinc-500 mt-1">
-                  {s.dj_name} · {s.llm_provider}
-                </div>
-                {s.script && <p className="text-sm text-zinc-400 mt-2 line-clamp-2">{s.script}</p>}
+        <RadioErrorBoundary>
+          <div className="space-y-3">
+            {segments.length === 0 && (
+              <div className="card-surface p-6 text-zinc-500 text-sm">
+                Nessun segmento ancora trasmesso. Premi <span className="text-pink-400">Ascolta ora</span> per far partire la radio.
               </div>
-            </div>
-          ))}
-        </div>
+            )}
+            {segments.slice(-12).reverse().map((s, idx) => {
+              const rowKey = s?.id ? `seg-${s.id}` : `seg-idx-${idx}`;
+              return (
+                <div key={rowKey} className="card-surface p-4 flex items-start gap-4" data-testid={`timeline-segment-${s.id || idx}`}>
+                  <KindBadge kind={s.kind} />
+                  <div className="min-w-0 flex-1">
+                    <div className="font-display font-semibold truncate">{s.title}</div>
+                    <div className="text-xs font-mono text-zinc-500 mt-1">
+                      {s.dj_name} · {s.llm_provider}
+                    </div>
+                    {s.script && <p className="text-sm text-zinc-400 mt-2 line-clamp-2">{s.script}</p>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </RadioErrorBoundary>
       </section>
 
       {/* Ask the AI */}

@@ -284,12 +284,14 @@ class RadioEngine {
             }, stepMs);
           }
         };
-        // start at 0 volume regardless of routing mode
-        if (!src) audio.volume = 0;
+        // Keep the underlying HTMLMediaElement volume at max — ducking is done via GainNode.
+        // If we don't have a Web Audio source (createMediaElementSource failed), we start
+        // muted and use audio.volume as the fallback ducking control.
+        audio.volume = src ? 1.0 : 0;
 
-        const INTRO_DUCK = 0.40;   // music under voice
+        const INTRO_DUCK = 0.55;   // music under voice during intro
         const FULL = 1.0;          // music at full while nobody speaks
-        const OUTRO_DUCK = 0.45;
+        const OUTRO_DUCK = 0.60;   // music under voice during outro
 
         audio.onended = () => { rampTo(0.0, 0.6); setTimeout(done, 700); };
         audio.onerror = () => done();
