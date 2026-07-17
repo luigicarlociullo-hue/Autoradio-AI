@@ -223,6 +223,10 @@ class RadioEngine {
     if (segment.kind === "music" && segment.music_audio_url) {
       return this._playMusicWithVoice(segment);
     }
+    // Surreal ad spot — always wrapped with open/close jingle
+    if (segment.kind === "ad_spot") {
+      return this._playAdSpot(segment);
+    }
     // Pure speech segment — ALWAYS play a subtle instrumental bed under the DJ voice
     // (no "dry" spoken-only content, like a real radio station).
     if (segment.speech_audio_url) {
@@ -378,6 +382,96 @@ class RadioEngine {
     } finally {
       stopBed();
     }
+  }
+
+  /**
+   * Play a surreal ad spot with the R-A.I. sonic identity:
+   *  [Ad-open jingle 1.4s] → [Voice + low bed] → [Ad-close jingle 1.0s]
+   * Jingles are procedural (Web Audio API), zero external files, zero Suno credits.
+   */
+  async _playAdSpot(segment) {
+    await this._adJingle("open");
+    let stopBed;
+    if (segment.background_loop) {
+      stopBed = this._startAudioBed(segment.background_loop, 0.15);
+    } else {
+      stopBed = this.startMusic({ genre: "synthwave", bedGain: 0.13, durationSec: 45 });
+    }
+    try {
+      if (segment.speech_audio_url) {
+        await this.playAudioUrl(segment.speech_audio_url);
+      } else if (segment.script) {
+        await this.speak(segment.script, segment.voice_key, { rate: 1.03 });
+      }
+    } finally {
+      stopBed();
+    }
+    await this._adJingle("close");
+  }
+
+  /**
+   * Procedural ad-break jingle: a two-note punchy fanfare with a subtle chord pad.
+   * `variant`:
+   *   "open"  → ascending fanfare (A5→D6 with sparkle noise burst) — energetic, invites attention.
+   *   "close" → descending pinger (E6→A5) with a short bass thump — conclusive.
+   */
+  async _adJingle(variant = "open") {
+    const ctx = this.ensureAudioCtx();
+    if (!ctx) return;
+    const dest = this.outputBus || ctx.destination;
+    const t0 = ctx.currentTime;
+    const master = ctx.createGain();
+    master.gain.value = 0.8;
+    master.connect(dest);
+
+    const tone = (freqStart, freqEnd, dur, type = "square", gain = 0.4, delay = 0) => {
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = type;
+      osc.frequency.setValueAtTime(freqStart, t0 + delay);
+      osc.frequency.exponentialRampToValueAtTime(Math.max(20, freqEnd), t0 + delay + dur);
+      g.gain.setValueAtTime(0.001, t0 + delay);
+      g.gain.exponentialRampToValueAtTime(gain, t0 + delay + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.001, t0 + delay + dur);
+      osc.connect(g); g.connect(master);
+      osc.start(t0 + delay);
+      osc.stop(t0 + delay + dur + 0.05);
+    };
+    const chord = (freqs, dur, gain = 0.18, delay = 0) => {
+      freqs.forEach(f => tone(f, f, dur, "sawtooth", gain, delay));
+    };
+    const sparkle = (delay = 0) => {
+      const bufSize = Math.floor(ctx.sampleRate * 0.35);
+      const buf = ctx.createBuffer(1, bufSize, ctx.sampleRate);
+      const data = buf.getChannelData(0);
+      for (let i = 0; i < bufSize; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / bufSize);
+      const src = ctx.createBufferSource(); src.buffer = buf;
+      const bp = ctx.createBiquadFilter(); bp.type = "bandpass"; bp.frequency.value = 6000;
+      const g = ctx.createGain(); g.gain.value = 0.3;
+      src.connect(bp); bp.connect(g); g.connect(master);
+      src.start(t0 + delay);
+    };
+
+    let total = 1.2;
+    if (variant === "open") {
+      // Ascending fanfare with sparkle: A4 → D5 → A5, chord pad, sparkle
+      chord([220, 277.2, 329.6], 1.2, 0.16, 0);   // A minor pad
+      tone(440, 587.3, 0.28, "square", 0.42, 0);  // A5 → D6
+      tone(587.3, 880,  0.28, "square", 0.42, 0.28);
+      tone(880, 1174,   0.4,  "triangle", 0.35, 0.56);
+      sparkle(0.02);
+      total = 1.35;
+    } else {
+      // Descending pinger with bass thump
+      chord([329.6, 415.3, 493.9], 0.9, 0.14, 0);
+      tone(1318, 987, 0.22, "triangle", 0.38, 0);
+      tone(987, 659,  0.22, "triangle", 0.35, 0.22);
+      tone(90,  40,   0.35, "sine", 0.55, 0.4);  // bass thump
+      total = 1.0;
+    }
+
+    setTimeout(() => { try { master.disconnect(); } catch (e) {} }, (total + 0.4) * 1000);
+    return new Promise(res => setTimeout(res, total * 1000));
   }
 
   /**

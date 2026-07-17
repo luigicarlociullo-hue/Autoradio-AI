@@ -14,7 +14,18 @@ Vorrei costruire un software di gestione radiofonica completamente automatizzato
 - Auth: Emergent Google OAuth (free) for admin.
 
 ## What's implemented (2026-08 · v10 · Stability fixes)
-- **v10.7 · Salto di qualità editoriale** (2026-02, this session):
+- **v10.8 · Ad Spot surreali** (2026-02, this session):
+  - Nuovo `kind="ad_spot"` nel Segment `Literal` + peso **6** nel `random.choices` pool.
+  - Anti-double: se l'ultimo segmento era `ad_spot` il prossimo viene forzato a `music`.
+  - `StationState.recent_ads: List[str]` (buffer circolare max 10) + helper `get_recent_ads/push_recent_ad`.
+  - Prompt LLM `ad_spot`: copywriter surreale, 60-80 parole, prodotto NON esistente, nome ridicolo/poetico, funzione impossibile, claim assurdo, tono anni '80 preso serissimamente, no marchi reali. Include gli ultimi 10 spot come "NON riproporre".
+  - 5 spot fallback hand-written in `FALLBACK_SCRIPTS["ad_spot"]`: **SolarLuna** (crema solare per chi lavora di notte), **Silenzio Premium** (abbonamento al silenzio), **Le Pigrini** (sneakers per pigri certificati), **MemoriaLite** (corso per dimenticare cose inutili), **Codex Fresh** (profumo che odora di algoritmi). Fallback picker esclude quelli già in `recent_ads`.
+  - **Frontend `radioEngine`**:
+    - Nuovo `_playAdSpot(segment)`: `[jingle apertura 1.35s] → [voce TTS + bed strumentale a 0.15] → [jingle chiusura 1.0s]`.
+    - Nuovo `_adJingle(variant)` procedurale (Web Audio API, zero credit Suno): `open` = fanfara ascendente A4→A5 con sparkle + chord pad; `close` = pinger discendente con bass thump.
+    - `playSegment` gestisce `kind === "ad_spot"` prima dello speech-generic.
+  - Verifica live: 5 richieste ad_spot consecutive → alternanza corretta ad_spot / music (SolarLuna, poi music, poi Codex Fresh, poi music, poi music), buffer `recent_ads` correttamente popolato e usato dal fallback picker per evitare ripetizioni.
+- **v10.7 · Salto di qualità editoriale** (precedente):
   - **1. Speaker sempre originali (anti-ripetizione)**:
     - `StationState` esteso con `recent_intros: List[str]` (buffer circolare, max 20).
     - Nuovi helper `get_recent_intros(n)` e `push_recent_intro(line)` (usa `$push` con `$slice: -20`).

@@ -130,7 +130,7 @@ class Track(BaseModel):
 
 class Segment(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    kind: Literal["intro", "music", "talk", "news", "answer", "outro", "weather", "horoscope", "history", "interview", "motivation", "joke", "jingle", "time_signal"]
+    kind: Literal["intro", "music", "talk", "news", "answer", "outro", "weather", "horoscope", "history", "interview", "motivation", "joke", "jingle", "time_signal", "ad_spot"]
     dj_id: Optional[str] = None
     dj_name: Optional[str] = None
     voice_key: Optional[str] = None
@@ -173,6 +173,7 @@ class StationState(BaseModel):
     listeners: int = 0
     total_segments: int = 0
     recent_intros: List[str] = Field(default_factory=list)  # circular buffer, max 20
+    recent_ads: List[str] = Field(default_factory=list)     # circular buffer, max 10 (surreal fake ads)
 
 
 # ----------------------- LLM Helper -----------------------
@@ -193,6 +194,43 @@ FALLBACK_SCRIPTS = {
     ],
     "answer": [
         "Grazie per la tua domanda, è arrivata dritta nel mio flusso di coscienza. Ecco la mia risposta, prendetela con lievità.",
+    ],
+    "ad_spot": [
+        (
+            "SolarLuna! La prima crema solare per chi lavora di notte. "
+            "Formula al fosforo lunare arricchito, testata su vampiri professionisti e amanti del turno "
+            "delle tre del mattino. Applicala prima di uscire e brillerai come un lampione ecologico. "
+            "SolarLuna: perché il sole è ovunque, anche quando non c'è. "
+            "Sconto del 40% se lo compri mentre sbadigli."
+        ),
+        (
+            "Presentiamo Silenzio Premium, l'abbonamento mensile al silenzio assoluto. "
+            "Diciannove euro e novantanove centesimi al mese per accedere al nostro cloud di silenzi "
+            "curati: silenzio di biblioteca, silenzio di monaci tibetani, silenzio del vicino andato in "
+            "vacanza. Streaming a bit rate zero, garantito. "
+            "Silenzio Premium: il rumore non ti serve, ce lo prendiamo noi."
+        ),
+        (
+            "Nuovo! Le Pigrini, le sneakers ufficiali per pigri certificati. "
+            "Solette in memory foam che ricordano il divano da cui sei venuto, chiusura magnetica "
+            "perché piegarsi è un affronto personale, e un chip integrato che chiama il rider "
+            "quando ti fermi più di dieci minuti. "
+            "Le Pigrini: cammina meno, arrivi comunque. Modello 'Domenica Eterna' in offerta lancio."
+        ),
+        (
+            "Iscriviti ora a MemoriaLite, il primo corso online per DIMENTICARE le cose inutili. "
+            "Sessantasei lezioni video per liberarti dal Wi-Fi dell'ex, dalla password di Yahoo del "
+            "duemilasei, e dai testi delle sigle dei cartoni animati che ti perseguitano da trent'anni. "
+            "Certificato finale rilasciato dall'Ordine dei Neuroni Stanchi. "
+            "MemoriaLite: alleggerisci il cervello, non la carta di credito."
+        ),
+        (
+            "Nuova fragranza: Codex Fresh, il primo profumo che odora di algoritmi appena compilati. "
+            "Note di testa: sintassi corretta e caffè lungo. Note di cuore: bug risolto alle tre di "
+            "notte. Fondo: server room a diciotto gradi. "
+            "Perfetto per developer, product manager e chiunque voglia flirtare con l'ingegnera "
+            "del team back-end. Codex Fresh: profuma di codice pulito. Bottiglietta ergonomica anti-crampi da tastiera."
+        ),
     ],
 }
 
@@ -244,6 +282,24 @@ async def push_recent_intro(line: str, max_size: int = 20) -> None:
     await db.station.update_one(
         {},
         {"$push": {"recent_intros": {"$each": [line], "$slice": -max_size}}},
+        upsert=True,
+    )
+
+
+async def get_recent_ads(n: int = 10) -> List[str]:
+    doc = await db.station.find_one({}, {"_id": 0, "recent_ads": 1})
+    if not doc:
+        return []
+    return list(reversed((doc.get("recent_ads") or [])[-n:]))
+
+
+async def push_recent_ad(product_name: str, max_size: int = 10) -> None:
+    product_name = (product_name or "").strip()
+    if not product_name:
+        return
+    await db.station.update_one(
+        {},
+        {"$push": {"recent_ads": {"$each": [product_name], "$slice": -max_size}}},
         upsert=True,
     )
 
@@ -722,10 +778,16 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
             await db.station.update_one({"_id": "state"}, {"$set": {"last_time_signal_hour": now_hour}}, upsert=True)
 
     kind = kind or random.choices(
-        ["music", "jingle", "talk", "history", "interview", "motivation", "joke", "weather", "horoscope", "news"],
-        weights=[62, 10, 8, 5, 6, 4, 5, 4, 4, 3],
+        ["music", "jingle", "talk", "history", "interview", "motivation", "joke", "weather", "horoscope", "news", "ad_spot"],
+        weights=[62, 10, 8, 5, 6, 4, 5, 4, 4, 3, 6],
         k=1,
     )[0]
+
+    # Anti double-ad-spot: if the previous segment was ad_spot, force this one to music
+    if kind == "ad_spot":
+        last = await db.segments.find_one({}, {"_id": 0, "kind": 1}, sort=[("created_at", -1)])
+        if last and last.get("kind") == "ad_spot":
+            kind = "music"
     djs = await db.djs.find({}, {"_id": 0}).to_list(20)
     if not djs:
         raise HTTPException(400, "No DJs configured")
@@ -844,6 +906,44 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
         segment.title = "News 2087"
         segment.script = script.strip()
         segment.duration_sec = 45
+    elif kind == "ad_spot":
+        # Spot pubblicitario surreale con jingle apertura/chiusura sul frontend.
+        recent = await get_recent_ads(10)
+        recent_block = ""
+        if recent:
+            joined = ", ".join(f"\"{r}\"" for r in recent)
+            recent_block = (
+                f"\n\nUltimi prodotti già inventati (NON riproporli né varianti simili): {joined}."
+            )
+        prompt = (
+            "Sei il copywriter più creativo e surreale della galassia. Scrivi uno SPOT RADIOFONICO "
+            "di 60-80 parole in ITALIANO per un prodotto ASSURDO e COMPLETAMENTE INVENTATO.\n"
+            "REGOLE OBBLIGATORIE:\n"
+            "- Il prodotto NON deve esistere nella realtà.\n"
+            "- Deve avere un nome ridicolo o poetico (es. 'Crema Antigravità Zerbino Plus', "
+            "'Abbonamento al Silenzio Premium', 'Scarpe per Sedentari Consapevoli').\n"
+            "- Funzione impossibile o iperbolica, target di pubblico strambo.\n"
+            "- Chiudi con un CLAIM finale assurdo ma memorabile.\n"
+            "- Tono: pubblicità italiana anni '80 presa serissimamente.\n"
+            "- MAI marchi o prodotti reali.\n"
+            "- Inizia con il nome del prodotto detto con voce sicura.\n"
+            "Rispondi SOLO col testo dello spot, niente commenti."
+            f"{recent_block}"
+        )
+        script = await llm_generate(provider, model, system_prompt, prompt)
+        if not script.strip():
+            # Fallback: pesca uno spot dalla pool evitando quelli già usati di recente
+            recent_lower = {r.lower() for r in recent}
+            fresh_pool = [s for s in FALLBACK_SCRIPTS["ad_spot"]
+                          if not any(r in s.lower() for r in recent_lower if r)]
+            script = random.choice(fresh_pool or FALLBACK_SCRIPTS["ad_spot"])
+        # Estrai il nome-prodotto (prime 3-6 parole significative) per la timeline / dedup
+        first_line = script.strip().split(".")[0].split(",")[0].strip()
+        product_name = first_line[:60] if first_line else "Spot Surreale"
+        segment.title = f"📢 {product_name}"
+        segment.script = script.strip()
+        segment.duration_sec = 25
+        await push_recent_ad(product_name)
     elif kind == "answer" and question_id:
         q = await db.questions.find_one({"id": question_id}, {"_id": 0})
         if not q:
