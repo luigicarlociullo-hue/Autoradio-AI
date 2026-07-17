@@ -123,6 +123,7 @@ class Track(BaseModel):
     downloaded_at: Optional[str] = None
     image_url: Optional[str] = None       # optional cover art URL (Suno)
     source: Literal["suno", "stable_audio", "procedural"] = "procedural"
+    is_anthem: bool = False               # official R-A.I. anthem — played periodically as jingle
     suno_task_id: Optional[str] = None
     status: Literal["ready", "pending", "failed"] = "ready"
     created_at: str = Field(default_factory=now_iso)
@@ -875,13 +876,47 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
         # fresh one (which is pending for ~2 min). If none is ready, generate a
         # new one and use metadata (music will play via Stable Audio fallback).
         track = None
-        if suno_service.is_enabled():
+
+        # ---- R-A.I. Anthem rotation ----
+        # Ogni ~6 music-slot suona l'inno ufficiale come "jingle-inno".
+        force_anthem = False
+        last_anthem = await db.segments.find_one(
+            {"kind": "music", "track_meta.is_anthem": True},
+            {"_id": 0, "created_at": 1},
+            sort=[("created_at", -1)],
+        )
+        if last_anthem:
+            music_since = await db.segments.count_documents({
+                "kind": "music",
+                "created_at": {"$gt": last_anthem["created_at"]},
+            })
+            if music_since >= 6:
+                force_anthem = True
+        else:
+            # Nessun anthem ancora suonato ma esiste in libreria → play subito
+            has_anthem = await db.tracks.count_documents({"is_anthem": True, "status": "ready"})
+            if has_anthem > 0:
+                force_anthem = True
+
+        if force_anthem:
+            anthem = await db.tracks.find_one(
+                {"is_anthem": True, "status": "ready", "audio_url": {"$ne": None}},
+                {"_id": 0},
+            )
+            if anthem:
+                track = Track(**anthem)
+                await db.tracks.update_one(
+                    {"id": track.id},
+                    {"$set": {"last_played_at": datetime.now(timezone.utc).isoformat()}},
+                )
+
+        if track is None and suno_service.is_enabled():
             # Perfect round-robin: sort by last_played_at ASC → tracks never
             # played (missing field / null) come first, then the oldest-played.
-            # Guarantees every track cycles once before any repeats, regardless
-            # of library size.
+            # Anthem escluso — viene pescato solo via force_anthem sopra.
             candidates = await db.tracks.find(
-                {"source": "suno", "status": "ready", "audio_url": {"$ne": None}},
+                {"source": "suno", "status": "ready", "audio_url": {"$ne": None},
+                 "$or": [{"is_anthem": {"$exists": False}}, {"is_anthem": False}]},
                 {"_id": 0},
                 sort=[("last_played_at", 1), ("created_at", 1)],
             ).to_list(length=50)
