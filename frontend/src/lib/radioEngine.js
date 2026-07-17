@@ -22,12 +22,23 @@ class RadioEngine {
     if (this.audioCtx?.state === "suspended") this.audioCtx.resume();
     // Ensure a shared analyser + output bus
     if (this.audioCtx && !this.outputBus) {
+      // Output chain: source → outputBus (master gain 2.4) → compressor → analyser → destination
+      // Web Audio permette gain > 1.0 (a differenza di HTMLAudio.volume che è capped a 1.0),
+      // così il volume finale è realmente più alto anche a max volume dispositivo.
       this.outputBus = this.audioCtx.createGain();
-      this.outputBus.gain.value = 1.0;
+      this.outputBus.gain.value = 2.4;
+      // Compressor per evitare clipping quando il gain sale
+      this.compressor = this.audioCtx.createDynamicsCompressor();
+      this.compressor.threshold.value = -14;
+      this.compressor.knee.value = 8;
+      this.compressor.ratio.value = 4;
+      this.compressor.attack.value = 0.003;
+      this.compressor.release.value = 0.15;
       this.analyser = this.audioCtx.createAnalyser();
       this.analyser.fftSize = 512;
       this.analyser.smoothingTimeConstant = 0.82;
-      this.outputBus.connect(this.analyser);
+      this.outputBus.connect(this.compressor);
+      this.compressor.connect(this.analyser);
       this.analyser.connect(this.audioCtx.destination);
     }
     return this.audioCtx;
@@ -218,17 +229,28 @@ class RadioEngine {
   }
 
   async playSegment(segment) {
+    // Cleanup difensivo di ogni residuo del segmento precedente — nessuna sovrapposizione
+    try { this.stopAudio(); } catch (e) {}
+    try { this.stopSpeech(); } catch (e) {}
+    if (Array.isArray(this._activeBedStoppers)) {
+      for (const fn of this._activeBedStoppers) { try { fn(); } catch (e) {} }
+    }
+    this._activeBedStoppers = [];
+
     this.currentKind = segment.kind;
     // Music segment with real audio + optional pre-rendered intro/outro speech
     if (segment.kind === "music" && segment.music_audio_url) {
       return this._playMusicWithVoice(segment);
     }
-    // Surreal ad spot — always wrapped with open/close jingle
+    // News segment: sting inglese "News from the future" + bed continuo procedurale
+    if (segment.kind === "news") {
+      return this._playNewsSegment(segment);
+    }
+    // Ad spot: jingle assurdo + loop procedurale AD-only (mai canzoni)
     if (segment.kind === "ad_spot") {
       return this._playAdSpot(segment);
     }
-    // Pure speech segment — ALWAYS play a subtle instrumental bed under the DJ voice
-    // (no "dry" spoken-only content, like a real radio station).
+    // Rubriche parlate (joke, weather, history, interview, motivation, horoscope, talk, jingle, ...)
     if (segment.speech_audio_url) {
       return this._playSpeechWithBed(segment);
     }
@@ -244,11 +266,187 @@ class RadioEngine {
       await new Promise(res => setTimeout(res, Math.max(4000, dur * 500)));
       stop();
     } else {
-      // Even for Web Speech fallback, drop a low bed under the voice.
       const stopBed = this.startMusic(this._bedConfigFor(segment.kind));
+      this._activeBedStoppers.push(stopBed);
       await this.speak(segment.script || segment.title || "", segment.voice_key, { rate: 1.06 });
       stopBed();
     }
+  }
+
+  /**
+   * NEWS: sting inglese vocale "News from the future" (Web Speech en-US) + campana
+   * discendente, poi bed strumentale procedurale continuo (news-desk style) sotto
+   * tutta la lettura. Cleanup garantito.
+   */
+  async _playNewsSegment(segment) {
+    const ctx = this.ensureAudioCtx();
+    if (!ctx) return;
+    // 1) Sting: campana + voce "News from the future"
+    await this._newsSting();
+    // 2) Bed procedurale in loop continuo (arpeggio minimale + hi-hat + pad)
+    const stopBed = this._startProceduralAdBed("news");
+    this._activeBedStoppers.push(stopBed);
+    try {
+      if (segment.speech_audio_url) {
+        await this.playAudioUrl(segment.speech_audio_url);
+      } else if (segment.script) {
+        await this.speak(segment.script, segment.voice_key, { rate: 1.02 });
+      }
+    } finally {
+      stopBed();
+    }
+  }
+
+  async _newsSting() {
+    const ctx = this.ensureAudioCtx();
+    if (!ctx) return;
+    const dest = this.outputBus || ctx.destination;
+    const t0 = ctx.currentTime;
+    const bus = ctx.createGain();
+    bus.gain.value = 0.85;
+    bus.connect(dest);
+    const bell = (freq, dur, delay, gain = 0.4) => {
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = "triangle";
+      osc.frequency.setValueAtTime(freq, t0 + delay);
+      g.gain.setValueAtTime(0.001, t0 + delay);
+      g.gain.exponentialRampToValueAtTime(gain, t0 + delay + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.001, t0 + delay + dur);
+      osc.connect(g); g.connect(bus);
+      osc.start(t0 + delay);
+      osc.stop(t0 + delay + dur + 0.1);
+    };
+    // 3-note bell: E5 → B4 → E5
+    bell(659, 0.4, 0, 0.45);
+    bell(494, 0.55, 0.25, 0.4);
+    bell(659, 0.75, 0.5, 0.35);
+    // Voce in inglese "News from the future" (Web Speech, en-US)
+    setTimeout(() => {
+      try {
+        if (window.speechSynthesis) {
+          const u = new SpeechSynthesisUtterance("News from the future");
+          u.lang = "en-US";
+          u.rate = 0.95;
+          u.pitch = 0.9;
+          u.volume = 1.0;
+          const voices = window.speechSynthesis.getVoices();
+          const en = voices.find(v => v.lang && v.lang.toLowerCase().startsWith("en"));
+          if (en) u.voice = en;
+          window.speechSynthesis.speak(u);
+        }
+      } catch (e) {}
+    }, 700);
+    // Wait: 1.3s bells + 1.5s voice
+    await new Promise(res => setTimeout(res, 2800));
+    try { bus.disconnect(); } catch (e) {}
+  }
+
+  /**
+   * Loop procedurale AD-BED dedicato — mai canzoni Suno, sempre generato dal browser.
+   * Cambia pattern per ogni chiamata (rotazione 4 varianti). Ritorna una funzione stop().
+   */
+  _startProceduralAdBed(variantKey = "default") {
+    const ctx = this.ensureAudioCtx();
+    if (!ctx) return () => {};
+    const dest = this.outputBus || ctx.destination;
+    const master = ctx.createGain();
+    master.gain.value = 0.0;
+    master.connect(dest);
+    // Fade-in
+    master.gain.linearRampToValueAtTime(0.28, ctx.currentTime + 0.6);
+
+    // Rotazione varianti — ogni ad usa la successiva
+    this._adBedIdx = ((this._adBedIdx || 0) + 1) % 4;
+    const variant = variantKey === "news" ? "news" : ["retro", "cosmic", "playful", "noir"][this._adBedIdx];
+
+    // Pattern params
+    const patterns = {
+      retro:   { bpm: 108, scale: [0, 4, 7, 12], baseHz: 130, kickEvery: 4, hatEvery: 2, padOn: true },
+      cosmic:  { bpm: 96,  scale: [0, 3, 7, 10], baseHz: 110, kickEvery: 8, hatEvery: 4, padOn: true },
+      playful: { bpm: 124, scale: [0, 4, 7, 9],  baseHz: 165, kickEvery: 4, hatEvery: 1, padOn: false },
+      noir:    { bpm: 88,  scale: [0, 3, 5, 8],  baseHz: 98,  kickEvery: 4, hatEvery: 2, padOn: true },
+      news:    { bpm: 110, scale: [0, 5, 7, 12], baseHz: 146, kickEvery: 4, hatEvery: 2, padOn: true },
+    };
+    const p = patterns[variant] || patterns.retro;
+    const stepDur = 60 / p.bpm / 2; // 8th note
+
+    let step = 0;
+    let stopped = false;
+    const nodes = [];
+
+    const scheduleStep = () => {
+      if (stopped) return;
+      const now = ctx.currentTime;
+      const beat = step % p.scale.length;
+      const semi = p.scale[beat];
+      const freq = p.baseHz * Math.pow(2, semi / 12);
+      // Arpeggio
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = "triangle";
+      osc.frequency.value = freq;
+      g.gain.setValueAtTime(0.001, now);
+      g.gain.exponentialRampToValueAtTime(0.14, now + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.001, now + stepDur * 0.9);
+      osc.connect(g); g.connect(master);
+      osc.start(now); osc.stop(now + stepDur * 0.95);
+      nodes.push(osc, g);
+      // Kick
+      if (step % p.kickEvery === 0) {
+        const k = ctx.createOscillator(); const kg = ctx.createGain();
+        k.type = "sine"; k.frequency.setValueAtTime(120, now);
+        k.frequency.exponentialRampToValueAtTime(45, now + 0.15);
+        kg.gain.setValueAtTime(0.001, now);
+        kg.gain.exponentialRampToValueAtTime(0.35, now + 0.01);
+        kg.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
+        k.connect(kg); kg.connect(master);
+        k.start(now); k.stop(now + 0.22);
+        nodes.push(k, kg);
+      }
+      // Hi-hat (noise burst)
+      if (step % p.hatEvery === 0) {
+        const bufSize = Math.floor(ctx.sampleRate * 0.05);
+        const buf = ctx.createBuffer(1, bufSize, ctx.sampleRate);
+        const data = buf.getChannelData(0);
+        for (let i = 0; i < bufSize; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / bufSize);
+        const src = ctx.createBufferSource(); src.buffer = buf;
+        const hp = ctx.createBiquadFilter(); hp.type = "highpass"; hp.frequency.value = 7000;
+        const hg = ctx.createGain(); hg.gain.value = 0.12;
+        src.connect(hp); hp.connect(hg); hg.connect(master);
+        src.start(now);
+        nodes.push(src, hp, hg);
+      }
+      step++;
+      this._adBedTimer = setTimeout(scheduleStep, stepDur * 1000);
+    };
+    // Pad opzionale (sub-drone)
+    if (p.padOn) {
+      const pad = ctx.createOscillator(); const pg = ctx.createGain();
+      pad.type = "sawtooth"; pad.frequency.value = p.baseHz / 2;
+      const lp = ctx.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 400;
+      pg.gain.value = 0.06;
+      pad.connect(lp); lp.connect(pg); pg.connect(master);
+      pad.start();
+      nodes.push(pad, lp, pg);
+    }
+    scheduleStep();
+
+    return () => {
+      if (stopped) return;
+      stopped = true;
+      clearTimeout(this._adBedTimer);
+      const now = ctx.currentTime;
+      try {
+        master.gain.cancelScheduledValues(now);
+        master.gain.setValueAtTime(master.gain.value, now);
+        master.gain.linearRampToValueAtTime(0.0, now + 0.35);
+      } catch (e) {}
+      setTimeout(() => {
+        for (const n of nodes) { try { n.stop && n.stop(); } catch (e) {}; try { n.disconnect && n.disconnect(); } catch (e) {} }
+        try { master.disconnect(); } catch (e) {}
+      }, 400);
+    };
   }
 
   /**
@@ -369,14 +567,10 @@ class RadioEngine {
   }
 
   async _playSpeechWithBed(segment) {
-    // Prefer a real instrumental bed (looped Suno track at low volume) over the
-    // procedural synth. Falls back to the synth bed if no track is provided.
-    let stopBed;
-    if (segment.background_loop) {
-      stopBed = this._startAudioBed(segment.background_loop, 0.25);
-    } else {
-      stopBed = this.startMusic(this._bedConfigFor(segment.kind));
-    }
+    // Rubriche parlate → sempre bed procedurale dedicato per kind (mai canzoni Suno).
+    // Ogni chiamata sceglie una variante distinta → identità sonora riconoscibile.
+    const stopBed = this._startProceduralAdBed(segment.kind);
+    this._activeBedStoppers.push(stopBed);
     try {
       await this.playAudioUrl(segment.speech_audio_url);
     } finally {
@@ -385,18 +579,13 @@ class RadioEngine {
   }
 
   /**
-   * Play a surreal ad spot with the R-A.I. sonic identity:
-   *  [Ad-open jingle 1.4s] → [Voice + low bed] → [Ad-close jingle 1.0s]
-   * Jingles are procedural (Web Audio API), zero external files, zero Suno credits.
+   * Ad spot surreale: [jingle apertura assurdo 1.35s] → [voce + procedural bed AD] → [jingle chiusura 1s].
+   * Il bed AD è PROCEDURALE (non canzoni Suno) e ruota su 4 varianti distinte.
    */
   async _playAdSpot(segment) {
     await this._adJingle("open");
-    let stopBed;
-    if (segment.background_loop) {
-      stopBed = this._startAudioBed(segment.background_loop, 0.15);
-    } else {
-      stopBed = this.startMusic({ genre: "synthwave", bedGain: 0.13, durationSec: 45 });
-    }
+    const stopBed = this._startProceduralAdBed("ad");
+    this._activeBedStoppers.push(stopBed);
     try {
       if (segment.speech_audio_url) {
         await this.playAudioUrl(segment.speech_audio_url);
@@ -454,20 +643,23 @@ class RadioEngine {
 
     let total = 1.2;
     if (variant === "open") {
-      // Ascending fanfare with sparkle: A4 → D5 → A5, chord pad, sparkle
-      chord([220, 277.2, 329.6], 1.2, 0.16, 0);   // A minor pad
-      tone(440, 587.3, 0.28, "square", 0.42, 0);  // A5 → D6
-      tone(587.3, 880,  0.28, "square", 0.42, 0.28);
-      tone(880, 1174,   0.4,  "triangle", 0.35, 0.56);
+      // Assurdo/cartoon: doppio slide-whistle su + kazoo-like triangolo + chord marching
+      chord([220, 277.2, 329.6, 415.3], 1.3, 0.14, 0);   // A minor 7 chord pad
+      tone(180, 900, 0.35, "sawtooth", 0.4, 0);          // slide whistle 1
+      tone(900, 220, 0.30, "sawtooth", 0.35, 0.35);      // slide down
+      tone(660, 1100, 0.30, "square", 0.4, 0.68);        // cartoon boing
+      tone(1100, 660, 0.30, "square", 0.4, 0.98);
       sparkle(0.02);
-      total = 1.35;
+      sparkle(0.6);
+      total = 1.6;
     } else {
-      // Descending pinger with bass thump
+      // Chiusura punchy: due colpi + bass thump + risatina synth
       chord([329.6, 415.3, 493.9], 0.9, 0.14, 0);
       tone(1318, 987, 0.22, "triangle", 0.38, 0);
       tone(987, 659,  0.22, "triangle", 0.35, 0.22);
-      tone(90,  40,   0.35, "sine", 0.55, 0.4);  // bass thump
-      total = 1.0;
+      tone(659, 330,  0.35, "sawtooth", 0.32, 0.44);      // silly descent
+      tone(90,  40,   0.35, "sine", 0.55, 0.5);           // bass thump
+      total = 1.1;
     }
 
     setTimeout(() => { try { master.disconnect(); } catch (e) {} }, (total + 0.4) * 1000);
@@ -644,6 +836,11 @@ class RadioEngine {
     this.stopSpeech();
     this.stopMusic();
     this.stopAudio();
+    // Nuke any lingering bed stoppers (Ad spots, speech beds, ecc.) — evita overlap
+    if (Array.isArray(this._activeBedStoppers)) {
+      for (const fn of this._activeBedStoppers) { try { fn(); } catch (e) {} }
+      this._activeBedStoppers = [];
+    }
     this.currentKind = null;
   }
 }
