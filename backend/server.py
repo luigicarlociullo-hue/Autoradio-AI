@@ -235,9 +235,39 @@ FALLBACK_SCRIPTS = {
 }
 
 
+async def _llm_direct_openai(system_prompt: str, user_prompt: str, model: str = "gpt-5.2") -> str:
+    """Direct OpenAI-compatible call to the Emergent LLM gateway.
+    Uses OPENAI_API_KEY + OPENAI_BASE_URL from env. Bypasses the Universal-Key
+    budget so it works even when LlmChat is throttled.
+    """
+    key = os.environ.get("OPENAI_API_KEY")
+    base = os.environ.get("OPENAI_BASE_URL")
+    if not key or not base:
+        return ""
+    url = f"{base.rstrip('/')}/chat/completions"
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+    }
+    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    try:
+        async with httpx.AsyncClient(timeout=60) as h:
+            r = await h.post(url, headers=headers, json=payload)
+            r.raise_for_status()
+            data = r.json()
+            return (data.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
+    except Exception as e:
+        logger.warning(f"Direct OpenAI-compatible LLM call failed: {e}")
+        return ""
+
+
 async def llm_generate(provider: str, model: str, system_prompt: str, user_prompt: str) -> str:
     if not EMERGENT_LLM_KEY:
-        return ""
+        # Direct-only path (no Universal Key configured)
+        return await _llm_direct_openai(system_prompt, user_prompt)
     session_id = f"radio-{uuid.uuid4().hex[:12]}"
     chat = LlmChat(
         api_key=EMERGENT_LLM_KEY,
@@ -247,12 +277,23 @@ async def llm_generate(provider: str, model: str, system_prompt: str, user_promp
     msg = UserMessage(text=user_prompt)
     try:
         response = await chat.send_message(msg)
-        if isinstance(response, str):
+        if isinstance(response, str) and response.strip():
             return response
-        return str(response)
+        if response:
+            return str(response)
     except Exception as e:
-        logger.warning(f"LLM fallback triggered ({provider}/{model}): {e}")
-        return ""
+        # On budget-exhausted or any other error, try the direct OpenAI-compatible
+        # gateway with OPENAI_API_KEY/OPENAI_BASE_URL (falls back to fallback text).
+        err = str(e)
+        if "budget" in err.lower() or "exceeded" in err.lower() or "rate" in err.lower():
+            logger.info(f"Universal Key budget exhausted — falling back to direct OpenAI-compatible gateway")
+        else:
+            logger.warning(f"LLM primary path failed ({provider}/{model}): {err}")
+        direct = await _llm_direct_openai(system_prompt, user_prompt)
+        if direct:
+            return direct
+    # Last resort: try direct anyway
+    return await _llm_direct_openai(system_prompt, user_prompt) or ""
 
 
 def _pick_llm():
