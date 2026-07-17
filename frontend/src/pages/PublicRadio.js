@@ -152,8 +152,12 @@ export default function PublicRadio() {
       if (hdMode) setRenderingHd(true);
       let seg = await nextPromise;
       if (hdMode) setRenderingHd(false);
-      // Kick off next fetch in background
-      nextPromise = fetchSegment();
+      // Pre-buffering del PRIMO segmento appena arrivato + kick off next fetch in background
+      try { radioEngine.preloadSegment(seg); } catch (e) {}
+      nextPromise = fetchSegment().then(nextSeg => {
+        try { radioEngine.preloadSegment(nextSeg); } catch (e) {}
+        return nextSeg;
+      });
 
       while (!stopFlag.current) {
         setCurrent(seg);
@@ -190,12 +194,18 @@ export default function PublicRadio() {
           toast.error("HD non disponibile, torno alla modalità veloce");
           seg = await endpoints.generateSegment({});
         }
+        // Pre-buffering: warma la rete sul segmento successivo prima di suonarlo
+        // → elimina i "buchi" audio (specialmente su mobile) tra un pezzo e l'altro.
+        try { radioEngine.preloadSegment(seg); } catch (e) {}
         // Play a procedural stinger only when the segment KIND changes.
         if (!stopFlag.current && seg && seg.kind && seg.kind !== prevKind) {
           try { await radioEngine.playStinger(prevKind, seg.kind); } catch (e) {}
         }
-        // Prefetch the one after
-        nextPromise = fetchSegment();
+        // Prefetch the one after (metadata) e appena arriva → preload dei suoi audio
+        nextPromise = fetchSegment().then(nextSeg => {
+          try { radioEngine.preloadSegment(nextSeg); } catch (e) {}
+          return nextSeg;
+        });
       }
     } catch (e) {
       toast.error("Errore nel flusso radiofonico");

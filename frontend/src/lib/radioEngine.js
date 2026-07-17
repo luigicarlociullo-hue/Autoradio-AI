@@ -193,24 +193,34 @@ class RadioEngine {
       if (!url) return resolve();
       try {
         const ctx = this.ensureAudioCtx();
-        const a = new Audio(url);
-        a.crossOrigin = "anonymous";
-        a.preload = "auto";
+        // Riusa l'elemento pre-caricato se presente in cache (buffering anticipato)
+        // → nessun ritardo di rete quando il segmento diventa "corrente".
+        let a = this._takePreloaded(url);
+        if (!a) {
+          a = new Audio(url);
+          a.crossOrigin = "anonymous";
+          a.preload = "auto";
+        }
         // Explicit full element volume — the GainNode chain controls dynamics.
         a.volume = 1.0;
         this.currentAudio = a;
-        // Route: source -> voiceGain(1.0) -> outputBus(1.0) -> analyser -> destination
-        try {
-          const src = ctx.createMediaElementSource(a);
-          const voiceGain = ctx.createGain();
-          voiceGain.gain.value = 1.0;
-          src.connect(voiceGain);
-          voiceGain.connect(this.outputBus);
-          a._srcNode = src;
-          a._voiceGain = voiceGain;
-        } catch (e) {
-          // Some browsers throw if the element already has a source. Fall back
-          // to native output — element volume already at 1.0.
+        // Route: source -> voiceGain(1.0) -> outputBus -> analyser -> destination
+        if (!a._srcNode) {
+          try {
+            const src = ctx.createMediaElementSource(a);
+            const voiceGain = ctx.createGain();
+            voiceGain.gain.value = 1.0;
+            src.connect(voiceGain);
+            voiceGain.connect(this.outputBus);
+            a._srcNode = src;
+            a._voiceGain = voiceGain;
+          } catch (e) {
+            // Alcuni browser tirano un errore se createMediaElementSource è già stato
+            // chiamato su questo elemento (es. dal preload). Fallback: usa volume nativo.
+          }
+        } else if (a._voiceGain) {
+          // L'elemento è già collegato al grafo Web Audio dal preload — ripristina il gain.
+          try { a._voiceGain.gain.value = 1.0; } catch (e) {}
         }
         a.onended = () => { this.currentAudio = null; resolve(); };
         a.onerror = () => { this.currentAudio = null; resolve(); };
@@ -219,6 +229,72 @@ class RadioEngine {
         resolve();
       }
     });
+  }
+
+  /**
+   * Preload di un audio: crea l'elemento HTMLAudio (preload="auto") già collegato
+   * al grafo Web Audio così quando arriva il momento di suonarlo non c'è latenza
+   * di rete né di createMediaElementSource. Cache-limit: 4 elementi.
+   */
+  preloadUrl(url) {
+    if (!url) return null;
+    if (!this._preloadCache) this._preloadCache = new Map();
+    if (this._preloadCache.has(url)) return this._preloadCache.get(url);
+    try {
+      const ctx = this.ensureAudioCtx();
+      const a = new Audio(url);
+      a.crossOrigin = "anonymous";
+      a.preload = "auto";
+      a.volume = 1.0;
+      // Kick off the network fetch immediately
+      try { a.load(); } catch (e) {}
+      // Pre-collega al grafo Web Audio (createMediaElementSource va fatto UNA volta)
+      try {
+        const src = ctx.createMediaElementSource(a);
+        const voiceGain = ctx.createGain();
+        voiceGain.gain.value = 0.0;   // muted finché non lo consumiamo
+        src.connect(voiceGain);
+        voiceGain.connect(this.outputBus);
+        a._srcNode = src;
+        a._voiceGain = voiceGain;
+      } catch (e) { /* già connesso o non supportato */ }
+      this._preloadCache.set(url, a);
+      // Cache LRU: max 4
+      if (this._preloadCache.size > 4) {
+        const firstKey = this._preloadCache.keys().next().value;
+        const old = this._preloadCache.get(firstKey);
+        try { old.pause(); old.src = ""; } catch (e) {}
+        try { old._srcNode && old._srcNode.disconnect(); } catch (e) {}
+        try { old._voiceGain && old._voiceGain.disconnect(); } catch (e) {}
+        this._preloadCache.delete(firstKey);
+      }
+      return a;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  _takePreloaded(url) {
+    if (!url || !this._preloadCache) return null;
+    const a = this._preloadCache.get(url);
+    if (a) {
+      this._preloadCache.delete(url);
+      return a;
+    }
+    return null;
+  }
+
+  /**
+   * Preload di un intero segmento: warma la rete su music_audio_url, speech_audio_url,
+   * outro_speech_url e background_loop. Chiamare mentre il segmento PRECEDENTE è ancora
+   * in riproduzione — così quando tocca a lui, la latenza è ~0.
+   */
+  preloadSegment(seg) {
+    if (!seg) return;
+    if (seg.music_audio_url) this.preloadUrl(seg.music_audio_url);
+    if (seg.speech_audio_url) this.preloadUrl(seg.speech_audio_url);
+    if (seg.outro_speech_url) this.preloadUrl(seg.outro_speech_url);
+    // background_loop è usato in loop → non serve pre-cachare (viene creato con audio.loop=true)
   }
 
   stopAudio() {
@@ -722,20 +798,34 @@ class RadioEngine {
       let resolved = false;
       const done = () => { if (!resolved) { resolved = true; resolve(); } };
       try {
-        // IMPORTANT: crossOrigin must be set BEFORE assigning src so the browser
-        // sends the CORS preflight/tainted-origin check correctly.
-        const audio = document.createElement("audio");
-        audio.crossOrigin = "anonymous";
-        audio.preload = "auto";
-        audio.src = segment.music_audio_url;
+        // Riusa l'elemento pre-caricato (se già in cache) — nessuna latenza di rete
+        // né di setup Web Audio.
+        let audio = this._takePreloaded(segment.music_audio_url);
+        let preloadedSrc = null;
+        let preloadedGain = null;
+        if (audio) {
+          preloadedSrc = audio._srcNode || null;
+          preloadedGain = audio._voiceGain || null;
+        } else {
+          // IMPORTANT: crossOrigin must be set BEFORE assigning src so the browser
+          // sends the CORS preflight/tainted-origin check correctly.
+          audio = document.createElement("audio");
+          audio.crossOrigin = "anonymous";
+          audio.preload = "auto";
+          audio.src = segment.music_audio_url;
+        }
         this.currentAudio = audio;
         // Route through analyser bus + a per-track gain so we can duck
-        let src;
-        try { src = ctx.createMediaElementSource(audio); } catch (e) {
-          // If MediaElementSource fails (cross-origin taint), fall back to
-          // playing the audio through the default output without analyser routing.
-          console.warn("createMediaElementSource failed, playing without analyser:", e);
-          src = null;
+        let src = preloadedSrc;
+        if (!src) {
+          try { src = ctx.createMediaElementSource(audio); } catch (e) {
+            console.warn("createMediaElementSource failed, playing without analyser:", e);
+            src = null;
+          }
+        } else {
+          // Il src esiste già (dal preload) — scolleghiamo il voiceGain preloaded per
+          // ricollegarlo attraverso il musicGain con ducking.
+          try { preloadedGain && preloadedGain.disconnect(); } catch (e) {}
         }
         const musicGain = ctx.createGain();
         musicGain.gain.value = 0.0;
