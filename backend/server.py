@@ -820,11 +820,25 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
 
     kind = kind or random.choices(
         ["music", "jingle", "talk", "history", "interview", "motivation", "joke", "weather", "horoscope", "news", "ad_spot"],
-        weights=[62, 10, 8, 5, 6, 4, 5, 4, 4, 3, 6],
+        # Prima: music 62 — troppo alto, si perdevano rubriche/spot. Ora: music 42 (~36%),
+        # non-music sommato ~64% con ad_spot 8, jingle 10, joke 7, weather 6, news 6, ecc.
+        weights=[42, 10, 8, 6, 6, 5, 7, 6, 5, 6, 8],
         k=1,
     )[0]
 
-    # Anti double-ad-spot: if the previous segment was ad_spot, force this one to music
+    # ---- MANDATORY rotation quota ----
+    # Se gli ultimi 2 segmenti sono già music, forza una rubrica/spot per evitare
+    # blocchi lunghi di solo musica: la radio deve essere una "trasmissione", non una playlist.
+    if kind == "music":
+        last_two = await db.segments.find({}, {"_id": 0, "kind": 1}, sort=[("created_at", -1)]).to_list(2)
+        if len(last_two) >= 2 and all(s.get("kind") == "music" for s in last_two):
+            kind = random.choices(
+                ["ad_spot", "jingle", "joke", "history", "interview", "news", "weather", "motivation", "horoscope"],
+                weights=[18, 14, 12, 10, 10, 10, 10, 10, 6],
+                k=1,
+            )[0]
+
+    # Anti-double: se l'ultimo era ad_spot, evita un altro ad_spot (forza music)
     if kind == "ad_spot":
         last = await db.segments.find_one({}, {"_id": 0, "kind": 1}, sort=[("created_at", -1)])
         if last and last.get("kind") == "ad_spot":

@@ -137,6 +137,12 @@ export default function PublicRadio() {
       if (seg.background_loop && seg.background_loop.startsWith("/api/")) {
         seg.background_loop = endpoints.audioUrl(seg.background_loop);
       }
+      if (seg.speech_audio_url && seg.speech_audio_url.startsWith("/api/")) {
+        seg.speech_audio_url = endpoints.audioUrl(seg.speech_audio_url);
+      }
+      if (seg.outro_speech_url && seg.outro_speech_url.startsWith("/api/")) {
+        seg.outro_speech_url = endpoints.audioUrl(seg.outro_speech_url);
+      }
       return seg;
     };
 
