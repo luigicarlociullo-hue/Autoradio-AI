@@ -14,7 +14,13 @@ Vorrei costruire un software di gestione radiofonica completamente automatizzato
 - Auth: Emergent Google OAuth (free) for admin.
 
 ## What's implemented (2026-08 · v10 · Stability fixes)
-- **v10.8 · Ad Spot surreali** (2026-02, this session):
+- **v10.9 · LLM dual-path + testing 15/15** (2026-02, this session):
+  - `.env` esteso con `OPENAI_API_KEY` e `OPENAI_BASE_URL` (gateway Emergent).
+  - Nuovo `_llm_direct_openai(system, user, model)` in `server.py`: chiamata httpx diretta all'endpoint OpenAI-compatible del gateway Emergent.
+  - `llm_generate` riscritto: prova `LlmChat` primario → in caso di errore (budget exhausted / rate / any) fallback automatico a `_llm_direct_openai` → se anche quello fallisce, si restituisce stringa vuota (che a sua volta triggera i FALLBACK_SCRIPTS statici).
+  - **NOTA**: la chiave `OPENAI_API_KEY` fornita è identica alla `EMERGENT_LLM_KEY` (`sk-emergent-21aB…`) — punta allo stesso gateway. Entrambi i percorsi colpiscono lo stesso budget. Il codice però resta robusto e pronto per una key OpenAI reale in futuro.
+  - **Testing agent iterazione 4**: 15/15 PASS backend + frontend, 60 s playback continuo senza errori. Report `/app/test_reports/iteration_4.json`, test suite regressione in `/app/backend/tests/test_rai_features.py`.
+- **v10.8 · Ad Spot surreali** (precedente):
   - Nuovo `kind="ad_spot"` nel Segment `Literal` + peso **6** nel `random.choices` pool.
   - Anti-double: se l'ultimo segmento era `ad_spot` il prossimo viene forzato a `music`.
   - `StationState.recent_ads: List[str]` (buffer circolare max 10) + helper `get_recent_ads/push_recent_ad`.
