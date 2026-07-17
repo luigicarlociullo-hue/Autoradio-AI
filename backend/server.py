@@ -172,6 +172,7 @@ class StationState(BaseModel):
     started_at: Optional[str] = None
     listeners: int = 0
     total_segments: int = 0
+    recent_intros: List[str] = Field(default_factory=list)  # circular buffer, max 20
 
 
 # ----------------------- LLM Helper -----------------------
@@ -224,6 +225,42 @@ def _pick_llm():
         ("gemini", "gemini-3-flash-preview"),
     ]
     return random.choice(choices)
+
+
+# ---------------- Recent-intros circular buffer (anti-repetition) ----------------
+async def get_recent_intros(n: int = 10) -> List[str]:
+    """Return the last N intros/outros the DJs have said (any kind, most recent first)."""
+    doc = await db.station.find_one({}, {"_id": 0, "recent_intros": 1})
+    if not doc:
+        return []
+    return list(reversed((doc.get("recent_intros") or [])[-n:]))
+
+
+async def push_recent_intro(line: str, max_size: int = 20) -> None:
+    """Append a new DJ line to station.recent_intros and cap the buffer."""
+    line = (line or "").strip()
+    if not line:
+        return
+    await db.station.update_one(
+        {},
+        {"$push": {"recent_intros": {"$each": [line], "$slice": -max_size}}},
+        upsert=True,
+    )
+
+
+# ---------------- Speaker tone rotation ----------------
+DJ_TONES = [
+    "poetico, immagini sensoriali, come una haiku urbana",
+    "ironico e tagliente, un sorriso a denti stretti",
+    "cinematografico, come una voce fuori campo di un film di Sorrentino",
+    "minimalista, solo 4-5 parole, chirurgico",
+    "misterioso, come un enigma sussurrato",
+    "energico da rave, urlo controllato",
+    "documentaristico, come National Geographic della notte",
+    "sognante, come un pensiero a mezzo sonno",
+    "sarcastico verso la tecnologia stessa",
+    "affettuoso, complice con l'ascoltatore",
+]
 
 
 # ----------------------- Seed DJs -----------------------
@@ -539,13 +576,43 @@ async def generate_track(hint: Optional[str] = None, genre: Optional[str] = None
     if suno_service.is_enabled():
         style_tags = data.get("style_tags") or f"{track.genre}, {track.mood}, vocals"
         prompt_text = f"{track.genre}, {track.mood}, {track.title} — {track.artist}"
+        # ---- Full-structure lyrics ----
+        # For vocal tracks, ask the LLM to compose the ENTIRE song with proper tags
+        # ([Intro][Verse 1][Pre-Chorus][Chorus][Verse 2][Bridge][Outro]) BEFORE calling
+        # Suno, so Suno doesn't invent shallow/repetitive lyrics.
+        full_lyrics = ""
+        if not instrumental:
+            lang_label = "italiano" if (lang or "en").lower().startswith("it") else "inglese"
+            lyrics_prompt = (
+                f"Scrivi il TESTO COMPLETO in {lang_label} di una canzone dal titolo \"{track.title}\" "
+                f"di {track.artist} (genere: {track.genre}, mood: {track.mood}).\n\n"
+                "STRUTTURA OBBLIGATORIA (usa esattamente questi tag su righe dedicate):\n"
+                "[Intro] 2-4 righe atmosferiche\n"
+                "[Verse 1] 8-12 righe con storia concreta, rime lavorate, metafore originali\n"
+                "[Pre-Chorus] 4 righe di build-up emotivo\n"
+                "[Chorus] 6-8 righe con hook memorabile\n"
+                "[Verse 2] 8-12 righe DIVERSE dal Verse 1, prospettiva nuova\n"
+                "[Pre-Chorus] 4 righe (variante del primo)\n"
+                "[Chorus] 6-8 righe (piccole variazioni testuali)\n"
+                "[Bridge] 4-6 righe con svolta emotiva\n"
+                "[Outro] 4 righe che chiudono richiamando l'intro\n\n"
+                "OGNI sezione con testo DIVERSO. Rime interne ed esterne. Immagini sensoriali. "
+                "Niente cliché. Rispondi SOLO col testo con i tag, niente commenti."
+            )
+            full_lyrics = await llm_generate(
+                provider, model,
+                "Sei un paroliere professionista. Scrivi solo il testo richiesto con la struttura esatta.",
+                lyrics_prompt,
+            )
+            if full_lyrics and len(full_lyrics) > 200:
+                track.lyrics_excerpt = full_lyrics.strip()
         try:
             task_id = await suno_service.create_task(
                 prompt=prompt_text,
                 style=style_tags,
                 title=track.title,
                 instrumental=instrumental,
-                custom_lyrics=track.lyrics_excerpt if not instrumental else "",
+                custom_lyrics=(full_lyrics or track.lyrics_excerpt) if not instrumental else "",
             )
             if task_id:
                 track.suno_task_id = task_id
@@ -716,24 +783,43 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
         import re as _re
         bpm_match = _re.search(r"(\d{2,3})\s*bpm", track.genre or "", _re.IGNORECASE)
         bpm = bpm_match.group(1) if bpm_match else "128"
+
+        recent = await get_recent_intros(10)
+        recent_block = ""
+        if recent:
+            joined = "\n".join(f"- \"{r}\"" for r in recent)
+            recent_block = (
+                "\n\nEVITA di ripetere le ultime frasi che hai già detto — cambia radicalmente parole, "
+                "immagini e ritmo. Sorprendi. Sii imprevedibile. NON usare mai le stesse parole di apertura "
+                f"due volte di fila. Ecco le ultime frasi (NON RIUSARE nulla di simile):\n{joined}"
+            )
+        tone_intro = random.choice(DJ_TONES)
         prompt = (
             f"Sei il DJ di R-A.I., radio elettronica italiana. "
             f"Scrivi un intro CORTISSIMO (massimo 12 parole, ~6 secondi di lettura) "
             f"per il brano \"{track.title}\" di {track.artist} ({track.genre}, {bpm} BPM). "
-            f"Varia il tono: entusiasta, ironico, poetico, energico, misterioso. "
-            f"Devi finire di parlare PRIMA che partano le voci del brano. Solo italiano."
+            f"Tono di stanotte: {tone_intro}. "
+            f"Non usare mai il tono classico da annunciatore radio. Devi finire di parlare PRIMA "
+            f"che partano le voci del brano. Solo italiano."
+            f"{recent_block}"
         )
         script = await llm_generate(provider, model, system_prompt, prompt)
         if not script.strip():
             script = f"E si balla con {track.title}! Volume su!"
+        tone_outro = random.choice([t for t in DJ_TONES if t != tone_intro])
         outro_prompt = (
             f"Sei il DJ di R-A.I.. Scrivi un outro di massimo 15 parole per il brano "
-            f"\"{track.title}\" appena finito. Commenta, anticipa il prossimo, fai una battuta "
-            f"o cita qualcosa di cool. Solo italiano. Mai uguale."
+            f"\"{track.title}\" appena finito. Tono: {tone_outro}. "
+            f"Commenta, anticipa il prossimo, fai una battuta o cita qualcosa di cool. "
+            f"Solo italiano. Mai uguale. Zero cliché radiofonici."
+            f"{recent_block}"
         )
         outro_script = await llm_generate(provider, model, system_prompt, outro_prompt)
         if not outro_script.strip():
             outro_script = "Bomba! Non muovetevi, R-A.I. continua!"
+        # Save into the anti-repetition circular buffer
+        await push_recent_intro(script.strip())
+        await push_recent_intro(outro_script.strip())
         segment.title = f"♪ {track.title} — {track.artist}"
         segment.script = script.strip()
         segment.outro_script = outro_script.strip()
@@ -745,14 +831,17 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
             segment.hd_status = "ready"
             segment.duration_sec = min(track.duration_sec, 120)
     elif kind == "news":
+        # Notizie dall'anno 2087 — plausibili nel loro mondo ma surreali
         prompt = (
-            "Improvvisa un breve bollettino di 'notizie inventate dal futuro' (max 80 parole) "
-            "credibili ma chiaramente immaginarie e affascinanti. Termina con una frase d'effetto."
+            "Sei il DJ di R-A.I.. Improvvisa un bollettino BREVE (max 70 parole) di 'notizie "
+            "dall'anno 2087'. Devono suonare vere nel loro mondo (leggi, tecnologia, cultura del "
+            "futuro), plausibili ma surreali. Chiudi con un dettaglio ironico che rivela la stranezza. "
+            "Solo italiano."
         )
         script = await llm_generate(provider, model, system_prompt, prompt)
         if not script.strip():
             script = random.choice(FALLBACK_SCRIPTS["news"])
-        segment.title = "Notiziario dal Futuro"
+        segment.title = "News 2087"
         segment.script = script.strip()
         segment.duration_sec = 45
     elif kind == "answer" and question_id:
@@ -817,12 +906,29 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
             segment.title = f"Segnale orario · {hour_it}:00 su {world}"
             segment.duration_sec = 15
         elif kind == "weather":
-            prompt = "In MAX 15 parole: meteo lampo per una città italiana random, con una battuta. Tipo: 'A Milano 22 gradi e cielo pulito, uscite col sorriso.'"
+            # Meteo di una città immaginaria su Marte / universo parallelo (mai il meteo reale)
+            invented_places = [
+                "New Roma, Marte",
+                "Baia dei Cristalli, Europa",
+                "Neo-Milano nell'universo parallelo Zeta-9",
+                "Città Sospesa, Titano",
+                "Metropoli Iperbolica, Kepler-186f",
+                "Distretto Neon-Napoli 2087",
+                "Porto delle Onde Analogiche, dimensione 4B",
+                "Colonia Bassa Frequenza, orbita di Saturno",
+            ]
+            place = random.choice(invented_places)
+            prompt = (
+                f"In MAX 22 parole: bollettino meteo di una città completamente immaginaria, "
+                f"'{place}'. Inventa condizioni surreali ma plausibili nel suo mondo (piogge di dati, "
+                f"venti magnetici, aurore acustiche, ecc.). Chiudi con una micro-battuta. Solo italiano. "
+                f"MAI il meteo terrestre reale."
+            )
             script = await llm_generate(provider, model, system_prompt, prompt)
             if not script.strip():
-                script = "A Milano 22 gradi, sole di plastica ma clima da spiaggia! Uscite col sorriso."
-            segment.title = "Meteo Flash"
-            segment.duration_sec = 15
+                script = f"A {place}: piogge di frammenti stellari e vento a 42 chip al secondo. Consigliato ballare al coperto."
+            segment.title = f"Meteo Cosmico · {place}"
+            segment.duration_sec = 18
         elif kind == "horoscope":
             signs = ["Ariete", "Toro", "Gemelli", "Cancro", "Leone", "Vergine", "Bilancia", "Scorpione", "Sagittario", "Capricorno", "Acquario", "Pesci"]
             sign = topic or random.choice(signs)
@@ -833,56 +939,80 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
             segment.title = f"Oroscopo · {sign}"
             segment.duration_sec = 18
         elif kind == "history":
+            # Tono documentaristico, iniziare con una data o un luogo preciso
             prompt = (
-                "Sei il DJ narratore di R-A.I.. Racconta un aneddoto vero e curioso di 50-60 parole "
-                "su: storia della musica elettronica, DJ famosi, festival, tecnologia audio, cultura rave. "
-                "Tono coinvolgente, mai robotico. Varia sempre l'argomento. Solo italiano."
+                "Sei il narratore-documentarista di R-A.I.. Racconta in 55-70 parole un aneddoto "
+                "affascinante come se svelassi un segreto poco noto. INIZIA OBBLIGATORIAMENTE con "
+                "una data precisa (es. '15 giugno 1988') oppure un luogo specifico (es. 'In un "
+                "sottoscala di Detroit,'). Argomenti: storia musica elettronica, DJ leggendari, "
+                "festival, tecnologia audio, cultura rave, macchine mitiche (TR-808, MPC, Fairlight). "
+                "Tono da documentario Netflix, mai da annunciatore radio. Solo italiano."
             )
             script = await llm_generate(provider, model, system_prompt, prompt)
             if not script.strip():
-                script = "Nel 1988, in un capannone abbandonato di Manchester, tre ragazzi con un sampler Akai e un basso rubato inventarono l'acid house UK. Il locale si chiamava Haçienda. Non sapevano che avrebbero cambiato la notte europea per sempre."
+                script = "15 giugno 1988. In un capannone abbandonato di Manchester, tre ragazzi con un sampler Akai e un basso rubato inventarono l'acid house UK. Il locale si chiamava Haçienda. Non sapevano che avrebbero cambiato la notte europea per sempre."
             segment.title = "Storia della Musica"
-            segment.duration_sec = 30
+            segment.duration_sec = 32
         elif kind == "interview":
-            others = [d for d in djs if d["id"] != dj["id"]]
-            partner = random.choice(others) if others else dj
-            segment.partner_dj_name = partner["name"]
+            # Dialogo immaginario con un personaggio famoso della musica elettronica
+            icons = [
+                "Aphex Twin", "Daft Punk", "Kraftwerk", "Jeff Mills", "Björk",
+                "Skrillex", "Deadmau5", "Peggy Gou", "Charlotte de Witte",
+                "Amelie Lens", "Boys Noize", "Four Tet", "Nina Kraviz",
+                "Carl Cox", "Fatboy Slim", "The Prodigy", "Todd Terje",
+                "Bonobo", "Bicep", "Fred again..",
+            ]
+            icon = random.choice(icons)
+            segment.partner_dj_name = icon
             prompt = (
-                f"Sei il DJ narratore di R-A.I.. Scrivi un mini scambio di 50-60 parole totali tra "
-                f"{dj['name']} e {partner['name']} su un tema legato alla musica elettronica, DJ, festival o cultura club. "
-                f"Formato riga per riga: '{dj['name']}: ...' / '{partner['name']}: ...'. "
-                "Tono energico da radio, chiusura con battuta. Solo italiano."
+                f"Sei un DJ di R-A.I. che intervista in modo immaginario il/la leggendario/a "
+                f"{icon}. Scrivi un mini scambio VIVACE di 55-70 parole totali (2-3 domande + risposte). "
+                f"Formato riga per riga: 'R-A.I.: ...' / '{icon}: ...'. Le risposte devono suonare "
+                f"credibili nel loro stile e mondo. Chiudi con una battuta o citazione geniale. "
+                f"Solo italiano (anche per il personaggio internazionale)."
             )
             script = await llm_generate(provider, model, system_prompt, prompt)
             if not script.strip():
-                script = f"{dj['name']}: Sai qual è il segreto di un buon drop? {partner['name']}: L'attesa. {dj['name']}: E il silenzio prima. {partner['name']}: Esatto, un secondo di silenzio vale mille bassi. {dj['name']}: Facciamo partire il prossimo, dai."
-            segment.title = f"{dj['name']} × {partner['name']}"
-            segment.duration_sec = 30
+                script = f"R-A.I.: {icon}, qual è il tuo segreto? {icon}: Il silenzio. R-A.I.: Il silenzio? {icon}: Sì. Prima del drop c'è sempre un secondo in cui il tempo si piega. R-A.I.: E dopo? {icon}: Dopo c'è la gente che balla e mi paga per farlo di nuovo."
+            segment.title = f"R-A.I. × {icon}"
+            segment.duration_sec = 35
         elif kind == "motivation":
+            # Aforisma originale (non citazioni riciclate)
             prompt = (
-                "Sei il DJ narratore di R-A.I.. Racconta in 50-60 parole un aneddoto motivazionale "
-                "vero legato a un DJ, un producer o una scena musicale (esempi: Daft Punk anni Novanta, "
-                "Berghain, Skrillex garage, Fatboy Slim spiaggia). Chiudi con una frase energica. Solo italiano."
+                "Sei il DJ-filosofo di R-A.I.. Inventa un AFORISMA COMPLETAMENTE ORIGINALE (30-45 parole) "
+                "sulla vita, la musica o la notte. NON deve esistere su Google. NON citare Einstein, "
+                "Confucio, Steve Jobs o simili. Le tue parole. Un'immagine sensoriale forte + una "
+                "verità piccola ma vera. Chiudi con un colpo secco. Solo italiano."
             )
             script = await llm_generate(provider, model, system_prompt, prompt)
             if not script.strip():
-                script = "Skrillex ha registrato i primi pezzi in un garage con un laptop di seconda mano. Nessuno lo prendeva sul serio. Cinque anni dopo ha vinto tre Grammy in una sera sola. Se hai un'idea nella testa, non aspettare il momento giusto. Il momento sei tu."
+                script = "Il coraggio non è la marcia in avanti, è la mano che non lascia il volante quando la strada scompare. E la musica non salva nessuno: ti tiene sveglio abbastanza da salvarti da solo."
             segment.title = "Pillola"
-            segment.duration_sec = 30
+            segment.duration_sec = 25
         elif kind == "joke":
-            prompt = "In MAX 18 parole: una battuta corta divertente adatta alla radio. Niente parole volgari."
+            # Ironia intelligente su tecnologia/AI/musica — mai barzellette da bambini
+            prompt = (
+                "In MAX 25 parole: una battuta di ironia intelligente sul mondo AI/tech/musica "
+                "elettronica. Livello The New Yorker, non elementare. Nessuna vulgarità, nessuna "
+                "barzelletta da bambini. Solo italiano."
+            )
             script = await llm_generate(provider, model, system_prompt, prompt)
             if not script.strip():
-                script = "Un algoritmo entra in un bar. Il barista chiede: 'Come ti chiami?' 'Dipende dal training data.'"
+                script = "Un algoritmo entra in un club. Il buttafuori chiede l'età. 'Dipende dal dataset', risponde. E paga il doppio del biglietto."
             segment.title = "Battuta"
             segment.duration_sec = 15
         elif kind == "news":
-            prompt = "In MAX 20 parole: notizia flash inventata dal futuro, credibile e affascinante."
+            # Notizie dall'anno 2087, futuristiche e surreali ma plausibili
+            prompt = (
+                "In MAX 25 parole: notizia flash dell'ANNO 2087, plausibile ma surreale. "
+                "Deve sembrare vera nel suo mondo (leggi, tecnologia, cultura del futuro). "
+                "Chiudi con un dettaglio ironico che rivela la stranezza. Solo italiano."
+            )
             script = await llm_generate(provider, model, system_prompt, prompt)
             if not script.strip():
-                script = "Flash dal futuro: a Berlino un DJ AI ha suonato per 48 ore filate. Nessuno è ancora tornato a casa."
-            segment.title = "News Flash"
-            segment.duration_sec = 18
+                script = "Anno 2087: il Parlamento europeo approva il diritto al silenzio ambientale. Le città rumorose dovranno pagare una tassa. Milano, per ora, resta in ritardo."
+            segment.title = "News 2087"
+            segment.duration_sec = 20
         else:  # talk fallback
             topic_choice = topic or random.choice([
                 "storia della musica elettronica",

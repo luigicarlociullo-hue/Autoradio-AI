@@ -14,7 +14,23 @@ Vorrei costruire un software di gestione radiofonica completamente automatizzato
 - Auth: Emergent Google OAuth (free) for admin.
 
 ## What's implemented (2026-08 · v10 · Stability fixes)
-- **v10.6 · Rebrand R-A.I. + bed dinamico + integrity check** (2026-02, this session):
+- **v10.7 · Salto di qualità editoriale** (2026-02, this session):
+  - **1. Speaker sempre originali (anti-ripetizione)**:
+    - `StationState` esteso con `recent_intros: List[str]` (buffer circolare, max 20).
+    - Nuovi helper `get_recent_intros(n)` e `push_recent_intro(line)` (usa `$push` con `$slice: -20`).
+    - Nuova costante `DJ_TONES` con 10 toni distinti (poetico, ironico, cinematografico, minimalista, misterioso, energico, documentaristico, sognante, sarcastico, affettuoso).
+    - Prompt music-intro e music-outro riscritti: includono le ultime 10 frasi già dette con istruzione "NON RIUSARE nulla di simile", tono estratto casualmente da `DJ_TONES`, "non usare mai il tono classico da annunciatore radio". Ogni intro+outro viene salvato nel buffer circolare.
+  - **2. Stinger sonori tra rubriche**: nuovo metodo `radioEngine.playStinger(fromKind, toKind)` **procedurale** (Web Audio API, zero file esterni, zero crediti Suno). Palette dedicata per target: news→campanella a due toni discendenti, joke→boing playful, history/interview→noise-burst tipo vinyl scratch + thud, music→riser + kick "beat drop", talk generico→swoosh + blip. In `PublicRadio.js` il loop chiama `playStinger(prevKind, seg.kind)` solo se il tipo cambia tra un segmento e il successivo.
+  - **3. Identità sonora per rubrica (LLM prompts)**:
+    - **history**: tono documentaristico, DEVE iniziare con una data precisa o un luogo specifico (es. "15 giugno 1988", "In un sottoscala di Detroit").
+    - **interview**: dialogo immaginario con un/una leggenda della musica elettronica (Aphex Twin, Daft Punk, Peggy Gou, Fred again.., ecc.).
+    - **joke**: ironia intelligente su AI/tech/musica, livello New Yorker, mai barzellette da bambini.
+    - **motivation**: aforisma originale (30-45 parole) che NON deve esistere su Google. Zero citazioni riciclate.
+    - **weather**: meteo di città completamente inventate (New Roma Marte, Baia dei Cristalli Europa, Colonia Bassa Frequenza orbita di Saturno, ecc.). Mai il meteo reale.
+    - **news**: notizie dell'anno 2087, plausibili nel loro mondo ma surreali.
+  - **4. Lyrics Suno con struttura completa**: `generate_track()` ora, per brani vocali, chiama l'LLM **prima** di Suno per scrivere il testo completo con tag `[Intro][Verse 1][Pre-Chorus][Chorus][Verse 2][Pre-Chorus][Chorus][Bridge][Outro]` e lo passa come `custom_lyrics`. Se l'LLM fallisce, fallback al vecchio `lyrics_excerpt`.
+  - ⚠️ **Nota LLM budget**: la Universal Key è a `$1.40/$1.40`. Tutte le nuove logiche sono operative ma cadono nei fallback statici finché l'utente non ricarica (Profilo → Universal Key → Add Balance). Circular buffer già populato al primo giro.
+- **v10.6 · Rebrand R-A.I. + bed dinamico** (precedente):
   - **BUG 1 (home non caricava)**: nessun problema riscontrato — verificato con curl (`HOME 200`, `API 200`) e headless browser (title `R-A.I. · Web Radio AI`, root HTML 125 KB, 0 errori console). Era cache lato utente.
   - **Rebrand NEURA·FM → R-A.I.**: `sed` mass-replace su 7 file JS/JSX + `server.py` + `paypal_service.py` + `telegram_bot.py`. `<title>` aggiornato in `frontend/public/index.html`. `LogoWatermark.js` semplificato (rimossa orbita "FM", solo wordmark statico "R-A.I."). Migration DB Mongo: 98 segmenti storici aggiornati (script/outro_script/title) — 0 leftover. Prompt LLM riscritti (intro/outro musicali, ads, jingle, sundial, storia, interview, motivation) → ora dicono "R-A.I." nei nuovi segmenti.
   - **Bed dinamico sotto il parlato**: nuovo campo `Segment.background_loop`. In `generate_segment`, per `kind != "music"` si pesca la traccia Suno round-robin (sort `last_played_at` ASC) e si valorizza il campo con path locale `/api/suno_audio/...`. Frontend: `_playSpeechWithBed` prova prima `segment.background_loop` (loop reale Suno via nuovo helper `_startAudioBed(url, 0.25)` — `audio.loop=true`, GainNode fade-in 0.4s / fade-out 0.5s), fallback al bed procedurale se non presente. Frontend risolve automaticamente le URL `/api/*` in absolute.

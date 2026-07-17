@@ -247,6 +247,105 @@ class RadioEngine {
     }
   }
 
+  /**
+   * Procedural sonic stinger played between two segments when the kind changes.
+   * Uses Web Audio API only — zero external files, zero Suno credits, ~2 seconds.
+   *
+   * Palette by target kind:
+   *  - news       → short bell/chime (two-note descending mallet)
+   *  - joke       → playful pitch-glide "boing"
+   *  - history    → vinyl-scratch-like noise burst
+   *  - music      → EDM riser + kick "beat drop"
+   *  - default    → clean electronic swoosh + blip
+   */
+  async playStinger(fromKind, toKind) {
+    if (!toKind || fromKind === toKind) return;
+    const ctx = this.ensureAudioCtx();
+    if (!ctx) return;
+    const dest = this.outputBus || ctx.destination;
+    const t0 = ctx.currentTime;
+
+    const master = ctx.createGain();
+    master.gain.value = 0.7;
+    master.connect(dest);
+
+    const kind = String(toKind || "").toLowerCase();
+    const isTalkTarget = ["news","joke","history","interview","weather","horoscope","motivation","talk","answer"].includes(kind);
+    const isMusicTarget = kind === "music";
+
+    // Helpers
+    const beep = (freqStart, freqEnd, dur, type = "sine", gain = 0.35, delay = 0) => {
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = type;
+      osc.frequency.setValueAtTime(freqStart, t0 + delay);
+      osc.frequency.exponentialRampToValueAtTime(Math.max(20, freqEnd), t0 + delay + dur);
+      g.gain.setValueAtTime(0.001, t0 + delay);
+      g.gain.exponentialRampToValueAtTime(gain, t0 + delay + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.001, t0 + delay + dur);
+      osc.connect(g); g.connect(master);
+      osc.start(t0 + delay);
+      osc.stop(t0 + delay + dur + 0.05);
+    };
+    const noiseBurst = (dur, gain = 0.4, delay = 0, filterHz = 4000) => {
+      const bufferSize = Math.floor(ctx.sampleRate * dur);
+      const buf = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+      const data = buf.getChannelData(0);
+      for (let i = 0; i < bufferSize; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / bufferSize);
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      const bp = ctx.createBiquadFilter();
+      bp.type = "bandpass";
+      bp.frequency.value = filterHz;
+      const g = ctx.createGain();
+      g.gain.value = gain;
+      src.connect(bp); bp.connect(g); g.connect(master);
+      src.start(t0 + delay);
+    };
+
+    let totalDur = 1.6;
+    if (kind === "news") {
+      // Two-note bell chime
+      beep(1760, 1760, 0.35, "triangle", 0.4, 0);
+      beep(1320, 1320, 0.55, "triangle", 0.35, 0.18);
+      beep(880, 880, 0.7, "sine", 0.15, 0.35);
+      totalDur = 1.2;
+    } else if (kind === "joke") {
+      // Playful upward "boing"
+      beep(220, 880, 0.28, "square", 0.28, 0);
+      beep(880, 220, 0.28, "square", 0.28, 0.24);
+      beep(660, 660, 0.15, "sine", 0.3, 0.5);
+      totalDur = 0.8;
+    } else if (kind === "history" || kind === "interview") {
+      // Vinyl-scratch-ish noise burst + low thud
+      noiseBurst(0.35, 0.45, 0, 2200);
+      noiseBurst(0.25, 0.35, 0.15, 3800);
+      beep(80, 60, 0.5, "sine", 0.35, 0.1);
+      totalDur = 1.1;
+    } else if (isMusicTarget) {
+      // Riser + beat drop
+      beep(200, 3000, 0.9, "sawtooth", 0.28, 0);
+      noiseBurst(0.6, 0.25, 0.3, 6000);
+      // Kick
+      beep(150, 40, 0.35, "sine", 0.55, 0.95);
+      beep(80, 30, 0.3, "sine", 0.5, 1.05);
+      totalDur = 1.8;
+    } else if (isTalkTarget) {
+      // Clean electronic swoosh + blip
+      noiseBurst(0.55, 0.3, 0, 2500);
+      beep(440, 1320, 0.2, "sine", 0.35, 0.4);
+      totalDur = 1.0;
+    } else {
+      // Default transition blip
+      beep(660, 990, 0.18, "sine", 0.4, 0);
+      totalDur = 0.4;
+    }
+
+    // Cleanup — disconnect master shortly after the last sound
+    setTimeout(() => { try { master.disconnect(); } catch (e) {} }, (totalDur + 0.5) * 1000);
+    return new Promise(res => setTimeout(res, totalDur * 1000));
+  }
+
   // Pick a mood-appropriate bed for each spoken segment kind.
   _bedConfigFor(kind) {
     const map = {

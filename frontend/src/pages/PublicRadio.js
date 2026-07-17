@@ -177,11 +177,16 @@ export default function PublicRadio() {
         // Ensure overlay is hidden between segments regardless of the timer.
         setTrackOverlay(o => (o.visible ? { ...o, visible: false } : o));
         // Await the already-in-flight next segment
+        const prevKind = seg.kind;
         try {
           seg = await nextPromise;
         } catch (e) {
           toast.error("HD non disponibile, torno alla modalità veloce");
           seg = await endpoints.generateSegment({});
+        }
+        // Play a procedural stinger only when the segment KIND changes.
+        if (!stopFlag.current && seg && seg.kind && seg.kind !== prevKind) {
+          try { await radioEngine.playStinger(prevKind, seg.kind); } catch (e) {}
         }
         // Prefetch the one after
         nextPromise = fetchSegment();
