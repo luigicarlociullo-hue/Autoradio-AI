@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { Play, Pause, SkipForward, Radio, Send, Volume2, Sparkles, Users, Music2, Newspaper, MessageCircle, Loader2 } from "lucide-react";
+import { Play, Pause, SkipForward, Radio, Send, Volume2, Sparkles, Users, Music2, Newspaper, MessageCircle, Loader2, Heart, ExternalLink, X } from "lucide-react";
 import { endpoints } from "@/lib/api";
 import radioEngine from "@/lib/radioEngine";
 import { toast } from "sonner";
@@ -70,6 +70,8 @@ export default function PublicRadio() {
   const [questionText, setQuestionText] = useState("");
   const [tick, setTick] = useState(0);
   const [trackOverlay, setTrackOverlay] = useState({ visible: false, title: "", artist: "" });
+  const [showDonate, setShowDonate] = useState(false);
+  const DONATE_URL = "https://paypal.me/radioAI";
 
   const playingRef = useRef(false);
   const stopFlag = useRef(false);
@@ -502,6 +504,89 @@ export default function PublicRadio() {
       <footer className="max-w-7xl mx-auto px-6 py-10 text-xs font-mono text-zinc-600 border-t border-white/5 mt-8">
         R-A.I. · prototipo beta · orchestrato da GPT-5.2 · Claude Sonnet 4.5 · Gemini 3 Flash · nessun umano è stato usato per registrare quest'audio.
       </footer>
+
+      {/* Floating "Sostieni il progetto" button — fixed bottom-center */}
+      <button
+        onClick={() => setShowDonate(true)}
+        data-testid="donate-open-button"
+        className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 group flex items-center gap-2 px-5 py-3 rounded-full font-display font-bold text-sm text-white shadow-2xl transition-transform hover:scale-105 active:scale-95 focusable"
+        style={{
+          background: "linear-gradient(135deg, #ff2d95 0%, #ff8a3d 100%)",
+          boxShadow: "0 8px 30px rgba(255, 45, 149, 0.45), 0 0 0 1px rgba(255,255,255,0.08) inset",
+        }}
+      >
+        <Heart className="w-4 h-4" fill="currentColor" />
+        <span>Sostieni il progetto</span>
+      </button>
+
+      {/* Donation confirmation modal */}
+      {showDonate && (
+        <div
+          className="fixed inset-0 z-[70] flex items-end sm:items-center justify-center bg-black/70 backdrop-blur-sm p-4"
+          onClick={() => setShowDonate(false)}
+          data-testid="donate-modal-backdrop"
+        >
+          <div
+            className="card-surface max-w-md w-full p-6 relative"
+            onClick={(e) => e.stopPropagation()}
+            data-testid="donate-modal"
+            style={{
+              background: "linear-gradient(180deg, rgba(20,10,25,0.98) 0%, rgba(15,10,20,0.98) 100%)",
+              border: "1px solid rgba(255, 45, 149, 0.35)",
+              boxShadow: "0 20px 60px rgba(0,0,0,0.6), 0 0 40px rgba(255, 45, 149, 0.15)",
+            }}
+          >
+            <button
+              onClick={() => setShowDonate(false)}
+              className="absolute top-3 right-3 text-zinc-400 hover:text-white transition-colors"
+              data-testid="donate-modal-close"
+              aria-label="Chiudi"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="flex items-center gap-3 mb-3">
+              <div
+                className="w-10 h-10 rounded-full flex items-center justify-center"
+                style={{ background: "linear-gradient(135deg, #ff2d95, #ff8a3d)" }}
+              >
+                <Heart className="w-5 h-5 text-white" fill="currentColor" />
+              </div>
+              <div className="font-display font-bold text-lg text-white">Grazie di cuore</div>
+            </div>
+
+            <p className="text-sm text-zinc-300 leading-relaxed mb-6" data-testid="donate-message">
+              Ogni tua donazione aiuta a mantenere attiva l'intelligenza artificiale di questa
+              radio. Grazie per far parte di questo viaggio!
+            </p>
+
+            <div className="flex flex-col-reverse sm:flex-row gap-2 sm:justify-end">
+              <button
+                onClick={() => setShowDonate(false)}
+                className="btn-outline text-sm focusable"
+                data-testid="donate-cancel"
+              >
+                Non ora
+              </button>
+              <a
+                href={DONATE_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={() => setShowDonate(false)}
+                className="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-full font-display font-bold text-sm text-white transition-transform hover:scale-[1.02] active:scale-95 focusable"
+                style={{
+                  background: "linear-gradient(135deg, #ff2d95 0%, #ff8a3d 100%)",
+                  boxShadow: "0 6px 20px rgba(255, 45, 149, 0.4)",
+                }}
+                data-testid="donate-confirm-paypal"
+              >
+                <span>Vai a PayPal</span>
+                <ExternalLink className="w-4 h-4" />
+              </a>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
