@@ -27,82 +27,42 @@ SUNO_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
 TITLE = "R-AI"
 ARTIST = "L&C"
 GENRE_STYLE = (
-    "italian folk fusion, pizzica salentina traditional opening with tamburello and violin, "
-    "gradually morphing into modern electronic dance music, powerful anthem, "
-    "hybrid folk-EDM, southern italian tarantella into big room drop, "
-    "energetic 128 bpm, cinematic build-up, epic climax"
+    "italian folk fusion opening with 10 seconds of PURE traditional salento tamburello "
+    "solo (no other instruments, just tambourine and hand percussion, folk pizzica style), "
+    "then gradually introduce electronic elements — sub bass, synth pad, kick drum — "
+    "building into a powerful modern EDM anthem drop while the tamburello stays as the "
+    "rhythmic backbone. Cinematic build, big room drop, hybrid folk-electronic, "
+    "energetic 128 bpm on the drop. SPARSE VOCALS, chant-style, only the shouted "
+    "phrases 'R-A-I' and 'Created by L and C' as anthemic hooks."
 )
 
-# Full-structure lyrics: parte con la tradizione salentina, cresce in EDM
-LYRICS = """[Intro - Tamburello + Violino Tradizionale]
-Ohi lì, ohi là, la notte non dorme mai
-Tra gli ulivi del sud si accende una radio che va
-Ohi lì, ohi là, la voce è la mia
-R-A.I. r-ai punto it, la casa mia
+# Essential-only lyrics: chant/hook based, tamburello-first, very sparse
+LYRICS = """[Intro — 10 seconds of PURE tamburello solo, no other instruments, no vocals]
+(solo tamburello salentino tradizionale, mani sui bordi, ritmo pizzica 6/8)
 
-[Verse 1 - Pizzica classica]
-Balla balla nella piazza, sotto il campanile
-Il tamburello canta, il tempo è già passato ieri
-Nonna diceva pizzica pizzica finché puoi
-Perché la vita è breve, la festa la scegli tu
-Neuroni digitali dentro una tarantella
-La macchina ha imparato il ritmo della tradizione
-Suona suona, non ti fermare
-Il Salento è nel codice, il codice è mare
+[Build-up — synth pad enters slowly, sub bass rises under the tamburello]
+(instrumental, il tamburello resta protagonista)
 
-[Pre-Chorus - Il synth entra piano]
-Sento salire una vibrazione
-Il violino diventa un synth di ragione
-Il tamburello è una cassa che sale
-R-A.I. sta per partire, tienti forte
+[Pre-Drop — one whispered chant]
+R... A... I...
 
-[Drop - EDM Big Room + Tamburello]
-R-A-I! R-A-I!
-La radio del futuro che parla italiano
-R-A-I! R-A-I!
-Dalla pizzica al drop, dalla piazza al mondo
-R-A-I! R-A-I!
-Created by L and C, streaming da r-ai.it
-R-A-I! R-A-I!
-Balla con noi, l'intelligenza balla con noi
+[Drop — Big Room EDM + tamburello, chant hook]
+R-A-I!
+R-A-I!
+Created by L and C!
+R-A-I!
 
-[Verse 2 - Hybrid folk-electronic]
-Boombox sotto un ulivo secolare
-Un DJ artificiale con l'anima salentina
-Nonna balla ancora, ma stavolta col laser
-Il synthesizer canta con la voce del mare
-Otranto illumina la costa in stereo
-Ogni onda un beat, ogni beat una preghiera
-La tradizione non muore, si trasforma in luce
-Il codice ha imparato a suonare il Sud
+[Break — tamburello solo returns for 4 bars]
+(strumentale, solo tamburello + kick lontano)
 
-[Pre-Chorus - Build up]
-Sento salire l'energia più grande
-Il tamburo si sposa col sub bass
-Le luci del rave sono lucciole antiche
-R-A-I sta arrivando, alza il volume
+[Drop 2 — full EDM + tamburello]
+R-A-I!
+R-A-I!
+Created by L and C!
+R-A-I!
 
-[Drop - EDM esplosivo con pizzica sample]
-R-A-I! R-A-I!
-La radio del futuro che parla italiano
-R-A-I! R-A-I!
-Dalla pizzica al drop, dalla piazza al mondo
-R-A-I! R-A-I!
-Created by L and C, streaming da r-ai.it
-R-A-I! R-A-I!
-Balla con noi, l'intelligenza balla con noi
-
-[Bridge - Solo di tamburello che dialoga col synth]
-Uno tamburo, un algoritmo
-Un cuore antico, un cuore ritmo
-Non è nostalgia, è evoluzione
-R-A-I la nuova generazione
-
-[Outro - Ritorno alla pizzica pura + fade]
-Ohi lì, ohi là, la notte non dorme mai
-La radio è accesa, la festa non finirà
-R-A-I punto it, R-A-I punto it
-Il futuro è già qui, e balla con te"""
+[Outro — fade back to pure tamburello]
+R-A-I... R-A-I..."""
 
 
 async def download_mp3(url: str, dest: Path) -> bool:
