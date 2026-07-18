@@ -1,4 +1,5 @@
 import React from "react";
+import BrandName from "@/components/BrandName";
 
 /**
  * R-A.I. channel bug — appears inside the visualizer / YouTube visual area.
@@ -31,19 +32,17 @@ export default function LogoWatermark({
       aria-hidden
       data-testid="logo-watermark"
     >
-      <span
+      <BrandName
+        className=""
         style={{
           fontFamily: "'Unbounded', sans-serif",
           fontWeight: 900,
           fontSize: 20,
-          letterSpacing: "0.06em",
           color: "#ffffff",
           textShadow:
             "0 0 8px rgba(255, 20, 147, 0.55), 0 0 20px rgba(34, 211, 238, 0.35)",
         }}
-      >
-        R-A.I.
-      </span>
+      />
     </div>
   );
 }

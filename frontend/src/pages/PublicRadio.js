@@ -6,6 +6,7 @@ import radioEngine from "@/lib/radioEngine";
 import { toast } from "sonner";
 import AudioVisualizer from "@/components/AudioVisualizer";
 import RadioErrorBoundary from "@/components/RadioErrorBoundary";
+import BrandName from "@/components/BrandName";
 
 const HERO_BG = "https://images.unsplash.com/photo-1724185773486-0b39642e607e?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxODd8MHwxfHNlYXJjaHwyfHxhYnN0cmFjdCUyMG5lb24lMjBzb3VuZCUyMHdhdmV8ZW58MHx8fHwxNzgzODAwMDI5fDA&ixlib=rb-4.1.0&q=85";
 
@@ -277,7 +278,7 @@ export default function PublicRadio() {
           <div className="flex items-center gap-3">
             <Radio className="w-6 h-6 text-pink-500" />
             <div>
-              <div className="font-display font-black text-lg tracking-tight">R-A.I.</div>
+              <BrandName className="font-display font-black text-lg" />
               <div className="label-mono">Web Radio · AI Only</div>
             </div>
           </div>

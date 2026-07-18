@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { Megaphone, Sparkles, Check, ArrowLeft, ShieldCheck, Zap } from "lucide-react";
 import { endpoints, api } from "@/lib/api";
+import BrandName from "@/components/BrandName";
 import { toast } from "sonner";
 
 export default function Advertise() {
@@ -61,7 +62,7 @@ export default function Advertise() {
           </Link>
           <div className="flex items-center gap-2">
             <Megaphone className="w-5 h-5 text-pink-500" />
-            <span className="font-display font-black">R-A.I. · Adv</span>
+            <BrandName className="font-display font-black" suffix=" · Adv" />
           </div>
         </div>
       </header>

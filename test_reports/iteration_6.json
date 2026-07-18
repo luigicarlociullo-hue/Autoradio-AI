@@ -1,0 +1,57 @@
+{
+  "summary": "Frontend brand rendering fix verified across Home, Dashboard and Advertise pages. All data-testid='brand-name' elements render exact strings as required. Playback flow and backend regression endpoints all healthy.",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "brand_rendering_verification": {
+    "home_url": "/",
+    "home_title": "R-A.I. · Web Radio AI (EXACT MATCH)",
+    "home_brand_name_count": 2,
+    "home_brand_textContent": "'R-A.I.' (6 chars: R,-,A,.,I,. — exact match, no middle-dot U+00B7)",
+    "home_bad_patterns": "none",
+    "home_neura_occurrences": 0,
+    "dashboard_url": "/dashboard",
+    "dashboard_brand_textContent": "'R-A.I. · Admin' (exact match)",
+    "dashboard_neura_occurrences": 0,
+    "dashboard_bad_patterns_note": "The regex R-AI(?!\\.) matched 3 hits, but ALL are legitimate CONTENT DATA (a seeded song title/artist name 'R-AI — L&C' / 'L&C, R-AI') — NOT brand rendering. Not a bug.",
+    "advertise_url": "/pubblicita (NOTE: request said /advertise but real route is /pubblicita — /advertise falls to '*' wildcard which renders home)",
+    "advertise_brand_textContent": "'R-A.I. · Adv' (exact match)",
+    "advertise_neura_occurrences": 0,
+    "advertise_bad_patterns": "none"
+  },
+  "playback_regression": {
+    "play_button_click": "OK",
+    "title_transition": "'Radio in stand-by' → 'Preparazione…' after click",
+    "console_errors": 0,
+    "pageerrors": 0,
+    "insertBefore_errors": 0,
+    "unique_key_warnings": 0,
+    "RadioErrorBoundary_triggered": false
+  },
+  "backend_regression": {
+    "GET /api/station": 200,
+    "GET /api/segments": 200,
+    "GET /api/djs": 200,
+    "POST /api/segments/generate": "200, kind='time_signal' (valid)"
+  },
+  "test_report_links": [],
+  "action_items": [
+    "MINOR/OPTIONAL: The review request referenced URL '/advertise' but the actual React route is '/pubblicita'. Consider either (a) adding an alias route <Route path='/advertise' element={<Advertise />} /> or (b) correcting the reference in docs/tests. Current wildcard '*' silently routes /advertise to home which is a bad UX for anyone landing on that URL."
+  ],
+  "critical_code_review_comments": [
+    "BrandName.js is clean, focused (<30 lines), well-commented — good.",
+    "Suffix content ' · Admin' / ' · Adv' contains U+00B7 middle-dot as a decorative separator — matches spec (brand itself remains the first 6 ASCII chars R-A.I.).",
+    "Route table has catch-all '*' → PublicRadio which will swallow typos like /advertise; consider a 404 or explicit alias."
+  ],
+  "updated_files": [],
+  "success_rate": { "backend": "100%", "frontend": "100%" },
+  "test_credentials": "n/a — all tested pages public",
+  "seed_data_creation": "none",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Brand fix verified byte-exact via element.textContent. If retesting, remember: real Advertise route = /pubblicita (NOT /advertise). Dashboard content contains a seeded song artist named 'R-AI' — this is intentional content data, not a brand rendering bug; do not match it with regex against the whole body.",
+  "rca of the issue": "n/a — this iteration is a fix verification, not a bug hunt. Fix (BrandName.js with monospace symbols) is working correctly on all pages."
+}

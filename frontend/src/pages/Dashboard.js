@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Radio, Power, Trash2, Sparkles, Zap, Music2, Newspaper, MessageCircle, LogOut, LogIn, Send, User, ChevronRight, Cpu, Users, RefreshCw, Megaphone, Euro, ExternalLink } from "lucide-react";
 import { endpoints, api } from "@/lib/api";
+import BrandName from "@/components/BrandName";
 import { toast } from "sonner";
 
 const STUDIO_BG = "https://images.unsplash.com/photo-1781865202636-0adef1d06cce?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDQ2MzR8MHwxfHNlYXJjaHwzfHxmdXR1cmlzdGljJTIwcmFkaW8lMjBzdHVkaW8lMjBuaWdodHxlbnwwfHx8fDE3ODM4MDAwMjl8MA&ixlib=rb-4.1.0&q=85";
@@ -121,7 +122,7 @@ export default function Dashboard() {
           <Link to="/" className="flex items-center gap-3">
             <Radio className="w-5 h-5 text-pink-500" />
             <div>
-              <div className="font-display font-black text-base">R-A.I. · Admin</div>
+              <BrandName className="font-display font-black text-base" suffix=" · Admin" />
               <div className="label-mono">Control Room</div>
             </div>
           </Link>
