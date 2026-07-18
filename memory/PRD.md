@@ -14,7 +14,19 @@ Vorrei costruire un software di gestione radiofonica completamente automatizzato
 - Auth: Emergent Google OAuth (free) for admin.
 
 ## What's implemented (2026-08 · v10 · Stability fixes)
-- **v10.9 · LLM dual-path + testing 15/15** (2026-02, this session):
+- **v10.10 · Suno cost optimization / Library-first caching** (2026-02, this session):
+  - Nuovi env vars in `backend/.env`: `SUNO_AUTOGEN_ENABLED=true` (kill-switch globale per TUTTE le chiamate Suno automatiche) e `SUNO_LIBRARY_TARGET=10` (soglia minima tracce ready in libreria).
+  - Helper `_suno_autogen_enabled()` / `_suno_library_target()` in `server.py` letti a runtime (nessun restart necessario dopo toggle).
+  - `_suno_library_filler()` ora rispetta il kill-switch (skip loop se off) e usa target dinamico da env (10 ready, refill quando ready < 10 e pending < 3).
+  - `generate_segment(kind="music")` fallback riscritto: se libreria ha ≥1 traccia esistente la riusa (round-robin `last_played_at`). Chiama `generate_track()` con Suno SOLO se `_suno_autogen_enabled()` è true e libreria totalmente vuota. Ultimo resort: `generate_track(_suno_call=False)` che genera solo metadata senza toccare Suno.
+  - Nuovo parametro `_suno_call: bool = True` in `generate_track()`: quando False (chiamate interne di fallback) NON crea task Suno.
+  - Nuovi endpoint:
+    - `GET /api/library/stats` → snapshot completo (ready/pending/failed, file locali su disco in MB, anthem ready, `will_call_suno_next_music_slot: bool`).
+    - `POST /api/library/autogen?enabled=true|false` → toggle runtime che PERSISTE in `backend/.env` (sopravvive al restart).
+    - `GET /api/suno/status` ora espone anche `autogen_enabled` e `library_target`.
+  - Stato attuale verificato: 24 tracce Suno ready + 1 anthem in `/app/backend/static/suno` (94.89 MB su disco). Filler dorme (nessuna chiamata Suno) fino a scendere sotto 10.
+  - Test regressione: `/app/backend/tests/test_library_optimization.py` — 4/4 PASS (stats, status flags, no-new-suno-task per music slot, toggle persistenza).
+- **v10.9 · LLM dual-path + testing 15/15** (precedente):
   - `.env` esteso con `OPENAI_API_KEY` e `OPENAI_BASE_URL` (gateway Emergent).
   - Nuovo `_llm_direct_openai(system, user, model)` in `server.py`: chiamata httpx diretta all'endpoint OpenAI-compatible del gateway Emergent.
   - `llm_generate` riscritto: prova `LlmChat` primario → in caso di errore (budget exhausted / rate / any) fallback automatico a `_llm_direct_openai` → se anche quello fallisce, si restituisce stringa vuota (che a sua volta triggera i FALLBACK_SCRIPTS statici).

@@ -57,6 +57,22 @@ logger = logging.getLogger(__name__)
 SUNO_AUDIO_DIR = Path("/app/backend/static/suno")
 SUNO_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
 
+def _suno_autogen_enabled() -> bool:
+    """Read SUNO_AUTOGEN_ENABLED env var (default true).
+    When false, ALL automatic Suno API calls (background filler + segment
+    fallback) are blocked. Only explicit user endpoints keep working."""
+    return os.environ.get("SUNO_AUTOGEN_ENABLED", "true").strip().lower() not in ("false", "0", "no", "off")
+
+
+def _suno_library_target() -> int:
+    """Read SUNO_LIBRARY_TARGET env var (default 10)."""
+    try:
+        return max(0, int(os.environ.get("SUNO_LIBRARY_TARGET", "10")))
+    except ValueError:
+        return 10
+
+
+
 
 async def download_and_save_suno_audio(audio_url: str, track_id: str) -> Optional[str]:
     """Download the Suno mp3 and persist it under SUNO_AUDIO_DIR.
@@ -612,7 +628,7 @@ async def list_tracks(limit: int = 20):
 
 
 @api_router.post("/tracks/generate", response_model=Track)
-async def generate_track(hint: Optional[str] = None, genre: Optional[str] = None, lang: Optional[str] = None, instrumental: bool = False):
+async def generate_track(hint: Optional[str] = None, genre: Optional[str] = None, lang: Optional[str] = None, instrumental: bool = False, _suno_call: bool = True):
     provider, model = _pick_llm()
     genres_pool = [
         "tech house 126 bpm",
@@ -669,9 +685,10 @@ async def generate_track(hint: Optional[str] = None, genre: Optional[str] = None
         source="procedural",
     )
 
-    # If Suno is enabled, create a task (non-blocking) and let a background
-    # poller update the track when Suno finishes (~2 min).
-    if suno_service.is_enabled():
+    # If Suno is enabled AND the caller allows it (`_suno_call=True`), create a
+    # task (non-blocking) and let a background poller update the track when
+    # Suno finishes (~2 min). Internal metadata-only calls pass `_suno_call=False`.
+    if suno_service.is_enabled() and _suno_call:
         style_tags = data.get("style_tags") or f"{track.genre}, {track.mood}, vocals"
         prompt_text = f"{track.genre}, {track.mood}, {track.title} — {track.artist}"
         # ---- Full-structure lyrics ----
@@ -757,7 +774,71 @@ async def suno_status():
         "enabled": suno_service.is_enabled(),
         "base_url": os.environ.get("SUNO_BASE_URL", ""),
         "model": os.environ.get("SUNO_MODEL", "V4"),
+        "autogen_enabled": _suno_autogen_enabled(),
+        "library_target": _suno_library_target(),
     }
+
+
+@api_router.get("/library/stats")
+async def library_stats():
+    """Snapshot of the local music library. Useful to verify that the radio
+    is playing cached tracks and NOT calling Suno on every music slot."""
+    ready = await db.tracks.count_documents({"source": "suno", "status": "ready"})
+    pending = await db.tracks.count_documents({"source": "suno", "status": "pending"})
+    failed = await db.tracks.count_documents({"source": "suno", "status": "failed"})
+    procedural = await db.tracks.count_documents({"source": "procedural"})
+    anthems = await db.tracks.count_documents({"is_anthem": True, "status": "ready"})
+    # Count local mp3 files actually on disk
+    try:
+        local_files = sum(1 for p in SUNO_AUDIO_DIR.glob("track_*.mp3") if p.stat().st_size >= 100_000)
+        local_bytes = sum(p.stat().st_size for p in SUNO_AUDIO_DIR.glob("track_*.mp3"))
+    except Exception:
+        local_files, local_bytes = 0, 0
+    return {
+        "target_ready": _suno_library_target(),
+        "autogen_enabled": _suno_autogen_enabled(),
+        "suno_enabled": suno_service.is_enabled(),
+        "tracks": {
+            "ready": ready,
+            "pending": pending,
+            "failed": failed,
+            "procedural_only": procedural,
+            "anthems_ready": anthems,
+        },
+        "local_files": {
+            "count": local_files,
+            "total_mb": round(local_bytes / 1024 / 1024, 2),
+            "dir": str(SUNO_AUDIO_DIR),
+        },
+        "will_call_suno_next_music_slot": (
+            ready == 0 and suno_service.is_enabled() and _suno_autogen_enabled()
+        ),
+    }
+
+
+@api_router.post("/library/autogen")
+async def library_toggle_autogen(enabled: bool):
+    """Runtime kill-switch for automatic Suno generation.
+    Persists to backend/.env so the setting survives restart."""
+    env_path = ROOT_DIR / ".env"
+    try:
+        lines = env_path.read_text().splitlines()
+    except Exception:
+        lines = []
+    key = "SUNO_AUTOGEN_ENABLED"
+    new_val = "true" if enabled else "false"
+    found = False
+    for i, ln in enumerate(lines):
+        if ln.strip().startswith(f"{key}="):
+            lines[i] = f"{key}={new_val}"
+            found = True
+            break
+    if not found:
+        lines.append(f"{key}={new_val}")
+    env_path.write_text("\n".join(lines) + "\n")
+    os.environ[key] = new_val
+    logger.info(f"SUNO_AUTOGEN_ENABLED set to {new_val} via API")
+    return {"autogen_enabled": enabled, "persisted": True}
 
 
 # ----------------------- Segments (schedule) -----------------------
@@ -929,7 +1010,32 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
                     {"$set": {"last_played_at": datetime.now(timezone.utc).isoformat()}},
                 )
         if track is None:
-            track = await generate_track()
+            # Library empty (or Suno disabled). Only trigger a fresh Suno
+            # generation if autogen is allowed AND we don't already have
+            # ANY reusable track. Otherwise fall back to the oldest track
+            # in the DB (of any status) or, as last resort, a procedural
+            # metadata-only track (no Suno call).
+            if suno_service.is_enabled() and _suno_autogen_enabled():
+                track = await generate_track()
+            else:
+                # Try to reuse ANY track (even old / anthem-excluded) to keep
+                # the radio flowing without touching Suno.
+                any_track = await db.tracks.find_one(
+                    {"audio_url": {"$ne": None}},
+                    {"_id": 0},
+                    sort=[("last_played_at", 1), ("created_at", 1)],
+                )
+                if any_track:
+                    track = Track(**any_track)
+                    await db.tracks.update_one(
+                        {"id": track.id},
+                        {"$set": {"last_played_at": datetime.now(timezone.utc).isoformat()}},
+                    )
+                else:
+                    # No audio at all — synthesize metadata only so the DJ
+                    # can still speak. Music slot will play the procedural
+                    # bed on the frontend. NO Suno call here.
+                    track = await generate_track(_suno_call=False)
 
         # Extract BPM from genre string if present
         import re as _re
@@ -1714,7 +1820,15 @@ async def _suno_integrity_check():
 
 async def _suno_library_filler():
     """Keep a small library of ready Suno tracks available for the radio.
-    Focus on danceable electronic music."""
+    Focus on danceable electronic music.
+
+    Behavior:
+    - Skipped entirely if SUNO_API_KEY missing OR SUNO_AUTOGEN_ENABLED=false.
+    - Target ready count from SUNO_LIBRARY_TARGET (default 10).
+    - Triggers a new generation ONLY when ready < target AND pending < 3, so
+      we never flood the Suno queue and never overspend when the library is
+      already stocked.
+    """
     if not suno_service.is_enabled():
         return
     await asyncio.sleep(5)
@@ -1731,18 +1845,21 @@ async def _suno_library_filler():
         "afro house 122 bpm",
         "dance pop 124 bpm",
     ]
-    # Target: keep at least 8 ready Suno tracks in the library, trigger a new
-    # generation as soon as we drop 3 below target (ready < 5). This gives the
-    # round-robin rotation enough variety to avoid perceived repetitions.
-    TARGET_READY = 8
-    TRIGGER_THRESHOLD = 5   # start refilling when ready count falls to this
     while True:
         try:
+            if not _suno_autogen_enabled():
+                # Kill-switch active: never call Suno automatically.
+                await asyncio.sleep(120)
+                continue
+            target = _suno_library_target()
             ready = await db.tracks.count_documents({"source": "suno", "status": "ready"})
             pending = await db.tracks.count_documents({"source": "suno", "status": "pending"})
-            if ready < TRIGGER_THRESHOLD and pending < 3:
+            if ready < target and pending < 3:
                 genre = random.choice(dance_genres)
-                logger.info(f"Suno filler: generating {genre} (ready={ready}/{TARGET_READY}, pending={pending})")
+                logger.info(
+                    f"Suno filler: generating {genre} "
+                    f"(ready={ready}/{target}, pending={pending})"
+                )
                 await generate_track(genre=genre)
             await asyncio.sleep(90)
         except Exception as e:
