@@ -63,7 +63,10 @@ export default function PublicRadio() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [isPreparing, setIsPreparing] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [hdMode, setHdMode] = useState(false);
+  // HD mode è sempre implicitamente ON per tutti (Suno + ElevenLabs = qualità piena).
+  // Il vecchio toggle "HD Bark/Stable Audio" (open-source, 20-35s per segmento) è stato
+  // rimosso dalla UI: gli utenti hanno un'esperienza uniforme in alta qualità.
+  const hdMode = false;   // false = Suno mp3 + ElevenLabs TTS (il path veloce e HQ)
   const [renderingHd, setRenderingHd] = useState(false);
   const [djs, setDjs] = useState([]);
   const [questionName, setQuestionName] = useState("");
@@ -349,16 +352,6 @@ export default function PublicRadio() {
             </div>
             <div className="flex md:justify-end items-center gap-3">
               <button
-                data-testid="hd-mode-toggle"
-                onClick={() => { if (!isPlaying) setHdMode(v => !v); }}
-                disabled={isPlaying}
-                className="btn-outline text-xs focusable flex items-center gap-2"
-                style={hdMode ? { borderColor: "#22d3ee", color: "#22d3ee", boxShadow: "inset 0 0 12px rgba(34,211,238,0.25)" } : {}}
-                title="Attiva/disattiva modalità HD con voci Bark e musica Stable Audio (open source)"
-              >
-                <Sparkles className="w-4 h-4" /> HD · {hdMode ? "ON" : "OFF"}
-              </button>
-              <button
                 data-testid="play-pause-button"
                 onClick={handlePlay}
                 className="btn-primary flex items-center gap-2 text-base px-6 py-4 focusable"
@@ -377,21 +370,6 @@ export default function PublicRadio() {
               </button>
             </div>
           </div>
-
-          {(hdMode || renderingHd) && (
-            <div className="mt-4 flex items-center gap-2 text-xs font-mono text-cyan-400" data-testid="hd-status">
-              {renderingHd ? (
-                <>
-                  <span className="live-dot" style={{ background: "#22d3ee", boxShadow: "0 0 12px #22d3ee" }} />
-                  Rendering HD in corso · Bark + Stable Audio Open (open source, ~20–35s per segmento)…
-                </>
-              ) : (
-                <>
-                  <Sparkles className="w-3 h-3" /> HD attiva · voci Bark (Suno OSS) · musica Stable Audio Open
-                </>
-              )}
-            </div>
-          )}
 
           <div className="mt-6 grid grid-cols-3 gap-4">
             <Stat label="Ascoltatori" value={station.listeners || 0} />
