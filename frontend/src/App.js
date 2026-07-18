@@ -20,6 +20,7 @@ function AppRouter() {
       <Route path="/" element={<PublicRadio />} />
       <Route path="/dashboard" element={<Dashboard />} />
       <Route path="/pubblicita" element={<Advertise />} />
+      <Route path="/advertise" element={<Advertise />} />
       <Route path="/ads/return" element={<AdReturn />} />
       <Route path="*" element={<PublicRadio />} />
     </Routes>
