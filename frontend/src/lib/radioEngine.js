@@ -327,7 +327,9 @@ class RadioEngine {
       return this._playAdSpot(segment);
     }
     // Rubriche parlate (joke, weather, history, interview, motivation, horoscope, talk, jingle, ...)
-    if (segment.speech_audio_url) {
+    // Entra qui se c'è speech pronto OPPURE un background_loop dal backend →
+    // così anche se il TTS è ancora pending abbiamo comunque musica continua.
+    if (segment.speech_audio_url || segment.background_loop) {
       return this._playSpeechWithBed(segment);
     }
     // Fallback: browser Web Speech + procedural synth
@@ -642,13 +644,76 @@ class RadioEngine {
     return { durationSec: 60, ...(map[kind] || map.talk) };
   }
 
+  /**
+   * Riproduce una traccia Suno in LOOP a volume ridotto come "bed musicale"
+   * sotto la voce del DJ. Ritorna una funzione stop() che ferma il loop con
+   * fade-out. Zero costi Suno (usa tracce già scaricate localmente).
+   */
+  _playLoopedBed(url, volume = 0.22) {
+    if (!url) return () => {};
+    const ctx = this.ensureAudioCtx();
+    if (!ctx) return () => {};
+    let stopped = false;
+    let audio = null;
+    let gainNode = null;
+    try {
+      audio = new Audio(url);
+      audio.crossOrigin = "anonymous";
+      audio.loop = true;
+      audio.preload = "auto";
+      audio.volume = 1.0;
+      // Fai partire da un offset casuale così ogni rubrica ha un flavor diverso
+      audio.addEventListener("loadedmetadata", () => {
+        try {
+          if (audio.duration && audio.duration > 30) {
+            audio.currentTime = Math.random() * (audio.duration - 20);
+          }
+        } catch (e) {}
+      });
+      const src = ctx.createMediaElementSource(audio);
+      gainNode = ctx.createGain();
+      gainNode.gain.setValueAtTime(0.001, ctx.currentTime);
+      gainNode.gain.exponentialRampToValueAtTime(Math.max(0.01, volume), ctx.currentTime + 0.8);
+      src.connect(gainNode);
+      gainNode.connect(this.outputBus || ctx.destination);
+      audio.play().catch(() => {});
+    } catch (e) {
+      // createMediaElementSource già usato o errore CORS — silent fallback
+    }
+    return () => {
+      if (stopped) return;
+      stopped = true;
+      try {
+        if (gainNode) {
+          gainNode.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.5);
+        }
+      } catch (e) {}
+      setTimeout(() => {
+        try { if (audio) { audio.pause(); audio.src = ""; } } catch (e) {}
+      }, 600);
+    };
+  }
+
   async _playSpeechWithBed(segment) {
-    // Rubriche parlate → sempre bed procedurale dedicato per kind (mai canzoni Suno).
-    // Ogni chiamata sceglie una variante distinta → identità sonora riconoscibile.
-    const stopBed = this._startProceduralAdBed(segment.kind);
+    // Rubriche parlate → bed = traccia Suno reale in loop (già in libreria locale,
+    // ZERO costi). Se manca `background_loop` fallback su bed procedurale.
+    let stopBed;
+    if (segment.background_loop) {
+      stopBed = this._playLoopedBed(segment.background_loop, 0.22);
+    } else {
+      stopBed = this._startProceduralAdBed(segment.kind);
+    }
     this._activeBedStoppers.push(stopBed);
     try {
-      await this.playAudioUrl(segment.speech_audio_url);
+      if (segment.speech_audio_url) {
+        await this.playAudioUrl(segment.speech_audio_url);
+      } else if (segment.script) {
+        // Nessun TTS pronto → fallback su Web Speech del browser così NON c'è mai silenzio.
+        await this.speak(segment.script, segment.voice_key, { rate: 1.05 });
+      } else {
+        // Nemmeno script → lascia scorrere il bed 12s poi passa oltre
+        await new Promise(res => setTimeout(res, 12000));
+      }
     } finally {
       stopBed();
     }

@@ -779,6 +779,18 @@ async def suno_status():
     }
 
 
+@api_router.get("/library/seed")
+async def library_seed_list():
+    """5 brani 'seed' sempre disponibili in libreria locale — mai generati
+    on-the-fly. Servono da fallback garantito se il resto della libreria
+    è vuoto/pending. Sono già scaricati sul disco."""
+    docs = await db.tracks.find(
+        {"is_seed": True, "status": "ready"},
+        {"_id": 0}
+    ).to_list(20)
+    return {"count": len(docs), "tracks": docs}
+
+
 @api_router.get("/library/stats")
 async def library_stats():
     """Snapshot of the local music library. Useful to verify that the radio
@@ -1010,7 +1022,21 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
                     {"$set": {"last_played_at": datetime.now(timezone.utc).isoformat()}},
                 )
         if track is None:
-            # Library empty (or Suno disabled). Only trigger a fresh Suno
+            # Library round-robin returned nothing (rare). PRIMA di toccare
+            # Suno, garantiamo continuità pescando un brano SEED (i 5 brani
+            # standard sempre disponibili localmente). Zero costi, zero attesa.
+            seed = await db.tracks.find_one(
+                {"is_seed": True, "status": "ready", "audio_url": {"$ne": None}},
+                {"_id": 0},
+                sort=[("last_played_at", 1), ("created_at", 1)],
+            )
+            if seed:
+                track = Track(**seed)
+                await db.tracks.update_one(
+                    {"id": track.id},
+                    {"$set": {"last_played_at": datetime.now(timezone.utc).isoformat()}},
+                )
+        if track is None:
             # generation if autogen is allowed AND we don't already have
             # ANY reusable track. Otherwise fall back to the oldest track
             # in the DB (of any status) or, as last resort, a procedural

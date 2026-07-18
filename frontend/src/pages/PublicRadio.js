@@ -188,7 +188,33 @@ export default function PublicRadio() {
           setTrackOverlay(o => (o.visible ? { ...o, visible: false } : o));
         }
 
-        await radioEngine.playSegment(seg);
+        // Anti-silenzio: se playSegment dovesse risolversi istantaneamente
+        // (segmento senza audio né speech), forziamo un timeout minimo che
+        // riempia il gap con un fallback musicale.
+        const playStart = Date.now();
+        try {
+          await radioEngine.playSegment(seg);
+        } catch (playErr) {
+          console.error("playSegment error:", playErr);
+        }
+        const playedMs = Date.now() - playStart;
+        // Se il segmento è "svanito" in <2s, riempiamo il buco con una music slot
+        // esplicita dalla libreria locale (mai Suno API — zero costi).
+        if (playedMs < 2000 && !stopFlag.current) {
+          try {
+            const emergency = await endpoints.generateSegment({ kind: "music" });
+            if (emergency.music_audio_url && emergency.music_audio_url.startsWith("/api/")) {
+              emergency.music_audio_url = endpoints.audioUrl(emergency.music_audio_url);
+            }
+            if (emergency.background_loop && emergency.background_loop.startsWith("/api/")) {
+              emergency.background_loop = endpoints.audioUrl(emergency.background_loop);
+            }
+            if (emergency.speech_audio_url && emergency.speech_audio_url.startsWith("/api/")) {
+              emergency.speech_audio_url = endpoints.audioUrl(emergency.speech_audio_url);
+            }
+            await radioEngine.playSegment(emergency);
+          } catch (e) { console.warn("emergency music fallback failed", e); }
+        }
         if (stopFlag.current) break;
         // Ensure overlay is hidden between segments regardless of the timer.
         setTrackOverlay(o => (o.visible ? { ...o, visible: false } : o));
