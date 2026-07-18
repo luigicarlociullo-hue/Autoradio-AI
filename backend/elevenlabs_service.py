@@ -1,7 +1,9 @@
-"""ElevenLabs Text-to-Speech service.
-Uses httpx directly (no SDK dependency) to convert text to speech via
-eleven_multilingual_v2 (best Italian model). Generated MP3s are stored in
-TTS_DIR and served through /api/tts/{filename}.
+"""Text-to-Speech service.
+Primary: OpenAI TTS-1 via Emergent Universal Key gateway
+         (OPENAI_API_KEY + OPENAI_BASE_URL, endpoint /audio/speech).
+Fallback: ElevenLabs (eleven_multilingual_v2) — solo se ELEVENLABS_API_KEY è presente
+         E la Universal Key non è configurata / risponde errore.
+Generated MP3s are stored in TTS_DIR and served through /api/tts/{filename}.
 """
 import os
 import uuid
@@ -12,51 +14,81 @@ import httpx
 logger = logging.getLogger(__name__)
 
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "").strip()
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
+OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "").strip().rstrip("/")
 TTS_DIR = Path(__file__).parent / "tts_audio"
 TTS_DIR.mkdir(exist_ok=True)
 
-# Map internal voice_key → ElevenLabs public voice_id (multilingual v2 handles Italian for all)
-VOICE_KEY_TO_ELEVEN = {
-    "female-1": "EXAVITQu4vr4xnSDxMaL",   # Bella   – bright energetic
-    "female-2": "AZnzlk1XvdvUeBnXmlld",   # Domi    – youthful confident
-    "female-3": "MF3mGyEYCl7XYWbV9V6O",   # Elli    – warm friendly
-    "female-4": "XB0fDUnXU5powFXDhCwa",   # Charlotte – calm poetic
-    "female-5": "21m00Tcm4Tlm3f5Y58nb",   # Rachel  – classic radio
-    "male-1":   "ErXwobaYiN019PkySvjV",   # Antoni  – smooth
-    "male-2":   "pNInz6obpgDQGcFmaJgB",   # Adam    – deep confident (default)
-    "male-3":   "TxGEqnHWrfWFTfGW9XjX",   # Josh    – young dynamic
-    "male-4":   "VR6AewLTigWG4xSOukaG",   # Arnold  – strong
-    "male-5":   "yoZ06aMxZJJ28mfd3POQ",   # Sam     – narrator
+# Internal voice_key → OpenAI TTS voice (nova/alloy/echo/fable/onyx/shimmer)
+# Scelte italiane pensate per timbro naturale e varietà DJ:
+VOICE_KEY_TO_OPENAI = {
+    "female-1": "nova",     # bright energetic
+    "female-2": "shimmer",  # youthful warm
+    "female-3": "fable",    # storyteller
+    "female-4": "nova",
+    "female-5": "shimmer",
+    "male-1":   "onyx",     # deep confident
+    "male-2":   "echo",     # smooth
+    "male-3":   "alloy",    # neutral versatile
+    "male-4":   "onyx",
+    "male-5":   "echo",
 }
 
-DEFAULT_VOICE_ID = "pNInz6obpgDQGcFmaJgB"
+# ElevenLabs fallback map (unchanged)
+VOICE_KEY_TO_ELEVEN = {
+    "female-1": "EXAVITQu4vr4xnSDxMaL",
+    "female-2": "AZnzlk1XvdvUeBnXmlld",
+    "female-3": "MF3mGyEYCl7XYWbV9V6O",
+    "female-4": "XB0fDUnXU5powFXDhCwa",
+    "female-5": "21m00Tcm4Tlm3f5Y58nb",
+    "male-1":   "ErXwobaYiN019PkySvjV",
+    "male-2":   "pNInz6obpgDQGcFmaJgB",
+    "male-3":   "TxGEqnHWrfWFTfGW9XjX",
+    "male-4":   "VR6AewLTigWG4xSOukaG",
+    "male-5":   "yoZ06aMxZJJ28mfd3POQ",
+}
+DEFAULT_ELEVEN_ID = "pNInz6obpgDQGcFmaJgB"
 
 
 def is_enabled() -> bool:
-    return bool(ELEVENLABS_API_KEY)
+    """True se abbiamo OpenAI (via Universal Key) O ElevenLabs come fallback."""
+    return bool(OPENAI_API_KEY and OPENAI_BASE_URL) or bool(ELEVENLABS_API_KEY)
 
 
-async def synth_speech(text: str, voice_key: str = "female-1") -> str | None:
-    """Generate TTS via ElevenLabs. Returns filename inside TTS_DIR, or None."""
-    if not is_enabled() or not text or not text.strip():
+async def _synth_openai(text: str, voice_key: str) -> bytes | None:
+    """OpenAI TTS-1 via Emergent gateway. Ritorna bytes mp3 o None."""
+    if not OPENAI_API_KEY or not OPENAI_BASE_URL:
         return None
-    text = text.strip()[:900]  # ElevenLabs cost is per-char, be reasonable
-    voice_id = VOICE_KEY_TO_ELEVEN.get(voice_key, DEFAULT_VOICE_ID)
+    voice = VOICE_KEY_TO_OPENAI.get(voice_key, "nova")
+    url = f"{OPENAI_BASE_URL}/audio/speech"
+    body = {"model": "tts-1", "voice": voice, "input": text[:4000]}
+    headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            r = await client.post(url, headers=headers, json=body)
+        if r.status_code != 200:
+            logger.warning(f"OpenAI TTS {r.status_code}: {r.text[:220]}")
+            return None
+        if not r.content or len(r.content) < 200:
+            logger.warning("OpenAI TTS returned empty/too-small body")
+            return None
+        return r.content
+    except Exception as e:
+        logger.warning(f"OpenAI TTS error: {e}")
+        return None
+
+
+async def _synth_elevenlabs(text: str, voice_key: str) -> bytes | None:
+    """ElevenLabs fallback (eleven_multilingual_v2). Ritorna bytes mp3 o None."""
+    if not ELEVENLABS_API_KEY:
+        return None
+    voice_id = VOICE_KEY_TO_ELEVEN.get(voice_key, DEFAULT_ELEVEN_ID)
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
-    headers = {
-        "xi-api-key": ELEVENLABS_API_KEY,
-        "Content-Type": "application/json",
-        "Accept": "audio/mpeg",
-    }
+    headers = {"xi-api-key": ELEVENLABS_API_KEY, "Content-Type": "application/json", "Accept": "audio/mpeg"}
     body = {
-        "text": text,
+        "text": text[:900],
         "model_id": "eleven_multilingual_v2",
-        "voice_settings": {
-            "stability": 0.4,
-            "similarity_boost": 0.8,
-            "style": 0.5,
-            "use_speaker_boost": True,
-        },
+        "voice_settings": {"stability": 0.4, "similarity_boost": 0.8, "style": 0.5, "use_speaker_boost": True},
     }
     try:
         async with httpx.AsyncClient(timeout=45) as client:
@@ -64,12 +96,37 @@ async def synth_speech(text: str, voice_key: str = "female-1") -> str | None:
         if r.status_code != 200:
             logger.warning(f"ElevenLabs {r.status_code}: {r.text[:200]}")
             return None
-        filename = f"tts_{uuid.uuid4().hex}.mp3"
-        (TTS_DIR / filename).write_bytes(r.content)
-        return filename
+        return r.content
     except Exception as e:
         logger.warning(f"ElevenLabs error: {e}")
         return None
+
+
+async def synth_speech(text: str, voice_key: str = "female-1") -> str | None:
+    """
+    Genera TTS. Primario OpenAI TTS-1 (Universal Key), fallback ElevenLabs.
+    Ritorna il filename dentro TTS_DIR, o None se entrambi falliscono.
+    """
+    if not text or not text.strip():
+        return None
+    text = text.strip()
+
+    # 1) OpenAI TTS-1 (primary)
+    audio = await _synth_openai(text, voice_key)
+    provider = "openai-tts-1"
+
+    # 2) Fallback ElevenLabs (only if OpenAI failed / not configured)
+    if not audio:
+        audio = await _synth_elevenlabs(text, voice_key)
+        provider = "elevenlabs"
+
+    if not audio:
+        return None
+
+    filename = f"tts_{uuid.uuid4().hex}.mp3"
+    (TTS_DIR / filename).write_bytes(audio)
+    logger.info(f"TTS synthesized via {provider}: {filename} ({len(audio):,} bytes)")
+    return filename
 
 
 def tts_path(filename: str) -> Path | None:
