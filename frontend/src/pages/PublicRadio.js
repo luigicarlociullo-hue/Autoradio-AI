@@ -154,20 +154,46 @@ export default function PublicRadio() {
     const fetchSegment = fetchSegmentSafe;  // alias per retrocompatibilità
 
     try {
-      // Prefetch pipeline: keep one segment ready ahead
-      let nextPromise = fetchSegment();
+      // ============================================================
+      // CODA DI 2 SEGMENTI PRE-GENERATI (zero silenzio tra segmenti)
+      // ------------------------------------------------------------
+      // Manteniamo SEMPRE 2 segmenti pronti nella coda. Appena uno viene
+      // consumato, ne richiediamo subito uno nuovo in background così il
+      // buffer è pieno prima che il segmento corrente finisca.
+      // ============================================================
+      const queue = [];
+      let refilling = false;
+
+      const fillQueue = () => {
+        if (refilling) return;
+        refilling = true;
+        (async () => {
+          try {
+            while (queue.length < 2 && !stopFlag.current) {
+              const seg = await fetchSegmentSafe();
+              if (!seg) break;
+              try { radioEngine.preloadSegment(seg); } catch (e) {}
+              queue.push(seg);
+            }
+          } finally {
+            refilling = false;
+          }
+        })();
+      };
+
+      // Riempi la coda PRIMA di iniziare (blocca sul primo, poi riempi il resto async)
       if (hdMode) setRenderingHd(true);
-      let seg = await nextPromise;
+      let seg = await fetchSegmentSafe();
       if (hdMode) setRenderingHd(false);
       if (!seg) {
         toast.error("Impossibile contattare il server. Riprova.");
         return;
       }
       try { radioEngine.preloadSegment(seg); } catch (e) {}
-      nextPromise = fetchSegment().then(nextSeg => {
-        try { radioEngine.preloadSegment(nextSeg); } catch (e) {}
-        return nextSeg;
-      });
+      // Kick off riempimento coda in parallelo
+      fillQueue();
+
+      let prevKind = null;
 
       while (!stopFlag.current) {
         setCurrent(seg);
@@ -190,8 +216,22 @@ export default function PublicRadio() {
           setTrackOverlay(o => (o.visible ? { ...o, visible: false } : o));
         }
 
-        // Play current segment (errori isolati → skip pulito)
-        console.log(`[R-A.I.] Playing segment kind=${seg.kind} title="${seg.title}"`);
+        // ============================================================
+        // Stinger transizionale NON BLOCCANTE su cambio blocco
+        // ------------------------------------------------------------
+        // Lo stinger parte in PARALLELO all'inizio del segmento successivo:
+        // il segmento comincia subito, lo sting si sovrappone al fade-in dei
+        // primi ~800ms. Zero gap percepito.
+        // ============================================================
+        if (prevKind) {
+          const musicToSpeech = prevKind === "music" && seg.kind !== "music";
+          const speechToMusic = prevKind !== "music" && seg.kind === "music";
+          if (musicToSpeech || speechToMusic) {
+            radioEngine.playStinger(prevKind, seg.kind).catch(() => {});
+          }
+        }
+
+        console.log(`[R-A.I.] Playing segment kind=${seg.kind} title="${seg.title}" queue=${queue.length}`);
         try {
           await radioEngine.playSegment(seg);
         } catch (playErr) {
@@ -201,36 +241,31 @@ export default function PublicRadio() {
         if (stopFlag.current) break;
         setTrackOverlay(o => (o.visible ? { ...o, visible: false } : o));
 
-        // Await next segment (già in-flight)
-        const prevKind = seg.kind;
-        try {
-          seg = await nextPromise;
-        } catch (e) {
-          console.warn("nextPromise failed, retrying:", e);
-          seg = await fetchSegmentSafe();
-        }
-        if (!seg) {
-          // Server irraggiungibile per 3 tentativi → attendi 3s e riprova il loop
-          await new Promise(r => setTimeout(r, 3000));
-          seg = await fetchSegmentSafe();
-          if (!seg) { toast.error("Server irraggiungibile"); break; }
-        }
-        try { radioEngine.preloadSegment(seg); } catch (e) {}
+        prevKind = seg.kind;
 
-        // Stinger SOLO quando cambia BLOCCO (music ↔ speech). Nessuno stinger tra
-        // due music o tra due parlati.
-        const nextKind = seg.kind;
-        const musicToSpeech = prevKind === "music" && nextKind !== "music";
-        const speechToMusic = prevKind !== "music" && nextKind === "music";
-        if (!stopFlag.current && (musicToSpeech || speechToMusic)) {
-          try { await radioEngine.playStinger(prevKind, nextKind); } catch (e) {}
+        // Preleva il prossimo dalla coda (già pronto) e richiedi refill immediato
+        if (queue.length === 0) {
+          // Emergency: nessun segmento in coda → attesa attiva breve poi hard-fetch
+          console.warn("[R-A.I.] Queue empty at segment end — fetching sync");
+          const start = Date.now();
+          while (queue.length === 0 && Date.now() - start < 4000 && !stopFlag.current) {
+            fillQueue();
+            await new Promise(r => setTimeout(r, 200));
+          }
+          if (queue.length === 0) {
+            const emergency = await fetchSegmentSafe();
+            if (emergency) queue.push(emergency);
+            else {
+              await new Promise(r => setTimeout(r, 3000));
+              const retry = await fetchSegmentSafe();
+              if (retry) queue.push(retry);
+              else { toast.error("Server irraggiungibile"); break; }
+            }
+          }
         }
-
-        // Prefetch del segmento successivo
-        nextPromise = fetchSegment().then(nextSeg => {
-          try { radioEngine.preloadSegment(nextSeg); } catch (e) {}
-          return nextSeg;
-        });
+        seg = queue.shift();
+        // Richiedi immediatamente il refill in background
+        fillQueue();
       }
     } catch (e) {
       toast.error("Errore nel flusso radiofonico");

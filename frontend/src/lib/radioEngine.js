@@ -621,42 +621,36 @@ class RadioEngine {
       src.start(t0 + delay);
     };
 
-    let totalDur = 1.6;
+    let totalDur = 0.4;
     if (kind === "news") {
-      // Two-note bell chime
-      beep(1760, 1760, 0.35, "triangle", 0.4, 0);
-      beep(1320, 1320, 0.55, "triangle", 0.35, 0.18);
-      beep(880, 880, 0.7, "sine", 0.15, 0.35);
-      totalDur = 1.2;
+      // Two-note bell chime (compresso)
+      beep(1760, 1760, 0.14, "triangle", 0.5, 0);
+      beep(1320, 1320, 0.22, "triangle", 0.42, 0.08);
+      totalDur = 0.35;
     } else if (kind === "joke") {
       // Playful upward "boing"
-      beep(220, 880, 0.28, "square", 0.28, 0);
-      beep(880, 220, 0.28, "square", 0.28, 0.24);
-      beep(660, 660, 0.15, "sine", 0.3, 0.5);
-      totalDur = 0.8;
+      beep(440, 1320, 0.14, "square", 0.35, 0);
+      beep(1320, 660, 0.12, "square", 0.3, 0.12);
+      totalDur = 0.3;
     } else if (kind === "history" || kind === "interview") {
-      // Vinyl-scratch-ish noise burst + low thud
-      noiseBurst(0.35, 0.45, 0, 2200);
-      noiseBurst(0.25, 0.35, 0.15, 3800);
-      beep(80, 60, 0.5, "sine", 0.35, 0.1);
-      totalDur = 1.1;
+      // Vinyl-scratch noise + low thud
+      noiseBurst(0.15, 0.45, 0, 2500);
+      beep(90, 60, 0.22, "sine", 0.4, 0.05);
+      totalDur = 0.35;
     } else if (isMusicTarget) {
-      // Riser + beat drop
-      beep(200, 3000, 0.9, "sawtooth", 0.28, 0);
-      noiseBurst(0.6, 0.25, 0.3, 6000);
-      // Kick
-      beep(150, 40, 0.35, "sine", 0.55, 0.95);
-      beep(80, 30, 0.3, "sine", 0.5, 1.05);
-      totalDur = 1.8;
+      // Riser breve + kick
+      beep(300, 3000, 0.28, "sawtooth", 0.32, 0);
+      beep(120, 40, 0.18, "sine", 0.55, 0.25);
+      totalDur = 0.4;
     } else if (isTalkTarget) {
-      // Clean electronic swoosh + blip
-      noiseBurst(0.55, 0.3, 0, 2500);
-      beep(440, 1320, 0.2, "sine", 0.35, 0.4);
-      totalDur = 1.0;
+      // Swoosh breve + blip
+      noiseBurst(0.18, 0.32, 0, 2500);
+      beep(660, 1320, 0.1, "sine", 0.35, 0.12);
+      totalDur = 0.3;
     } else {
       // Default transition blip
-      beep(660, 990, 0.18, "sine", 0.4, 0);
-      totalDur = 0.4;
+      beep(660, 990, 0.14, "sine", 0.4, 0);
+      totalDur = 0.2;
     }
 
     // Cleanup — disconnect master shortly after the last sound
