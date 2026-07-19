@@ -1043,17 +1043,17 @@ class RadioEngine {
         try {
           await audio.play();
 
-          const INTRO_DUCK = 0.55;
+          const INTRO_DUCK = 0.18;   // musica sotto la voce → parole chiare
           const FULL = 1.0;
-          const OUTRO_DUCK = 0.6;
+          const OUTRO_DUCK = 0.20;   // musica sotto la voce outro
           // Volume controller: musicGain se disponibile, altrimenti audio.volume
           const setVol = async (target, ms) => {
             if (musicGain) return this._fadeGain(musicGain, musicGain.gain.value, target, ms);
             return this._fadeGain(audio, audio.volume, target, ms);
           };
 
-          // 1) Fade-in a livello duck
-          await setVol(INTRO_DUCK, 500);
+          // 1) Fade-in a livello duck (musica sotto)
+          await setVol(INTRO_DUCK, 700);
 
           // 2) Intro DJ (max 14s per non coprire l'entrata vocals del brano)
           if (segment.speech_audio_url || segment.script) {
@@ -1071,8 +1071,8 @@ class RadioEngine {
             }
           }
 
-          // 3) Music a pieno volume
-          await setVol(FULL, 1200);
+          // 3) Music a pieno volume (fade più lento per essere piacevole)
+          await setVol(FULL, 1800);
 
           // 4) Attendi fine brano meno 8s (outro window)
           await new Promise((r) => {
@@ -1085,9 +1085,9 @@ class RadioEngine {
             }, 250);
           });
 
-          // 5) Outro DJ (opzionale)
+          // 5) Outro DJ (opzionale) — duck aggressivo così la voce è primo piano
           if (segment.outro_speech_url || segment.outro_script) {
-            await setVol(OUTRO_DUCK, 700);
+            await setVol(OUTRO_DUCK, 900);
             if (segment.outro_speech_url) {
               await this.playAudioUrl(segment.outro_speech_url);
             } else {
