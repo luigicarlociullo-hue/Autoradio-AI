@@ -291,10 +291,11 @@ class RadioEngine {
    */
   preloadSegment(seg) {
     if (!seg) return;
-    if (seg.music_audio_url) this.preloadUrl(seg.music_audio_url);
+    // NOTA: NON pre-cachiamo music_audio_url perché `_playMusicWithVoice`
+    // crea il proprio Audio element + createMediaElementSource — usare la
+    // cache preload causava errori "already used" e brani che non partivano.
     if (seg.speech_audio_url) this.preloadUrl(seg.speech_audio_url);
     if (seg.outro_speech_url) this.preloadUrl(seg.outro_speech_url);
-    // background_loop è usato in loop → non serve pre-cachare (viene creato con audio.loop=true)
   }
 
   stopAudio() {
@@ -314,41 +315,78 @@ class RadioEngine {
     this._activeBedStoppers = [];
 
     this.currentKind = segment.kind;
-    // Music segment with real audio + optional pre-rendered intro/outro speech
+    // Music segment con audio reale
     if (segment.kind === "music" && segment.music_audio_url) {
       return this._playMusicWithVoice(segment);
     }
-    // News segment: sting inglese "News from the future" + bed continuo procedurale
-    if (segment.kind === "news") {
-      return this._playNewsSegment(segment);
-    }
-    // Ad spot: jingle assurdo + loop procedurale AD-only (mai canzoni)
-    if (segment.kind === "ad_spot") {
-      return this._playAdSpot(segment);
-    }
-    // Rubriche parlate (joke, weather, history, interview, motivation, horoscope, talk, jingle, ...)
-    // Entra qui se c'è speech pronto OPPURE un background_loop dal backend →
-    // così anche se il TTS è ancora pending abbiamo comunque musica continua.
-    if (segment.speech_audio_url || segment.background_loop) {
-      return this._playSpeechWithBed(segment);
-    }
-    // Fallback: browser Web Speech + procedural synth
-    if (segment.kind === "music") {
-      const dur = Math.min(segment.duration_sec || 40, 45);
-      const stop = this.startMusic({
-        genre: segment.track_meta?.genre || "electronic",
-        durationSec: dur,
-        seed: (segment.id || "").charCodeAt(0) || 0,
+    // Tutti i segmenti PARLATI (talk, joke, weather, history, interview, motivation,
+    // news, ad_spot, time_signal, jingle, horoscope, ...): SOLO VOCE, zero sottofondo.
+    return this._playVoiceOnly(segment);
+  }
+
+  /**
+   * Riproduzione voce NUDA (nessun bed, nessun loop musicale, nessun jingle).
+   * Usa il file TTS `speech_audio_url` se disponibile, altrimenti Web Speech.
+   * Skip pulito se tutto fallisce → il palinsesto continua senza silenzi lunghi.
+   */
+  async _playVoiceOnly(segment) {
+    if (segment.speech_audio_url) {
+      const ctx = this.ensureAudioCtx();
+      return new Promise((resolve) => {
+        let resolved = false;
+        const done = () => { if (!resolved) { resolved = true; resolve(); } };
+        const audio = new Audio();
+        audio.crossOrigin = "anonymous";
+        audio.preload = "auto";
+        audio.volume = 1.0;
+        this.currentAudio = audio;
+
+        const safety = setTimeout(() => {
+          console.warn("Voice safety timeout — skipping:", segment.speech_audio_url);
+          try { audio.pause(); } catch (e) {}
+          done();
+        }, 25000);
+
+        let srcNode = null;
+        try {
+          if (ctx) {
+            srcNode = ctx.createMediaElementSource(audio);
+            srcNode.connect(this.outputBus || ctx.destination);
+          }
+        } catch (e) {
+          // no analyser routing possible — l'elemento suonerà comunque via volume nativo
+        }
+
+        audio.addEventListener("ended", () => {
+          clearTimeout(safety);
+          try { srcNode && srcNode.disconnect(); } catch (e) {}
+          done();
+        }, { once: true });
+        audio.addEventListener("error", () => {
+          clearTimeout(safety);
+          console.error("Voice load error:", segment.speech_audio_url);
+          try { srcNode && srcNode.disconnect(); } catch (e) {}
+          done();
+        }, { once: true });
+        audio.addEventListener("canplaythrough", () => {
+          audio.play().catch((err) => {
+            console.error("Voice play() failed:", err);
+            clearTimeout(safety);
+            done();
+          });
+        }, { once: true });
+
+        audio.src = segment.speech_audio_url;
+        try { audio.load(); } catch (e) {}
       });
-      if (segment.script) await this.speak(segment.script, segment.voice_key, { rate: 1.08 });
-      await new Promise(res => setTimeout(res, Math.max(4000, dur * 500)));
-      stop();
-    } else {
-      const stopBed = this.startMusic(this._bedConfigFor(segment.kind));
-      this._activeBedStoppers.push(stopBed);
-      await this.speak(segment.script || segment.title || "", segment.voice_key, { rate: 1.06 });
-      stopBed();
     }
+    // Fallback: Web Speech del browser (solo se non abbiamo TTS pronto)
+    if (segment.script) {
+      try {
+        await this.speak(segment.script, segment.voice_key, { rate: 1.05 });
+      } catch (e) { console.error("speak() failed:", e); }
+    }
+    // Se nemmeno lo script c'è, riso subito — il loop passerà oltre
   }
 
   /**
@@ -855,135 +893,160 @@ class RadioEngine {
     };
   }
 
-  async _playMusicWithVoice(segment) {
-    const ctx = this.ensureAudioCtx();
-    if (!ctx) return this.playAudioUrl(segment.music_audio_url);
-
+  /**
+   * Fade il gain di un GainNode Web Audio in modo lineare (secondi).
+   * `nodeOrEl` può essere un GainNode oppure un HTMLAudioElement (fallback).
+   */
+  _fadeGain(nodeOrEl, from, to, durationMs = 800) {
+    if (!nodeOrEl) return Promise.resolve();
     return new Promise((resolve) => {
+      try {
+        if (nodeOrEl.gain && typeof nodeOrEl.gain.value === "number") {
+          const ctx = this.ensureAudioCtx();
+          const now = ctx ? ctx.currentTime : 0;
+          nodeOrEl.gain.cancelScheduledValues(now);
+          nodeOrEl.gain.setValueAtTime(Math.max(0.0001, from), now);
+          nodeOrEl.gain.linearRampToValueAtTime(Math.max(0.0001, to), now + durationMs / 1000);
+        } else if (nodeOrEl.volume !== undefined) {
+          const steps = 24;
+          const dt = Math.max(20, durationMs / steps);
+          let i = 0;
+          const iv = setInterval(() => {
+            i++;
+            const t = i / steps;
+            nodeOrEl.volume = Math.max(0, Math.min(1, from + (to - from) * t));
+            if (i >= steps) { clearInterval(iv); resolve(); }
+          }, dt);
+          return;
+        }
+      } catch (e) {}
+      setTimeout(resolve, durationMs);
+    });
+  }
+
+  async _playMusicWithVoice(segment) {
+    // Riscrittura ROBUSTA: attende `canplaythrough` prima di suonare, safety
+    // timeout di 15s in caso di problemi di rete, skip pulito su errore.
+    // Ducking gestito via Web Audio GainNode per il visualizer.
+    return new Promise(async (resolve) => {
       let resolved = false;
       const done = () => { if (!resolved) { resolved = true; resolve(); } };
+      const ctx = this.ensureAudioCtx();
+      const url = segment.music_audio_url;
+      if (!url) { done(); return; }
+
+      // Elemento audio nuovo — niente cache preload per evitare errori di
+      // createMediaElementSource già-usato.
+      const audio = new Audio();
+      audio.crossOrigin = "anonymous";
+      audio.preload = "auto";
+      audio.volume = 1.0;
+      this.currentAudio = audio;
+
+      // Safety timeout: se `canplaythrough` non arriva in 15s, skip il brano.
+      const safetyTimer = setTimeout(() => {
+        console.warn("Music safety timeout — skipping:", url);
+        try { audio.pause(); audio.src = ""; } catch (e) {}
+        done();
+      }, 15000);
+
+      // Grafo Web Audio: audio → musicGain → outputBus (analyser + master)
+      let musicGain = null;
+      let srcNode = null;
       try {
-        // Riusa l'elemento pre-caricato (se già in cache) — nessuna latenza di rete
-        // né di setup Web Audio.
-        let audio = this._takePreloaded(segment.music_audio_url);
-        let preloadedSrc = null;
-        let preloadedGain = null;
-        if (audio) {
-          preloadedSrc = audio._srcNode || null;
-          preloadedGain = audio._voiceGain || null;
-        } else {
-          // IMPORTANT: crossOrigin must be set BEFORE assigning src so the browser
-          // sends the CORS preflight/tainted-origin check correctly.
-          audio = document.createElement("audio");
-          audio.crossOrigin = "anonymous";
-          audio.preload = "auto";
-          audio.src = segment.music_audio_url;
+        if (ctx) {
+          srcNode = ctx.createMediaElementSource(audio);
+          musicGain = ctx.createGain();
+          musicGain.gain.value = 0.0001;
+          srcNode.connect(musicGain);
+          musicGain.connect(this.outputBus || ctx.destination);
         }
-        this.currentAudio = audio;
-        // Route through analyser bus + a per-track gain so we can duck
-        let src = preloadedSrc;
-        if (!src) {
-          try { src = ctx.createMediaElementSource(audio); } catch (e) {
-            console.warn("createMediaElementSource failed, playing without analyser:", e);
-            src = null;
-          }
-        } else {
-          // Il src esiste già (dal preload) — scolleghiamo il voiceGain preloaded per
-          // ricollegarlo attraverso il musicGain con ducking.
-          try { preloadedGain && preloadedGain.disconnect(); } catch (e) {}
-        }
-        const musicGain = ctx.createGain();
-        musicGain.gain.value = 0.0;
-        if (src) {
-          src.connect(musicGain);
-          musicGain.connect(this.outputBus);
-        }
+      } catch (e) {
+        console.warn("Music WebAudio graph setup failed, using element volume:", e);
+      }
 
-        const rampTo = (target, seconds = 0.9) => {
-          if (src) {
-            const now = ctx.currentTime;
-            musicGain.gain.cancelScheduledValues(now);
-            musicGain.gain.setValueAtTime(musicGain.gain.value, now);
-            musicGain.gain.linearRampToValueAtTime(target, now + seconds);
-          } else {
-            // No Web Audio routing → use native element volume as fallback
-            const startVol = audio.volume;
-            const steps = 20;
-            const stepMs = (seconds * 1000) / steps;
-            let i = 0;
-            const iv = setInterval(() => {
-              i++;
-              audio.volume = Math.max(0, Math.min(1, startVol + (target - startVol) * (i / steps)));
-              if (i >= steps) clearInterval(iv);
-            }, stepMs);
-          }
-        };
-        // Keep the underlying HTMLMediaElement volume at max — ducking is done via GainNode.
-        // If we don't have a Web Audio source (createMediaElementSource failed), we start
-        // muted and use audio.volume as the fallback ducking control.
-        audio.volume = src ? 1.0 : 0;
+      audio.addEventListener("error", () => {
+        clearTimeout(safetyTimer);
+        console.error("Music load error:", url);
+        try { srcNode && srcNode.disconnect(); } catch (e) {}
+        try { musicGain && musicGain.disconnect(); } catch (e) {}
+        done();
+      }, { once: true });
 
-        const INTRO_DUCK = 0.55;   // music under voice during intro
-        const FULL = 1.0;          // music at full while nobody speaks
-        const OUTRO_DUCK = 0.60;   // music under voice during outro
+      audio.addEventListener("canplaythrough", async () => {
+        clearTimeout(safetyTimer);
+        try {
+          await audio.play();
 
-        audio.onended = () => { rampTo(0.0, 0.6); setTimeout(done, 700); };
-        audio.onerror = () => done();
+          const INTRO_DUCK = 0.55;
+          const FULL = 1.0;
+          const OUTRO_DUCK = 0.6;
+          // Volume controller: musicGain se disponibile, altrimenti audio.volume
+          const setVol = async (target, ms) => {
+            if (musicGain) return this._fadeGain(musicGain, musicGain.gain.value, target, ms);
+            return this._fadeGain(audio, audio.volume, target, ms);
+          };
 
-        audio.oncanplay = async () => {
-          audio.play().catch(() => done());
-        };
+          // 1) Fade-in a livello duck
+          await setVol(INTRO_DUCK, 500);
 
-        // Start intro DJ over music fade-in
-        const startPipeline = async () => {
-          try {
-            // fade in music to duck level
-            rampTo(INTRO_DUCK, 0.6);
-            // Play intro speech, but cap the whole DJ intro to MAX_INTRO_MS so
-            // the speaker "wraps up" right around when the vocals typically
-            // kick in. If the LLM script is too long, we cut it and ramp the
-            // music to full — exactly like a real radio DJ.
-            const MAX_INTRO_MS = 14000; // ~14s: dance tracks usually start vocals ≈15–18s
+          // 2) Intro DJ (max 14s per non coprire l'entrata vocals del brano)
+          if (segment.speech_audio_url || segment.script) {
+            const MAX_INTRO_MS = 14000;
             const speechPromise = segment.speech_audio_url
               ? this.playAudioUrl(segment.speech_audio_url)
-              : (segment.script
-                  ? this.speak(segment.script, segment.voice_key, { rate: 1.08 })
-                  : Promise.resolve());
+              : this.speak(segment.script, segment.voice_key, { rate: 1.08 });
             let timedOut = false;
-            const timeoutPromise = new Promise((r) => setTimeout(() => { timedOut = true; r("timeout"); }, MAX_INTRO_MS));
+            const timeoutPromise = new Promise((r) =>
+              setTimeout(() => { timedOut = true; r(); }, MAX_INTRO_MS)
+            );
             await Promise.race([speechPromise, timeoutPromise]);
             if (timedOut) {
-              // Cut the DJ off cleanly — vocals are about to start.
-              try { this.stopAudio(); } catch (e) {}
               try { this.stopSpeech(); } catch (e) {}
             }
-            // Ramp up music to full
-            rampTo(FULL, 1.2);
-            // Wait until near-end
-            const waitOutro = () => new Promise((r) => {
-              const iv = setInterval(() => {
-                if (!audio || audio.paused || audio.ended) { clearInterval(iv); r(); return; }
-                const remaining = (audio.duration || 60) - (audio.currentTime || 0);
-                if (remaining <= 8 || (this.stopRequested)) { clearInterval(iv); r(); }
-              }, 250);
-            });
-            await waitOutro();
-            // Duck for outro and speak
-            rampTo(OUTRO_DUCK, 0.8);
+          }
+
+          // 3) Music a pieno volume
+          await setVol(FULL, 1200);
+
+          // 4) Attendi fine brano meno 8s (outro window)
+          await new Promise((r) => {
+            const iv = setInterval(() => {
+              if (!audio || audio.paused || audio.ended || this.stopRequested) {
+                clearInterval(iv); r(); return;
+              }
+              const remaining = (audio.duration || 60) - (audio.currentTime || 0);
+              if (remaining <= 8) { clearInterval(iv); r(); }
+            }, 250);
+          });
+
+          // 5) Outro DJ (opzionale)
+          if (segment.outro_speech_url || segment.outro_script) {
+            await setVol(OUTRO_DUCK, 700);
             if (segment.outro_speech_url) {
               await this.playAudioUrl(segment.outro_speech_url);
-            } else if (segment.outro_script) {
+            } else {
               await this.speak(segment.outro_script, segment.voice_key, { rate: 1.1 });
             }
-            // Small buffer then let audio ended fire
-            rampTo(0.0, 0.6);
-            setTimeout(() => { try { audio.pause(); } catch(e){} done(); }, 700);
-          } catch (e) { done(); }
-        };
-        startPipeline();
-      } catch (e) {
-        done();
-      }
+          }
+
+          // 6) Fade-out finale + cleanup
+          await setVol(0.001, 800);
+          try { audio.pause(); } catch (e) {}
+          try { srcNode && srcNode.disconnect(); } catch (e) {}
+          try { musicGain && musicGain.disconnect(); } catch (e) {}
+          done();
+        } catch (playErr) {
+          console.error("Music playback error:", playErr);
+          try { srcNode && srcNode.disconnect(); } catch (e) {}
+          try { musicGain && musicGain.disconnect(); } catch (e) {}
+          done();
+        }
+      }, { once: true });
+
+      // Kick off the load
+      audio.src = url;
+      try { audio.load(); } catch (e) {}
     });
   }
 

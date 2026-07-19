@@ -14,7 +14,38 @@ Vorrei costruire un software di gestione radiofonica completamente automatizzato
 - Auth: Emergent Google OAuth (free) for admin.
 
 ## What's implemented (2026-08 · v10 · Stability fixes)
-- **v10.10 · Suno cost optimization / Library-first caching** (2026-02, this session):
+- **v11.0 · RIORDINO STRUTTURALE — Palinsesto posizionale + player robusto** (2026-02, this session):
+  - **Backend `server.py`**:
+    - Sostituito `random.choices` con **palinsesto posizionale** (`station.playlist_position` 0..5):
+      - pos 0,1,3,4 → `music`
+      - pos 2 → random tra `talk/history/interview/joke/motivation`
+      - pos 5 → `time_signal` (se l'ora è cambiata) altrimenti `ad_spot`/`weather`
+      - Posizione incrementa a ogni segmento e wrappa a 0. NON avanza se `kind` è forzato.
+    - `time_signal` ora usa **ora italiana reale** via `zoneinfo("Europe/Rome")` (gestisce CET/CEST). Formato `HH:MM`. Prompt LLM include ESATTAMENTE "Sono le HH:MM su R-A.I. Radio" come prima frase.
+    - Rimosso `background_loop` dai segmenti parlati → **voci nude, zero sottofondo musicale** (richiesta esplicita).
+    - `_suno_library_filler` più aggressivo: intervallo **30s** (era 90s), target **10** (era 8), genera **2 tracce alla volta** se buffer sotto target (cap in-flight: 4).
+  - **Frontend `radioEngine.js`**:
+    - Riscritto `_playMusicWithVoice()` con logica robusta:
+      - Nuovo `Audio` element ogni volta (niente cache preload → risolve errori `createMediaElementSource already used`)
+      - Attende `canplaythrough` prima di `play()`
+      - **Safety timeout 15s**: se il brano non parte, skip pulito e loop avanza
+      - Pipeline lineare: fade-in duck → intro DJ (max 14s) → fade a full → attende fine -8s → outro DJ → fade-out finale
+      - Nuovo helper `_fadeGain(nodeOrEl, from, to, ms)` per fade lineari su GainNode Web Audio o element.volume
+    - Nuovo `_playVoiceOnly(segment)` per TUTTI i segmenti parlati:
+      - Solo voce TTS, volume 1.0, ZERO sottofondo/bed/loop musicale
+      - Safety timeout 25s + skip su errore
+    - Rimosse rotte `_playSpeechWithBed`, `_playNewsSegment`, `_playAdSpot` dal flusso principale (mantenute in codice come dead code, non chiamate).
+    - `preloadSegment` NON pre-carica più `music_audio_url` (causava conflitti con createMediaElementSource in `_playMusicWithVoice`).
+  - **Frontend `PublicRadio.js`**:
+    - Nuovo `fetchSegmentSafe`: **3 retry** con backoff 2s. Se il server è irraggiungibile, il loop attende 3s prima di riprovare invece di crashare.
+    - Stinger di transizione **SOLO** su cambio blocco (`music ↔ speech`). Niente stinger tra due music consecutivi o due parlati consecutivi.
+    - Console log per ogni segmento: `[R-A.I.] Playing segment kind=X title="Y"`
+  - **Test regressione**: `/app/backend/tests/test_playlist_structure.py` (2/2 PASS):
+    - `test_playlist_positional_sequence`: genera 6 segmenti da posizione 0 e verifica sequenza music,music,parlato,music,music,spot
+    - `test_time_signal_italian_time`: verifica che time_signal contenga HH:MM
+  - **Log sequenza verificata**: music → music → parlato → music → music → time_signal (11:44) → music → music ...
+
+- **v10.10 · Suno cost optimization / Library-first caching** (precedente):
   - Nuovi env vars in `backend/.env`: `SUNO_AUTOGEN_ENABLED=true` (kill-switch globale per TUTTE le chiamate Suno automatiche) e `SUNO_LIBRARY_TARGET=10` (soglia minima tracce ready in libreria).
   - Helper `_suno_autogen_enabled()` / `_suno_library_target()` in `server.py` letti a runtime (nessun restart necessario dopo toggle).
   - `_suno_library_filler()` ora rispetta il kill-switch (skip loop se off) e usa target dinamico da env (10 ready, refill quando ready < 10 e pending < 3).

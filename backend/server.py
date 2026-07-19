@@ -903,40 +903,55 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
             })
             return ad_seg
 
-    # Hourly time signal — force one if none has aired this UTC hour
+    # ============================================================
+    # PALINSESTO STRUTTURATO (posizionale, non random)
+    # ------------------------------------------------------------
+    # Ciclo fisso di 6 posizioni (0..5):
+    #   0 → music        1 → music        2 → parlato
+    #   3 → music        4 → music        5 → spot/meteo/orario
+    # `station.playlist_position` avanza a ogni segmento e wrappa a 0.
+    # Se il chiamante forza `kind` manualmente, la posizione NON avanza.
+    # ============================================================
     if kind is None:
-        state = await db.station.find_one({"_id": "state"}) or {}
-        last_hour = state.get("last_time_signal_hour")
-        now_hour = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H")
-        if last_hour != now_hour:
-            kind = "time_signal"
-            await db.station.update_one({"_id": "state"}, {"$set": {"last_time_signal_hour": now_hour}}, upsert=True)
+        state_doc = await db.station.find_one({"_id": "state"}) or {}
+        pos = int(state_doc.get("playlist_position", 0)) % 6
 
-    kind = kind or random.choices(
-        ["music", "jingle", "talk", "history", "interview", "motivation", "joke", "weather", "horoscope", "news", "ad_spot"],
-        # Prima: music 62 — troppo alto, si perdevano rubriche/spot. Ora: music 42 (~36%),
-        # non-music sommato ~64% con ad_spot 8, jingle 10, joke 7, weather 6, news 6, ecc.
-        weights=[42, 10, 8, 6, 6, 5, 7, 6, 5, 6, 8],
-        k=1,
-    )[0]
+        # Ora italiana reale per il segnale orario
+        try:
+            from zoneinfo import ZoneInfo
+            it_now = datetime.now(ZoneInfo("Europe/Rome"))
+        except Exception:
+            it_now = datetime.now(timezone.utc)
+        current_hour_key = it_now.strftime("%Y-%m-%d %H")
+        last_time_hour = state_doc.get("last_time_signal_hour")
 
-    # ---- MANDATORY rotation quota ----
-    # Se gli ultimi 2 segmenti sono già music, forza una rubrica/spot per evitare
-    # blocchi lunghi di solo musica: la radio deve essere una "trasmissione", non una playlist.
-    if kind == "music":
-        last_two = await db.segments.find({}, {"_id": 0, "kind": 1}, sort=[("created_at", -1)]).to_list(2)
-        if len(last_two) >= 2 and all(s.get("kind") == "music" for s in last_two):
-            kind = random.choices(
-                ["ad_spot", "jingle", "joke", "history", "interview", "news", "weather", "motivation", "horoscope"],
-                weights=[18, 14, 12, 10, 10, 10, 10, 10, 6],
-                k=1,
-            )[0]
-
-    # Anti-double: se l'ultimo era ad_spot, evita un altro ad_spot (forza music)
-    if kind == "ad_spot":
-        last = await db.segments.find_one({}, {"_id": 0, "kind": 1}, sort=[("created_at", -1)])
-        if last and last.get("kind") == "ad_spot":
+        if pos in (0, 1, 3, 4):
             kind = "music"
+        elif pos == 2:
+            kind = random.choice(["talk", "history", "interview", "joke", "motivation"])
+        else:  # pos == 5
+            if last_time_hour != current_hour_key:
+                kind = "time_signal"
+                await db.station.update_one(
+                    {"_id": "state"},
+                    {"$set": {"last_time_signal_hour": current_hour_key}},
+                    upsert=True,
+                )
+            else:
+                kind = random.choice(["ad_spot", "weather"])
+
+        # Ad campaign paying override: se c'è una campagna attiva con plays
+        # rimanenti e siamo in slot commerciale (pos 5), preferisci ad_spot
+        # sponsorizzato invece di quello surreale. Gestito più sotto nel flusso.
+
+        # Advance position (persist)
+        await db.station.update_one(
+            {"_id": "state"},
+            {"$set": {"playlist_position": (pos + 1) % 6}},
+            upsert=True,
+        )
+
+
     djs = await db.djs.find({}, {"_id": 0}).to_list(20)
     if not djs:
         raise HTTPException(400, "No DJs configured")
@@ -1208,8 +1223,15 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
             segment.title = "Jingle · Solo AI"
             segment.duration_sec = 8
         elif kind == "time_signal":
-            now = datetime.now(timezone.utc)
-            hour_it = (now.hour + 1) % 24  # UTC+1 Italia (semplificato)
+            # Ora italiana REALE (Europe/Rome, gestisce automaticamente CET/CEST)
+            try:
+                from zoneinfo import ZoneInfo
+                it_now = datetime.now(ZoneInfo("Europe/Rome"))
+            except Exception:
+                it_now = datetime.now(timezone.utc)
+            hour_it = it_now.hour
+            min_it = it_now.minute
+            time_str = f"{hour_it:02d}:{min_it:02d}"
             worlds = [
                 "Marte", "Giove", "una galassia parallela", "il futuro anteriore",
                 "il metaverso di Ferrara", "Alpha Centauri", "un satellite in orbita bassa",
@@ -1218,14 +1240,15 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
             ]
             world = random.choice(worlds)
             prompt = (
-                f"Segnale orario radiofonico in MAX 20 parole. In Italia sono le {hour_it:02d}:00. "
-                f"Formato: annunci che 'anche su {world} sono le {hour_it}' con una battuta cosmica/simpatica. "
-                "Chiudi dicendo 'siamo su R-A.I.' o simile. Tono altissimo, sorridente, esagerato."
+                f"Segnale orario radiofonico in MAX 25 parole. In Italia sono le {time_str} in punto. "
+                f"Devi dire ESATTAMENTE 'Sono le {time_str} su R-A.I. Radio' come prima frase, "
+                f"poi aggiungi UNA battuta cosmica dicendo che anche su {world} è la stessa ora. "
+                "Tono altissimo, sorridente, esagerato. Italiano."
             )
             script = await llm_generate(provider, model, system_prompt, prompt)
             if not script.strip():
-                script = f"Sono le {hour_it}! Anche su {world} sono le {hour_it}, ma solo qui su R-A.I. la festa non finisce mai!"
-            segment.title = f"Segnale orario · {hour_it}:00 su {world}"
+                script = f"Sono le {time_str} su R-A.I. Radio! Anche su {world} è la stessa ora, ma solo qui la festa non finisce mai!"
+            segment.title = f"Segnale orario · {time_str}"
             segment.duration_sec = 15
         elif kind == "weather":
             # Meteo di una città immaginaria su Marte / universo parallelo (mai il meteo reale)
@@ -1356,18 +1379,8 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
             segment.duration_sec = 30
         segment.script = script.strip()
 
-    # For non-music segments, pick a random existing Suno track as an instrumental
-    # bed. Frontend plays it looped at low volume under the DJ voice — much more
-    # dynamic than the procedural synth bed and doesn't burn Suno credits (we
-    # reuse tracks we've already generated).
-    if segment.kind != "music":
-        bed = await db.tracks.find_one(
-            {"source": "suno", "status": "ready", "audio_url": {"$regex": "^/api/suno_audio/"}},
-            {"_id": 0, "audio_url": 1},
-            sort=[("last_played_at", 1)],
-        )
-        if bed and bed.get("audio_url"):
-            segment.background_loop = bed["audio_url"]
+    # Per i segmenti PARLATI: nessun sottofondo musicale. La voce DJ parla sul
+    # silenzio assoluto (richiesta esplicita). Non impostiamo background_loop.
 
     await db.segments.insert_one(segment.model_dump())
     await db.station.update_one({"_id": "state"}, {"$inc": {"total_segments": 1}}, upsert=True)
@@ -1880,14 +1893,19 @@ async def _suno_library_filler():
             target = _suno_library_target()
             ready = await db.tracks.count_documents({"source": "suno", "status": "ready"})
             pending = await db.tracks.count_documents({"source": "suno", "status": "pending"})
-            if ready < target and pending < 3:
-                genre = random.choice(dance_genres)
-                logger.info(
-                    f"Suno filler: generating {genre} "
-                    f"(ready={ready}/{target}, pending={pending})"
-                )
-                await generate_track(genre=genre)
-            await asyncio.sleep(90)
+            # Batch generation: se scendiamo sotto target genera 2 tracce alla volta
+            # per tenere il buffer sempre pieno. Cap totale in-flight: 4.
+            if ready < target and pending < 4:
+                to_generate = min(2, target - ready, 4 - pending)
+                for _ in range(max(1, to_generate)):
+                    genre = random.choice(dance_genres)
+                    logger.info(
+                        f"Suno filler: generating {genre} "
+                        f"(ready={ready}/{target}, pending={pending})"
+                    )
+                    await generate_track(genre=genre)
+                    pending += 1
+            await asyncio.sleep(30)
         except Exception as e:
             logger.warning(f"Suno filler error: {e}")
             await asyncio.sleep(60)

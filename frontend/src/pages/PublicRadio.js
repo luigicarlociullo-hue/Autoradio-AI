@@ -128,29 +128,30 @@ export default function PublicRadio() {
     setIsPlaying(true);
     setIsPreparing(true);
 
-    const fetchSegment = async () => {
-      let seg = await endpoints.generateSegment(hdMode ? { hd: true } : {});
-      // Always resolve backend-relative URLs to absolute (they come as /api/...)
-      if (seg.speech_audio_url && seg.speech_audio_url.startsWith("/api/")) {
-        seg.speech_audio_url = endpoints.audioUrl(seg.speech_audio_url);
-      }
-      if (seg.outro_speech_url && seg.outro_speech_url.startsWith("/api/")) {
-        seg.outro_speech_url = endpoints.audioUrl(seg.outro_speech_url);
-      }
-      if (seg.music_audio_url && seg.music_audio_url.startsWith("/api/")) {
-        seg.music_audio_url = endpoints.audioUrl(seg.music_audio_url);
-      }
-      if (seg.background_loop && seg.background_loop.startsWith("/api/")) {
-        seg.background_loop = endpoints.audioUrl(seg.background_loop);
-      }
-      if (seg.speech_audio_url && seg.speech_audio_url.startsWith("/api/")) {
-        seg.speech_audio_url = endpoints.audioUrl(seg.speech_audio_url);
-      }
-      if (seg.outro_speech_url && seg.outro_speech_url.startsWith("/api/")) {
-        seg.outro_speech_url = endpoints.audioUrl(seg.outro_speech_url);
-      }
+    const resolveUrls = (seg) => {
+      if (!seg) return seg;
+      if (seg.speech_audio_url && seg.speech_audio_url.startsWith("/api/")) seg.speech_audio_url = endpoints.audioUrl(seg.speech_audio_url);
+      if (seg.outro_speech_url && seg.outro_speech_url.startsWith("/api/")) seg.outro_speech_url = endpoints.audioUrl(seg.outro_speech_url);
+      if (seg.music_audio_url && seg.music_audio_url.startsWith("/api/")) seg.music_audio_url = endpoints.audioUrl(seg.music_audio_url);
+      if (seg.background_loop && seg.background_loop.startsWith("/api/")) seg.background_loop = endpoints.audioUrl(seg.background_loop);
       return seg;
     };
+
+    // Fetch resiliente con 3 retry e backoff 2s. Ritorna null solo se tutti i tentativi falliscono.
+    const fetchSegmentSafe = async () => {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const seg = await endpoints.generateSegment(hdMode ? { hd: true } : {});
+          if (seg) return resolveUrls(seg);
+        } catch (e) {
+          console.warn(`fetchSegment attempt ${attempt + 1}/3 failed:`, e);
+          if (attempt < 2) await new Promise(r => setTimeout(r, 2000));
+        }
+      }
+      return null;
+    };
+
+    const fetchSegment = fetchSegmentSafe;  // alias per retrocompatibilità
 
     try {
       // Prefetch pipeline: keep one segment ready ahead
@@ -158,7 +159,10 @@ export default function PublicRadio() {
       if (hdMode) setRenderingHd(true);
       let seg = await nextPromise;
       if (hdMode) setRenderingHd(false);
-      // Pre-buffering del PRIMO segmento appena arrivato + kick off next fetch in background
+      if (!seg) {
+        toast.error("Impossibile contattare il server. Riprova.");
+        return;
+      }
       try { radioEngine.preloadSegment(seg); } catch (e) {}
       nextPromise = fetchSegment().then(nextSeg => {
         try { radioEngine.preloadSegment(nextSeg); } catch (e) {}
@@ -168,11 +172,9 @@ export default function PublicRadio() {
       while (!stopFlag.current) {
         setCurrent(seg);
         setSegments(prev => mergeSegments(prev, seg));
-        // First segment is about to play → dismiss the loading spinner in EVERY branch.
         setIsPreparing(false);
 
-        // Neon track overlay: fade IN when a music segment starts, fade OUT
-        // ~8s before the end (approximating the outro transition).
+        // Neon track overlay
         if (overlayTimerRef.current) { clearTimeout(overlayTimerRef.current); overlayTimerRef.current = null; }
         if (seg.kind === "music") {
           const meta = seg.track_meta || {};
@@ -188,52 +190,43 @@ export default function PublicRadio() {
           setTrackOverlay(o => (o.visible ? { ...o, visible: false } : o));
         }
 
-        // Anti-silenzio: se playSegment dovesse risolversi istantaneamente
-        // (segmento senza audio né speech), forziamo un timeout minimo che
-        // riempia il gap con un fallback musicale.
-        const playStart = Date.now();
+        // Play current segment (errori isolati → skip pulito)
+        console.log(`[R-A.I.] Playing segment kind=${seg.kind} title="${seg.title}"`);
         try {
           await radioEngine.playSegment(seg);
         } catch (playErr) {
-          console.error("playSegment error:", playErr);
+          console.error("playSegment error, skipping:", playErr);
         }
-        const playedMs = Date.now() - playStart;
-        // Se il segmento è "svanito" in <2s, riempiamo il buco con una music slot
-        // esplicita dalla libreria locale (mai Suno API — zero costi).
-        if (playedMs < 2000 && !stopFlag.current) {
-          try {
-            const emergency = await endpoints.generateSegment({ kind: "music" });
-            if (emergency.music_audio_url && emergency.music_audio_url.startsWith("/api/")) {
-              emergency.music_audio_url = endpoints.audioUrl(emergency.music_audio_url);
-            }
-            if (emergency.background_loop && emergency.background_loop.startsWith("/api/")) {
-              emergency.background_loop = endpoints.audioUrl(emergency.background_loop);
-            }
-            if (emergency.speech_audio_url && emergency.speech_audio_url.startsWith("/api/")) {
-              emergency.speech_audio_url = endpoints.audioUrl(emergency.speech_audio_url);
-            }
-            await radioEngine.playSegment(emergency);
-          } catch (e) { console.warn("emergency music fallback failed", e); }
-        }
+
         if (stopFlag.current) break;
-        // Ensure overlay is hidden between segments regardless of the timer.
         setTrackOverlay(o => (o.visible ? { ...o, visible: false } : o));
-        // Await the already-in-flight next segment
+
+        // Await next segment (già in-flight)
         const prevKind = seg.kind;
         try {
           seg = await nextPromise;
         } catch (e) {
-          toast.error("HD non disponibile, torno alla modalità veloce");
-          seg = await endpoints.generateSegment({});
+          console.warn("nextPromise failed, retrying:", e);
+          seg = await fetchSegmentSafe();
         }
-        // Pre-buffering: warma la rete sul segmento successivo prima di suonarlo
-        // → elimina i "buchi" audio (specialmente su mobile) tra un pezzo e l'altro.
+        if (!seg) {
+          // Server irraggiungibile per 3 tentativi → attendi 3s e riprova il loop
+          await new Promise(r => setTimeout(r, 3000));
+          seg = await fetchSegmentSafe();
+          if (!seg) { toast.error("Server irraggiungibile"); break; }
+        }
         try { radioEngine.preloadSegment(seg); } catch (e) {}
-        // Play a procedural stinger only when the segment KIND changes.
-        if (!stopFlag.current && seg && seg.kind && seg.kind !== prevKind) {
-          try { await radioEngine.playStinger(prevKind, seg.kind); } catch (e) {}
+
+        // Stinger SOLO quando cambia BLOCCO (music ↔ speech). Nessuno stinger tra
+        // due music o tra due parlati.
+        const nextKind = seg.kind;
+        const musicToSpeech = prevKind === "music" && nextKind !== "music";
+        const speechToMusic = prevKind !== "music" && nextKind === "music";
+        if (!stopFlag.current && (musicToSpeech || speechToMusic)) {
+          try { await radioEngine.playStinger(prevKind, nextKind); } catch (e) {}
         }
-        // Prefetch the one after (metadata) e appena arriva → preload dei suoi audio
+
+        // Prefetch del segmento successivo
         nextPromise = fetchSegment().then(nextSeg => {
           try { radioEngine.preloadSegment(nextSeg); } catch (e) {}
           return nextSeg;
