@@ -128,6 +128,11 @@ export default function PublicRadio() {
     setIsPlaying(true);
     setIsPreparing(true);
 
+    // ANTI-SILENZIO: safety pad sottile SEMPRE ATTIVO durante il player.
+    // Copre qualsiasi micro-gap tra segmenti in modo che l'ascoltatore
+    // non percepisca mai vuoti assoluti. Volume 0.04 → invisibile ma presente.
+    try { radioEngine.startSafetyPad(); } catch (e) {}
+
     const resolveUrls = (seg) => {
       if (!seg) return seg;
       if (seg.speech_audio_url && seg.speech_audio_url.startsWith("/api/")) seg.speech_audio_url = endpoints.audioUrl(seg.speech_audio_url);
@@ -271,6 +276,7 @@ export default function PublicRadio() {
       toast.error("Errore nel flusso radiofonico");
       console.error(e);
     } finally {
+      try { radioEngine.stopSafetyPad(); } catch (e) {}
       radioEngine.stopAll();
       playingRef.current = false;
       setIsPlaying(false);

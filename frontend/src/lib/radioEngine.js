@@ -54,6 +54,77 @@ class RadioEngine {
     return this.synth.speaking ? 0.55 + Math.random() * 0.4 : 0;
   }
 
+  /**
+   * SAFETY PAD: pad procedurale sottilissimo (drone armonico) SEMPRE attivo
+   * mentre il player è on. Copre qualsiasi micro-gap tra segmenti eliminando
+   * ogni possibile silenzio percepibile. Volume 0.04 (quasi impercettibile).
+   * Zero costo Suno, zero API.
+   */
+  startSafetyPad() {
+    if (this._safetyPad || this._safetyPadStarting) return;
+    this._safetyPadStarting = true;
+    const ctx = this.ensureAudioCtx();
+    if (!ctx) { this._safetyPadStarting = false; return; }
+    try {
+      const master = ctx.createGain();
+      master.gain.setValueAtTime(0.0001, ctx.currentTime);
+      // Fade-in molto lento (2s) per essere invisibile
+      master.gain.exponentialRampToValueAtTime(0.045, ctx.currentTime + 2.0);
+      master.connect(this.outputBus || ctx.destination);
+
+      // Drone armonico: 3 oscillatori a bassa frequenza in accordo Fm7 lontano
+      const freqs = [55, 82.5, 123.5]; // A1, E2, B2 — armonia rilassata
+      const oscs = [];
+      freqs.forEach((f, i) => {
+        const osc = ctx.createOscillator();
+        osc.type = i === 0 ? "sine" : "triangle";
+        osc.frequency.value = f;
+        // LFO leggerissimo sulla frequenza per non essere statico
+        const lfo = ctx.createOscillator();
+        lfo.frequency.value = 0.08 + i * 0.03;
+        const lfoGain = ctx.createGain();
+        lfoGain.gain.value = 0.6 + i * 0.4;
+        lfo.connect(lfoGain).connect(osc.frequency);
+        const g = ctx.createGain();
+        g.gain.value = 0.25;
+        const lp = ctx.createBiquadFilter();
+        lp.type = "lowpass";
+        lp.frequency.value = 800;
+        osc.connect(g).connect(lp).connect(master);
+        osc.start();
+        lfo.start();
+        oscs.push(osc, lfo);
+      });
+
+      this._safetyPad = {
+        master,
+        oscs,
+        stop: () => {
+          try {
+            master.gain.cancelScheduledValues(ctx.currentTime);
+            master.gain.setValueAtTime(master.gain.value, ctx.currentTime);
+            master.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 1.5);
+            setTimeout(() => {
+              oscs.forEach(o => { try { o.stop(); } catch (e) {} });
+              try { master.disconnect(); } catch (e) {}
+            }, 1600);
+          } catch (e) {}
+        },
+      };
+    } catch (e) {
+      console.warn("safetyPad start failed:", e);
+    } finally {
+      this._safetyPadStarting = false;
+    }
+  }
+
+  stopSafetyPad() {
+    if (this._safetyPad) {
+      try { this._safetyPad.stop(); } catch (e) {}
+      this._safetyPad = null;
+    }
+  }
+
   pickVoice(voiceKey) {
     if (!this.synth) return null;
     const voices = this.synth.getVoices();
@@ -1024,11 +1095,16 @@ class RadioEngine {
             }
           }
 
-          // 6) Fade-out finale + cleanup
-          await setVol(0.001, 800);
-          try { audio.pause(); } catch (e) {}
-          try { srcNode && srcNode.disconnect(); } catch (e) {}
-          try { musicGain && musicGain.disconnect(); } catch (e) {}
+          // 6) CROSSFADE: avvia il fade-out ma NON aspettare la fine — il loop
+          // può partire subito col prossimo segmento mentre questo scompare.
+          // IMPORTANTE: sgancio `this.currentAudio` così il prossimo playSegment
+          // NON ferma bruscamente il fade-out in corso (crossfade genuino).
+          if (this.currentAudio === audio) this.currentAudio = null;
+          setVol(0.001, 800).then(() => {
+            try { audio.pause(); } catch (e) {}
+            try { srcNode && srcNode.disconnect(); } catch (e) {}
+            try { musicGain && musicGain.disconnect(); } catch (e) {}
+          });
           done();
         } catch (playErr) {
           console.error("Music playback error:", playErr);
