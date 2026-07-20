@@ -629,7 +629,7 @@ async def list_tracks(limit: int = 20):
 
 
 @api_router.post("/tracks/generate", response_model=Track)
-async def generate_track(hint: Optional[str] = None, genre: Optional[str] = None, lang: Optional[str] = None, instrumental: bool = False, _suno_call: bool = True, lean: bool = False):
+async def generate_track(hint: Optional[str] = None, genre: Optional[str] = None, lang: Optional[str] = None, instrumental: bool = False, _suno_call: bool = True, lean: bool = False, custom_lyrics: Optional[str] = None):
     provider, model = _pick_llm()
     genres_pool = [
         "tech house 126 bpm",
@@ -697,7 +697,12 @@ async def generate_track(hint: Optional[str] = None, genre: Optional[str] = None
         # ([Intro][Verse 1][Pre-Chorus][Chorus][Verse 2][Bridge][Outro]) BEFORE calling
         # Suno, so Suno doesn't invent shallow/repetitive lyrics.
         full_lyrics = ""
-        if not instrumental:
+        # Se il chiamante passa custom_lyrics li usiamo così come sono
+        # (skip generazione LLM). Utile per jingle brandizzati R-A.I.
+        if custom_lyrics and custom_lyrics.strip():
+            full_lyrics = custom_lyrics.strip()
+            track.lyrics_excerpt = full_lyrics
+        elif not instrumental:
             lang_label = "italiano" if (lang or "en").lower().startswith("it") else "inglese"
             if lean:
                 # LEAN MODE: hook memorabile ripetuto molte volte + strofe cortissime.
