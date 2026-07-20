@@ -1017,8 +1017,9 @@ class RadioEngine {
     });
   }
 
-
-   * `nodeOrEl` può essere un GainNode oppure un HTMLAudioElement (fallback).
+  /**
+   * Fade il gain di un GainNode Web Audio in modo lineare (millisecondi).
+   * nodeOrEl can be a GainNode or an HTMLAudioElement (fallback).
    */
   _fadeGain(nodeOrEl, from, to, durationMs = 800) {
     if (!nodeOrEl) return Promise.resolve();
