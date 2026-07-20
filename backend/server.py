@@ -140,6 +140,7 @@ class Track(BaseModel):
     image_url: Optional[str] = None       # optional cover art URL (Suno)
     source: Literal["suno", "stable_audio", "procedural"] = "procedural"
     is_anthem: bool = False               # official R-A.I. anthem — played periodically as jingle
+    is_jingle: bool = False               # short R-A.I. station jingle — played between segments
     suno_task_id: Optional[str] = None
     status: Literal["ready", "pending", "failed"] = "ready"
     created_at: str = Field(default_factory=now_iso)
@@ -699,21 +700,24 @@ async def generate_track(hint: Optional[str] = None, genre: Optional[str] = None
         if not instrumental:
             lang_label = "italiano" if (lang or "en").lower().startswith("it") else "inglese"
             if lean:
-                # LEAN MODE: testo scarno, hook ripetuto, orecchiabile stile club anthem
+                # LEAN MODE: hook memorabile ripetuto molte volte + strofe cortissime.
+                # Target durata Suno: 2:30-3:00 max (con questa struttura Suno V4 chiude sui 2:50).
+                # NIENTE testi lunghi che gonfiano la durata a 4+ minuti.
                 lyrics_prompt = (
-                    f"Scrivi il TESTO in {lang_label} di un club anthem tech-house dal titolo \"{track.title}\" "
-                    f"di {track.artist}. REGOLE FERREE:\n\n"
-                    "[Hook] UNA riga sola di 3-5 parole massimo, POTENTE, ORECCHIABILE (deve incollarsi in testa al primo ascolto)\n"
-                    "[Verse 1] SOLO 2 righe brevi\n"
-                    "[Hook] ripeti la STESSA riga dell'Hook\n"
-                    "[Verse 2] SOLO 2 righe brevi, diverse dal Verse 1\n"
-                    "[Hook] ripeti la STESSA riga dell'Hook\n"
-                    "[Bridge] 2 righe brevi build-up\n"
-                    "[Hook] ripeti la STESSA riga dell'Hook (x2 di fila per fissarla)\n"
-                    "[Hook] ripeti la STESSA riga dell'Hook (x2 di fila per fissarla)\n\n"
-                    "L'Hook è la STESSA IDENTICA riga ripetuta minimo 6 volte in totale. "
-                    "Nessuna metafora astrusa. Parole semplici, cantabili, memorabili. "
-                    "Rispondi SOLO col testo con i tag."
+                    f"Scrivi il TESTO in {lang_label} di un pezzo radiofonico ORECCHIABILE dal titolo "
+                    f"\"{track.title}\" di {track.artist}. Il pezzo DEVE durare 2:30-3:00 max.\n\n"
+                    "REGOLE FERREE (obbligatorie):\n"
+                    "1) [Hook] UNA riga sola di 3-5 parole potente, ORECCHIABILE. Deve incollarsi al primo ascolto.\n"
+                    "2) [Verse 1] MASSIMO 2 righe brevi (12 parole totali max)\n"
+                    "3) [Hook] ripeti la STESSA riga\n"
+                    "4) [Verse 2] MASSIMO 2 righe brevi diverse (12 parole totali max)\n"
+                    "5) [Hook] ripeti la STESSA riga\n"
+                    "6) [Bridge] MASSIMO 2 righe (10 parole)\n"
+                    "7) [Hook x4] ripeti la STESSA riga 4 volte di fila per fissarla in testa\n\n"
+                    "L'HOOK è la STESSA IDENTICA riga ripetuta almeno 8 volte in totale. "
+                    "Parole semplici cantabili memorabili. NIENTE metafore astruse. "
+                    "NIENTE testi filosofici o narrativi lunghi.\n"
+                    "Rispondi SOLO col testo coi tag."
                 )
             else:
                 lyrics_prompt = (
@@ -807,6 +811,28 @@ async def library_seed_list():
         {"_id": 0}
     ).to_list(20)
     return {"count": len(docs), "tracks": docs}
+
+
+@api_router.get("/jingles/random")
+async def jingles_random():
+    """Restituisce un jingle R-A.I. random tra quelli marcati is_jingle=True.
+    Usato dal frontend per riempire le transizioni tra segmenti diversi."""
+    # Round-robin sui jingle: prendi 20 candidati e sceglie random
+    docs = await db.tracks.find(
+        {"is_jingle": True, "status": "ready", "audio_url": {"$ne": None}},
+        {"_id": 0},
+        sort=[("last_played_at", 1)],
+    ).to_list(20)
+    if not docs:
+        return {"jingle": None}
+    # Pick random tra i 5 meno recenti per varietà
+    pool = docs[:5] if len(docs) >= 5 else docs
+    chosen = random.choice(pool)
+    await db.tracks.update_one(
+        {"id": chosen["id"]},
+        {"$set": {"last_played_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return {"jingle": chosen}
 
 
 @api_router.get("/library/stats")
@@ -1050,7 +1076,10 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
                      {"priority": "high"},
                      {"rotation_weight": {"$gt": 1}},
                  ],
-                 "$and": [{"$or": [{"is_anthem": {"$exists": False}}, {"is_anthem": False}]}]},
+                 "$and": [
+                     {"$or": [{"is_anthem": {"$exists": False}}, {"is_anthem": False}]},
+                     {"$or": [{"is_jingle": {"$exists": False}}, {"is_jingle": False}]},
+                 ]},
                 {"_id": 0},
                 sort=[("last_played_at", 1), ("created_at", 1)],
             ).to_list(length=50)
@@ -1058,6 +1087,7 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
                 {"source": "suno", "status": "ready", "audio_url": {"$ne": None},
                  "$or": [{"is_anthem": {"$exists": False}}, {"is_anthem": False}],
                  "priority": {"$ne": "high"},
+                 "is_jingle": {"$ne": True},
                  "$and": [{"$or": [{"rotation_weight": {"$exists": False}}, {"rotation_weight": {"$lte": 1}}]}]},
                 {"_id": 0},
                 sort=[("last_played_at", 1), ("created_at", 1)],

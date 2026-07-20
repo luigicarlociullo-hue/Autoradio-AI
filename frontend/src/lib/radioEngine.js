@@ -412,11 +412,16 @@ class RadioEngine {
         audio.volume = 1.0;
         this.currentAudio = audio;
 
+        // Safety timeout DINAMICO: proporzionale alla durata attesa del segmento
+        // + 20s di buffer. Min 60s, max 180s. Cosí non tagliamo mai l'ultima frase
+        // dei parlati lunghi (talk/interview/news possono durare 40-50s).
+        const expectedSec = Math.max(20, segment.duration_sec || 40);
+        const safetyMs = Math.min(180000, Math.max(60000, (expectedSec + 20) * 1000));
         const safety = setTimeout(() => {
-          console.warn("Voice safety timeout — skipping:", segment.speech_audio_url);
+          console.warn(`Voice safety timeout (${safetyMs}ms) — skipping:`, segment.speech_audio_url);
           try { audio.pause(); } catch (e) {}
           done();
-        }, 25000);
+        }, safetyMs);
 
         let srcNode = null;
         try {
@@ -424,14 +429,16 @@ class RadioEngine {
             srcNode = ctx.createMediaElementSource(audio);
             srcNode.connect(this.outputBus || ctx.destination);
           }
-        } catch (e) {
-          // no analyser routing possible — l'elemento suonerà comunque via volume nativo
-        }
+        } catch (e) {}
 
         audio.addEventListener("ended", () => {
           clearTimeout(safety);
-          try { srcNode && srcNode.disconnect(); } catch (e) {}
-          done();
+          // Piccolo delay di 400ms DOPO che l'audio finisce, così l'ultima
+          // sillaba/coda del file non viene tagliata dal decoder buffer.
+          setTimeout(() => {
+            try { srcNode && srcNode.disconnect(); } catch (e) {}
+            done();
+          }, 400);
         }, { once: true });
         audio.addEventListener("error", () => {
           clearTimeout(safety);
@@ -959,7 +966,58 @@ class RadioEngine {
   }
 
   /**
-   * Fade il gain di un GainNode Web Audio in modo lineare (secondi).
+   * Riproduce un jingle R-A.I. corto (Suno-generated) come stinger tra
+   * segmenti. Volume pieno, no ducking, no intro DJ. Se il jingle è più
+   * lungo di 35s viene tagliato (safety cap).
+   */
+  async playJingle(url) {
+    if (!url) return;
+    return new Promise((resolve) => {
+      let resolved = false;
+      const done = () => { if (!resolved) { resolved = true; resolve(); } };
+      const ctx = this.ensureAudioCtx();
+      const audio = new Audio();
+      audio.crossOrigin = "anonymous";
+      audio.preload = "auto";
+      audio.volume = 1.0;
+
+      // Safety: max 35s (Suno jingle should be 15-25s ma prendiamo margine)
+      const capTimer = setTimeout(() => { try { audio.pause(); } catch (e) {}; done(); }, 35000);
+      // Safety load: se canplaythrough non arriva in 8s, skip
+      const loadTimer = setTimeout(() => { console.warn("Jingle load timeout"); done(); }, 8000);
+
+      let srcNode = null, gainNode = null;
+      try {
+        if (ctx) {
+          srcNode = ctx.createMediaElementSource(audio);
+          gainNode = ctx.createGain();
+          gainNode.gain.value = 0.001;
+          gainNode.gain.exponentialRampToValueAtTime(1.0, ctx.currentTime + 0.3);
+          srcNode.connect(gainNode);
+          gainNode.connect(this.outputBus || ctx.destination);
+        }
+      } catch (e) {}
+
+      audio.addEventListener("ended", () => {
+        clearTimeout(capTimer);
+        setTimeout(() => {
+          try { srcNode && srcNode.disconnect(); } catch (e) {}
+          try { gainNode && gainNode.disconnect(); } catch (e) {}
+          done();
+        }, 200);
+      }, { once: true });
+      audio.addEventListener("error", () => { clearTimeout(capTimer); done(); }, { once: true });
+      audio.addEventListener("canplaythrough", () => {
+        clearTimeout(loadTimer);
+        audio.play().catch(() => { clearTimeout(capTimer); done(); });
+      }, { once: true });
+
+      audio.src = url;
+      try { audio.load(); } catch (e) {}
+    });
+  }
+
+
    * `nodeOrEl` può essere un GainNode oppure un HTMLAudioElement (fallback).
    */
   _fadeGain(nodeOrEl, from, to, durationMs = 800) {

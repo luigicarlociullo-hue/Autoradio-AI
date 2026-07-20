@@ -27,6 +27,7 @@ export const endpoints = {
   me: () => api.get("/auth/me").then(r => r.data),
   logout: () => api.post("/auth/logout").then(r => r.data),
   audioUrl: (path) => `${API}${path.startsWith("/api") ? path.slice(4) : path}`,
+  getJingleRandom: () => api.get("/jingles/random", { timeout: 8000 }).then(r => r.data).catch(() => ({ jingle: null })),
   ads: () => api.get("/ads").then(r => r.data),
   adRevenue: () => api.get("/ads/revenue").then(r => r.data),
   adPlays: (id) => api.get(`/ads/${id}/plays`).then(r => r.data),

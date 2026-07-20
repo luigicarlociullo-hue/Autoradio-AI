@@ -222,17 +222,36 @@ export default function PublicRadio() {
         }
 
         // ============================================================
-        // Stinger transizionale NON BLOCCANTE su cambio blocco
+        // Stinger transizionale NON BLOCCANTE + JINGLE occasionale
         // ------------------------------------------------------------
-        // Lo stinger parte in PARALLELO all'inizio del segmento successivo:
-        // il segmento comincia subito, lo sting si sovrappone al fade-in dei
-        // primi ~800ms. Zero gap percepito.
+        // Ai cambi di blocco (music ↔ speech), 45% di probabilità di infilare
+        // un jingle R-A.I. cantato PRIMA del prossimo segmento. Altrimenti sting
+        // procedurale breve non bloccante.
         // ============================================================
         if (prevKind) {
           const musicToSpeech = prevKind === "music" && seg.kind !== "music";
           const speechToMusic = prevKind !== "music" && seg.kind === "music";
           if (musicToSpeech || speechToMusic) {
-            radioEngine.playStinger(prevKind, seg.kind).catch(() => {});
+            const wantJingle = Math.random() < 0.45;
+            if (wantJingle) {
+              try {
+                const jr = await endpoints.getJingleRandom();
+                const jingle = jr && jr.jingle;
+                if (jingle && jingle.audio_url) {
+                  const url = jingle.audio_url.startsWith("/api/")
+                    ? endpoints.audioUrl(jingle.audio_url)
+                    : jingle.audio_url;
+                  console.log(`[R-A.I.] Jingle intro: ${jingle.title}`);
+                  await radioEngine.playJingle(url);
+                } else {
+                  radioEngine.playStinger(prevKind, seg.kind).catch(() => {});
+                }
+              } catch (e) {
+                radioEngine.playStinger(prevKind, seg.kind).catch(() => {});
+              }
+            } else {
+              radioEngine.playStinger(prevKind, seg.kind).catch(() => {});
+            }
           }
         }
 
