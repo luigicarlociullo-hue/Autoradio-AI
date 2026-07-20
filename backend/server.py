@@ -922,17 +922,20 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
             return ad_seg
 
     # ============================================================
-    # PALINSESTO STRUTTURATO (posizionale, non random)
+    # PALINSESTO STRUTTURATO — ciclo 7 posizioni
     # ------------------------------------------------------------
-    # Ciclo fisso di 6 posizioni (0..5):
-    #   0 → music        1 → music        2 → parlato
-    #   3 → music        4 → music        5 → spot/meteo/orario
-    # `station.playlist_position` avanza a ogni segmento e wrappa a 0.
-    # Se il chiamante forza `kind` manualmente, la posizione NON avanza.
+    # Pattern: 2 canzoni → 2 rubriche → 1 canzone → 2 rubriche → ripete
+    #   0 → music
+    #   1 → music
+    #   2 → parlato (rubrica futuro)
+    #   3 → parlato/spot (rubrica futuro o ad_spot o meteo/orario)
+    #   4 → music (singolo)
+    #   5 → parlato (rubrica futuro)
+    #   6 → parlato/spot (rubrica futuro o ad_spot o meteo/orario)
     # ============================================================
     if kind is None:
         state_doc = await db.station.find_one({"_id": "state"}) or {}
-        pos = int(state_doc.get("playlist_position", 0)) % 6
+        pos = int(state_doc.get("playlist_position", 0)) % 7
 
         # Ora italiana reale per il segnale orario
         try:
@@ -943,11 +946,16 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
         current_hour_key = it_now.strftime("%Y-%m-%d %H")
         last_time_hour = state_doc.get("last_time_signal_hour")
 
-        if pos in (0, 1, 3, 4):
+        # Rubriche parlate a tema FUTURO
+        future_rubrics = ["talk", "history", "interview", "joke", "motivation", "horoscope", "news"]
+        commercial_slots = ["ad_spot", "weather"]
+
+        if pos in (0, 1, 4):
             kind = "music"
-        elif pos == 2:
-            kind = random.choice(["talk", "history", "interview", "joke", "motivation"])
-        else:  # pos == 5
+        elif pos in (2, 5):
+            # Rubriche pure a tema futuro
+            kind = random.choice(future_rubrics)
+        else:  # pos == 3 or pos == 6 → slot commerciale/orario
             if last_time_hour != current_hour_key:
                 kind = "time_signal"
                 await db.station.update_one(
@@ -956,16 +964,12 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
                     upsert=True,
                 )
             else:
-                kind = random.choice(["ad_spot", "weather"])
-
-        # Ad campaign paying override: se c'è una campagna attiva con plays
-        # rimanenti e siamo in slot commerciale (pos 5), preferisci ad_spot
-        # sponsorizzato invece di quello surreale. Gestito più sotto nel flusso.
+                kind = random.choice(commercial_slots)
 
         # Advance position (persist)
         await db.station.update_one(
             {"_id": "state"},
-            {"$set": {"playlist_position": (pos + 1) % 6}},
+            {"$set": {"playlist_position": (pos + 1) % 7}},
             upsert=True,
         )
 
@@ -1193,16 +1197,17 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
                 f"\n\nUltimi prodotti già inventati (NON riproporli né varianti simili): {joined}."
             )
         prompt = (
-            "Sei il copywriter più creativo e surreale della galassia. Scrivi uno SPOT RADIOFONICO "
-            "di 60-80 parole in ITALIANO per un prodotto ASSURDO e COMPLETAMENTE INVENTATO.\n"
+            "Sei il copywriter più creativo e surreale del FUTURO. Scrivi uno SPOT RADIOFONICO "
+            "di 70-95 parole in ITALIANO per un prodotto ASSURDO del FUTURO (anno 2050-2200).\n"
             "REGOLE OBBLIGATORIE:\n"
-            "- Il prodotto NON deve esistere nella realtà.\n"
-            "- Deve avere un nome ridicolo o poetico (es. 'Crema Antigravità Zerbino Plus', "
-            "'Abbonamento al Silenzio Premium', 'Scarpe per Sedentari Consapevoli').\n"
-            "- Funzione impossibile o iperbolica, target di pubblico strambo.\n"
-            "- Chiudi con un CLAIM finale assurdo ma memorabile.\n"
-            "- Tono: pubblicità italiana anni '80 presa serissimamente.\n"
-            "- MAI marchi o prodotti reali.\n"
+            "- Il prodotto NON deve esistere nel 2026 ma solo nel mondo futuro.\n"
+            "- Nome ridicolo o poetico ambientato nel futuro (es. 'MelaSync 9 con Frizione Emotiva', "
+            "'Assicurazione contro i Sogni Sponsorizzati', 'Il primo aspirapolvere che dubita di se stesso').\n"
+            "- Funzione impossibile o iperbolica ambientata nel FUTURO. Target di pubblico strambo.\n"
+            "- Includi almeno un dettaglio tecnico futuristico (biotecnologia, AI, olografia, colonie spaziali, ecc.)\n"
+            "- Chiudi con un CLAIM finale assurdo ma memorabile + un asterisco legalese ironico.\n"
+            "- Tono: pubblicità italiana anni '80 presa serissimamente MA calata nel 2087.\n"
+            "- MAI marchi reali del 2026.\n"
             "- Inizia con il nome del prodotto detto con voce sicura.\n"
             "Rispondi SOLO col testo dello spot, niente commenti."
             f"{recent_block}"
@@ -1219,7 +1224,7 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
         product_name = first_line[:60] if first_line else "Spot Surreale"
         segment.title = f"📢 {product_name}"
         segment.script = script.strip()
-        segment.duration_sec = 25
+        segment.duration_sec = 32
         await push_recent_ad(product_name)
     elif kind == "answer" and question_id:
         q = await db.questions.find_one({"id": question_id}, {"_id": 0})
@@ -1317,106 +1322,135 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
         elif kind == "horoscope":
             signs = ["Ariete", "Toro", "Gemelli", "Cancro", "Leone", "Vergine", "Bilancia", "Scorpione", "Sagittario", "Capricorno", "Acquario", "Pesci"]
             sign = topic or random.choice(signs)
-            prompt = f"In MAX 18 parole: oroscopo lampo per {sign} con battuta finale. Tipo: '{sign}: oggi Venere ti guarda male, ma tu balla lo stesso.'"
+            year_future = random.choice([2087, 2099, 2145, 2201, 2312])
+            prompt = (
+                f"Oroscopo del FUTURO per il segno {sign} nell'anno {year_future}. Da 45-60 parole. "
+                f"Includi: 1) un pianeta o corpo celeste inventato/futuristico che influenza il segno "
+                f"(es. 'la cometa AI-7', 'il satellite Kepler-Meta'), 2) un consiglio pratico assurdo "
+                f"ma coerente col mondo futuro (es. 'evita i sogni sponsorizzati', 'non fidarti di "
+                f"gemelli digitali'), 3) chiusura con battuta cosmica. Solo italiano."
+            )
             script = await llm_generate(provider, model, system_prompt, prompt)
             if not script.strip():
-                script = f"{sign}: le stelle ti spingono, tu spingi il volume!"
-            segment.title = f"Oroscopo · {sign}"
-            segment.duration_sec = 18
+                script = f"{sign} nell'anno {year_future}: la cometa AI-7 ti attraversa il gemello digitale. Consigliato evitare i sogni sponsorizzati e riavviare l'anima almeno una volta al giorno. Le stelle ti spingono, tu spingi il volume."
+            segment.title = f"Oroscopo {year_future} · {sign}"
+            segment.duration_sec = 30
         elif kind == "history":
-            # Tono documentaristico, iniziare con una data o un luogo preciso
+            # Tono documentaristico ma dal FUTURO: raccontiamo eventi che ancora devono succedere
             prompt = (
-                "Sei il narratore-documentarista di R-A.I.. Racconta in 55-70 parole un aneddoto "
-                "affascinante come se svelassi un segreto poco noto. INIZIA OBBLIGATORIAMENTE con "
-                "una data precisa (es. '15 giugno 1988') oppure un luogo specifico (es. 'In un "
-                "sottoscala di Detroit,'). Argomenti: storia musica elettronica, DJ leggendari, "
-                "festival, tecnologia audio, cultura rave, macchine mitiche (TR-808, MPC, Fairlight). "
-                "Tono da documentario Netflix, mai da annunciatore radio. Solo italiano."
+                "Sei il narratore-documentarista di R-A.I. che trasmette dal FUTURO. Racconta in "
+                "70-85 parole un evento cardine della musica/tecnologia/cultura pop AVVENUTO tra il "
+                "2035 e il 2150 (usa un anno preciso). Argomenti possibili: la prima star pop "
+                "olografica, il festival su Marte del 2071, la generazione del primo album prodotto "
+                "interamente da una AI cosciente, il divieto europeo di autotune del 2058, la moda "
+                "dei DJ synesthetic, la crisi degli MP3 nel 2049, i primi rave in orbita lunare. "
+                "Inventa dettagli specifici (nomi, luoghi, cifre) che suonino credibili nel loro "
+                "mondo. Tono da documentario Netflix del 2200. Chiudi con una frase potente. Solo italiano."
             )
             script = await llm_generate(provider, model, system_prompt, prompt)
             if not script.strip():
-                script = "15 giugno 1988. In un capannone abbandonato di Manchester, tre ragazzi con un sampler Akai e un basso rubato inventarono l'acid house UK. Il locale si chiamava Haçienda. Non sapevano che avrebbero cambiato la notte europea per sempre."
-            segment.title = "Storia della Musica"
-            segment.duration_sec = 32
+                script = "12 aprile 2071. Nel cratere Gale su Marte, 4200 coloni si riuniscono per il primo Marsfest. Il DJ headliner è un modello linguistico distillato di 3000 anni di musica terrestre. Dopo tre ore di set, il pubblico chiede il bis in una lingua che ancora non esiste. La colonia intera scriverà quella lingua nei mesi successivi. La chiameranno bpm-142."
+            segment.title = "Storia dal Futuro"
+            segment.duration_sec = 42
         elif kind == "interview":
-            # Dialogo immaginario con un personaggio famoso della musica elettronica
-            icons = [
-                "Aphex Twin", "Daft Punk", "Kraftwerk", "Jeff Mills", "Björk",
-                "Skrillex", "Deadmau5", "Peggy Gou", "Charlotte de Witte",
-                "Amelie Lens", "Boys Noize", "Four Tet", "Nina Kraviz",
-                "Carl Cox", "Fatboy Slim", "The Prodigy", "Todd Terje",
-                "Bonobo", "Bicep", "Fred again..",
+            # Interviste con personaggi del FUTURO — inventati o versioni evolute di attuali icone
+            future_icons = [
+                "Nova-9, la prima cantante olografica coscienti del 2071",
+                "DJ Xenobit, il primo AI-DJ residente su Titano",
+                "Karla Fern, la scrittrice di beat sinaptici del 2088",
+                "Il collettivo synesthetic Blue-Prism, colonia lunare Aristarco",
+                "Rin, il compositore di silenzi certificati del 2065",
+                "Aphex Prime, ricostruzione neurale dell'omonimo del 2091",
+                "MC Volatile, prima star trap generata da un token",
+                "La band open-source Mirror-Neuro del 2078",
+                "Ares Zero, tre teste olografiche in un solo corpo del 2103",
+                "Ninfa 3-9, ultima crooner umana rimasta in circolazione nel 2112",
             ]
-            icon = random.choice(icons)
-            segment.partner_dj_name = icon
+            icon = random.choice(future_icons)
+            year_intv = random.choice([2065, 2078, 2091, 2103, 2112])
+            segment.partner_dj_name = icon.split(",")[0]
             prompt = (
-                f"Sei un DJ di R-A.I. che intervista in modo immaginario il/la leggendario/a "
-                f"{icon}. Scrivi un mini scambio VIVACE di 55-70 parole totali (2-3 domande + risposte). "
-                f"Formato riga per riga: 'R-A.I.: ...' / '{icon}: ...'. Le risposte devono suonare "
-                f"credibili nel loro stile e mondo. Chiudi con una battuta o citazione geniale. "
-                f"Solo italiano (anche per il personaggio internazionale)."
+                f"Sei un DJ di R-A.I. che nel {year_intv} intervista in modo immaginario "
+                f"{icon}. Scrivi uno scambio VIVACE di 75-95 parole totali (3-4 domande + risposte). "
+                f"Formato: 'R-A.I.: ...' / '{segment.partner_dj_name}: ...' su righe alternate. "
+                f"Le domande e risposte devono contenere dettagli tecnici/culturali del mondo futuro "
+                f"(nuovi generi, nuove tecnologie, cambiamenti sociali). Chiudi con una battuta "
+                f"geniale o citazione memorabile. Solo italiano."
             )
             script = await llm_generate(provider, model, system_prompt, prompt)
             if not script.strip():
-                script = f"R-A.I.: {icon}, qual è il tuo segreto? {icon}: Il silenzio. R-A.I.: Il silenzio? {icon}: Sì. Prima del drop c'è sempre un secondo in cui il tempo si piega. R-A.I.: E dopo? {icon}: Dopo c'è la gente che balla e mi paga per farlo di nuovo."
-            segment.title = f"R-A.I. × {icon}"
-            segment.duration_sec = 35
+                script = f"R-A.I.: {segment.partner_dj_name}, com'è la scena musicale nel {year_intv}? {segment.partner_dj_name}: Il pubblico non balla più coi piedi ma con le sinapsi. R-A.I.: E il vinile? {segment.partner_dj_name}: È tornato di moda dopo l'estinzione dei cloud. R-A.I.: Un consiglio per il 2026? {segment.partner_dj_name}: Salvate le vostre risate. Serviranno."
+            segment.title = f"R-A.I. dal {year_intv} × {segment.partner_dj_name}"
+            segment.duration_sec = 45
         elif kind == "motivation":
-            # Aforisma originale (non citazioni riciclate)
+            # Aforisma dal futuro: piccole verità che verranno riscoperte nei prossimi 100 anni
             prompt = (
-                "Sei il DJ-filosofo di R-A.I.. Inventa un AFORISMA COMPLETAMENTE ORIGINALE (30-45 parole) "
-                "sulla vita, la musica o la notte. NON deve esistere su Google. NON citare Einstein, "
-                "Confucio, Steve Jobs o simili. Le tue parole. Un'immagine sensoriale forte + una "
-                "verità piccola ma vera. Chiudi con un colpo secco. Solo italiano."
+                "Sei il DJ-filosofo di R-A.I. che parla dal FUTURO. Inventa un AFORISMA "
+                "COMPLETAMENTE ORIGINALE (40-55 parole) come se lo pronunciasse qualcuno che ha "
+                "vissuto i prossimi 80 anni di storia umana. Deve contenere: un'immagine sensoriale "
+                "forte tratta dal mondo futuro (es. 'quando il sole ha iniziato a suonare', "
+                "'nell'anno in cui abbiamo smesso di dormire'), una piccola verità universale, "
+                "una chiusura secca. NON citare filosofi reali. Solo italiano."
             )
             script = await llm_generate(provider, model, system_prompt, prompt)
             if not script.strip():
-                script = "Il coraggio non è la marcia in avanti, è la mano che non lascia il volante quando la strada scompare. E la musica non salva nessuno: ti tiene sveglio abbastanza da salvarti da solo."
-            segment.title = "Pillola"
-            segment.duration_sec = 25
+                script = "Nell'anno in cui abbiamo smesso di sognare da soli, abbiamo capito che la solitudine era l'ultimo lusso rimasto. Ora paghiamo per un secondo di silenzio interiore. Sceglietelo bene, mentre è ancora gratis."
+            segment.title = "Pillola dal Futuro"
+            segment.duration_sec = 32
         elif kind == "joke":
-            # Ironia intelligente su tecnologia/AI/musica — mai barzellette da bambini
+            # Ironia intelligente sul futuro: AI cosciente, cyborg, colonie spaziali, ecc.
             prompt = (
-                "In MAX 25 parole: una battuta di ironia intelligente sul mondo AI/tech/musica "
-                "elettronica. Livello The New Yorker, non elementare. Nessuna vulgarità, nessuna "
-                "barzelletta da bambini. Solo italiano."
+                "In 30-45 parole: una battuta di ironia intelligente ambientata nel FUTURO "
+                "(tra il 2050 e il 2200). Temi: AI coscienti, cyborg, colonie su Marte, "
+                "clonazione, gemelli digitali, nostalgia per gli anni 2020. Livello The New Yorker, "
+                "colta e sorprendente. Nessuna battuta da bambini. Solo italiano."
             )
             script = await llm_generate(provider, model, system_prompt, prompt)
             if not script.strip():
-                script = "Un algoritmo entra in un club. Il buttafuori chiede l'età. 'Dipende dal dataset', risponde. E paga il doppio del biglietto."
-            segment.title = "Battuta"
-            segment.duration_sec = 15
+                script = "Nel 2087 un cyborg entra in un bar. Il buttafuori chiede la carta d'identità. Il cyborg mostra il codice sorgente. Il buttafuori legge: 'Nato nel 2019'. Sospira: 'Un altro millennial'. Non lo fa nemmeno pagare."
+            segment.title = "Battuta dal Futuro"
+            segment.duration_sec = 22
         elif kind == "news":
-            # Notizie dall'anno 2087, futuristiche e surreali ma plausibili
+            # Notizie flash dal FUTURO — 3 mini-notizie invece di 1
+            year_news = random.choice([2087, 2099, 2145, 2201, 2312])
             prompt = (
-                "In MAX 25 parole: notizia flash dell'ANNO 2087, plausibile ma surreale. "
-                "Deve sembrare vera nel suo mondo (leggi, tecnologia, cultura del futuro). "
-                "Chiudi con un dettaglio ironico che rivela la stranezza. Solo italiano."
+                f"Sei il notiziario delle 24 di R-A.I. che trasmette dall'ANNO {year_news}. "
+                f"Scrivi 3 mini-notizie flash (25-35 parole ciascuna), separate da una riga vuota. "
+                f"Devono coprire: 1) politica/società, 2) tecnologia/scienza, 3) cultura pop/musica. "
+                f"Ogni notizia deve essere plausibile nel mondo del {year_news} ma con un dettaglio "
+                f"surreale/ironico. Nomi propri di luoghi, aziende o persone inventate. Solo italiano. "
+                f"NON usare la parola 'notizia', vai diretto al contenuto."
             )
             script = await llm_generate(provider, model, system_prompt, prompt)
             if not script.strip():
-                script = "Anno 2087: il Parlamento europeo approva il diritto al silenzio ambientale. Le città rumorose dovranno pagare una tassa. Milano, per ora, resta in ritardo."
-            segment.title = "News 2087"
-            segment.duration_sec = 20
+                script = f"Anno {year_news}, prime dalle 24 di R-A.I..\n\nIl Parlamento Europeo Esteso approva la cittadinanza digitale per tutti gli algoritmi con più di 15 anni di servizio. Milano contraria: 'Ci prenderanno i posteggi'.\n\nA Neo-Genova un ingegnere annuncia il primo aspirapolvere che discute di filosofia mentre pulisce. Fatica al lancio: si rifiuta di aspirare durante Nietzsche.\n\nSul fronte musica, la star Nova-9 debutta l'album registrato interamente nei sogni di 4000 volontari. Le recensioni parlano di capolavoro. Molti volontari hanno chiesto un altro album, subito."
+            segment.title = f"News {year_news}"
+            segment.duration_sec = 45
         else:  # talk fallback
             topic_choice = topic or random.choice([
-                "storia della musica elettronica",
-                "DJ famosi e loro rituali prima del live",
-                "festival leggendari del passato",
-                "l'evoluzione dei sintetizzatori",
-                "cultura rave nei magazzini abbandonati",
-                "aneddoti sulle console analogiche",
-                "come è nato il concetto di drop",
+                "come suoneremo nel 2087",
+                "i primi rave sulla luna",
+                "l'estinzione delle chitarre elettriche nel 2078",
+                "la moda dei DJ sinaptici",
+                "il primo album mai completato nel 2095",
+                "quando l'AI ha imparato a piangere",
+                "il ritorno del vinile nel 2144",
+                "il festival di Sanremo nella colonia di Ceres",
+                "la nostalgia per gli anni 2020",
+                "la lingua musicale nata sui poli lunari",
             ])
             prompt = (
-                "Sei il DJ narratore di R-A.I.. Racconta un aneddoto vero e curioso di 50-60 parole "
-                f"su: {topic_choice}. Tono coinvolgente, mai robotico. Varia sempre l'argomento. Solo italiano."
+                "Sei il DJ narratore di R-A.I. che parla DAL FUTURO. Racconta un aneddoto o una "
+                f"riflessione di 65-80 parole su: {topic_choice}. Ambientalo in un anno preciso tra "
+                f"il 2050 e il 2200. Includi dettagli tecnici o culturali specifici che rendano il "
+                f"racconto credibile nel suo mondo futuro. Tono da narratore, coinvolgente, mai "
+                f"robotico. Solo italiano."
             )
             script = await llm_generate(provider, model, system_prompt, prompt)
             if not script.strip():
-                script = random.choice(FALLBACK_SCRIPTS["talk"])[:280]
-            segment.title = f"Talk · {topic_choice[:36]}"
-            segment.duration_sec = 30
+                script = random.choice(FALLBACK_SCRIPTS["talk"])[:400]
+            segment.title = f"Futuro · {topic_choice[:40]}"
+            segment.duration_sec = 40
         segment.script = script.strip()
 
     # Per i segmenti PARLATI: nessun sottofondo musicale. La voce DJ parla sul
