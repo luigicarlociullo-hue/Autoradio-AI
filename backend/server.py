@@ -628,7 +628,7 @@ async def list_tracks(limit: int = 20):
 
 
 @api_router.post("/tracks/generate", response_model=Track)
-async def generate_track(hint: Optional[str] = None, genre: Optional[str] = None, lang: Optional[str] = None, instrumental: bool = False, _suno_call: bool = True):
+async def generate_track(hint: Optional[str] = None, genre: Optional[str] = None, lang: Optional[str] = None, instrumental: bool = False, _suno_call: bool = True, lean: bool = False):
     provider, model = _pick_llm()
     genres_pool = [
         "tech house 126 bpm",
@@ -698,28 +698,46 @@ async def generate_track(hint: Optional[str] = None, genre: Optional[str] = None
         full_lyrics = ""
         if not instrumental:
             lang_label = "italiano" if (lang or "en").lower().startswith("it") else "inglese"
-            lyrics_prompt = (
-                f"Scrivi il TESTO COMPLETO in {lang_label} di una canzone dal titolo \"{track.title}\" "
-                f"di {track.artist} (genere: {track.genre}, mood: {track.mood}).\n\n"
-                "STRUTTURA OBBLIGATORIA (usa esattamente questi tag su righe dedicate):\n"
-                "[Intro] 2-4 righe atmosferiche\n"
-                "[Verse 1] 8-12 righe con storia concreta, rime lavorate, metafore originali\n"
-                "[Pre-Chorus] 4 righe di build-up emotivo\n"
-                "[Chorus] 6-8 righe con hook memorabile\n"
-                "[Verse 2] 8-12 righe DIVERSE dal Verse 1, prospettiva nuova\n"
-                "[Pre-Chorus] 4 righe (variante del primo)\n"
-                "[Chorus] 6-8 righe (piccole variazioni testuali)\n"
-                "[Bridge] 4-6 righe con svolta emotiva\n"
-                "[Outro] 4 righe che chiudono richiamando l'intro\n\n"
-                "OGNI sezione con testo DIVERSO. Rime interne ed esterne. Immagini sensoriali. "
-                "Niente cliché. Rispondi SOLO col testo con i tag, niente commenti."
-            )
+            if lean:
+                # LEAN MODE: testo scarno, hook ripetuto, orecchiabile stile club anthem
+                lyrics_prompt = (
+                    f"Scrivi il TESTO in {lang_label} di un club anthem tech-house dal titolo \"{track.title}\" "
+                    f"di {track.artist}. REGOLE FERREE:\n\n"
+                    "[Hook] UNA riga sola di 3-5 parole massimo, POTENTE, ORECCHIABILE (deve incollarsi in testa al primo ascolto)\n"
+                    "[Verse 1] SOLO 2 righe brevi\n"
+                    "[Hook] ripeti la STESSA riga dell'Hook\n"
+                    "[Verse 2] SOLO 2 righe brevi, diverse dal Verse 1\n"
+                    "[Hook] ripeti la STESSA riga dell'Hook\n"
+                    "[Bridge] 2 righe brevi build-up\n"
+                    "[Hook] ripeti la STESSA riga dell'Hook (x2 di fila per fissarla)\n"
+                    "[Hook] ripeti la STESSA riga dell'Hook (x2 di fila per fissarla)\n\n"
+                    "L'Hook è la STESSA IDENTICA riga ripetuta minimo 6 volte in totale. "
+                    "Nessuna metafora astrusa. Parole semplici, cantabili, memorabili. "
+                    "Rispondi SOLO col testo con i tag."
+                )
+            else:
+                lyrics_prompt = (
+                    f"Scrivi il TESTO COMPLETO in {lang_label} di una canzone dal titolo \"{track.title}\" "
+                    f"di {track.artist} (genere: {track.genre}, mood: {track.mood}).\n\n"
+                    "STRUTTURA OBBLIGATORIA (usa esattamente questi tag su righe dedicate):\n"
+                    "[Intro] 2-4 righe atmosferiche\n"
+                    "[Verse 1] 8-12 righe con storia concreta, rime lavorate, metafore originali\n"
+                    "[Pre-Chorus] 4 righe di build-up emotivo\n"
+                    "[Chorus] 6-8 righe con hook memorabile\n"
+                    "[Verse 2] 8-12 righe DIVERSE dal Verse 1, prospettiva nuova\n"
+                    "[Pre-Chorus] 4 righe (variante del primo)\n"
+                    "[Chorus] 6-8 righe (piccole variazioni testuali)\n"
+                    "[Bridge] 4-6 righe con svolta emotiva\n"
+                    "[Outro] 4 righe che chiudono richiamando l'intro\n\n"
+                    "OGNI sezione con testo DIVERSO. Rime interne ed esterne. Immagini sensoriali. "
+                    "Niente cliché. Rispondi SOLO col testo con i tag, niente commenti."
+                )
             full_lyrics = await llm_generate(
                 provider, model,
                 "Sei un paroliere professionista. Scrivi solo il testo richiesto con la struttura esatta.",
                 lyrics_prompt,
             )
-            if full_lyrics and len(full_lyrics) > 200:
+            if full_lyrics and len(full_lyrics) > (60 if lean else 200):
                 track.lyrics_excerpt = full_lyrics.strip()
         try:
             task_id = await suno_service.create_task(
@@ -1019,15 +1037,37 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
                 )
 
         if track is None and suno_service.is_enabled():
-            # Perfect round-robin: sort by last_played_at ASC → tracks never
-            # played (missing field / null) come first, then the oldest-played.
-            # Anthem escluso — viene pescato solo via force_anthem sopra.
-            candidates = await db.tracks.find(
+            # ALTA ROTAZIONE: brani con priority='high' o rotation_weight>1
+            # vengono pescati ~65% delle volte, alternandosi ai brani normali.
+            # Round-robin all'interno di ciascun pool per rotare tutti equamente.
+            high_pool = await db.tracks.find(
                 {"source": "suno", "status": "ready", "audio_url": {"$ne": None},
-                 "$or": [{"is_anthem": {"$exists": False}}, {"is_anthem": False}]},
+                 "$or": [
+                     {"priority": "high"},
+                     {"rotation_weight": {"$gt": 1}},
+                 ],
+                 "$and": [{"$or": [{"is_anthem": {"$exists": False}}, {"is_anthem": False}]}]},
                 {"_id": 0},
                 sort=[("last_played_at", 1), ("created_at", 1)],
             ).to_list(length=50)
+            normal_pool = await db.tracks.find(
+                {"source": "suno", "status": "ready", "audio_url": {"$ne": None},
+                 "$or": [{"is_anthem": {"$exists": False}}, {"is_anthem": False}],
+                 "priority": {"$ne": "high"},
+                 "$and": [{"$or": [{"rotation_weight": {"$exists": False}}, {"rotation_weight": {"$lte": 1}}]}]},
+                {"_id": 0},
+                sort=[("last_played_at", 1), ("created_at", 1)],
+            ).to_list(length=50)
+
+            candidates = []
+            if high_pool and normal_pool:
+                # 65% probabilità di pescare dall'high pool
+                candidates = high_pool if random.random() < 0.65 else normal_pool
+            elif high_pool:
+                candidates = high_pool
+            elif normal_pool:
+                candidates = normal_pool
+
             if candidates:
                 chosen = candidates[0]
                 track = Track(**chosen)
