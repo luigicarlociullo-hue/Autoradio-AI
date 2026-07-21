@@ -967,8 +967,8 @@ class RadioEngine {
 
   /**
    * Riproduce un jingle R-A.I. corto (Suno-generated) come stinger tra
-   * segmenti. Volume pieno, no ducking, no intro DJ. Se il jingle è più
-   * lungo di 35s viene tagliato (safety cap).
+   * segmenti. Volume pieno, no ducking, no intro DJ. Fade-out morbido negli
+   * ultimi 1.2s per evitare chiusure brutte.
    */
   async playJingle(url) {
     if (!url) return;
@@ -981,10 +981,10 @@ class RadioEngine {
       audio.preload = "auto";
       audio.volume = 1.0;
 
-      // Safety: max 35s (Suno jingle should be 15-25s ma prendiamo margine)
-      const capTimer = setTimeout(() => { try { audio.pause(); } catch (e) {}; done(); }, 35000);
-      // Safety load: se canplaythrough non arriva in 8s, skip
-      const loadTimer = setTimeout(() => { console.warn("Jingle load timeout"); done(); }, 8000);
+      // Safety cap generoso: max 75s (Suno V4 può fare 20-60s, resta un buffer).
+      const capTimer = setTimeout(() => { try { audio.pause(); } catch (e) {}; done(); }, 75000);
+      // Load timeout: se canplaythrough non arriva in 10s, skip
+      const loadTimer = setTimeout(() => { console.warn("Jingle load timeout"); done(); }, 10000);
 
       let srcNode = null, gainNode = null;
       try {
@@ -998,18 +998,52 @@ class RadioEngine {
         }
       } catch (e) {}
 
+      // Fade-out morbido negli ultimi 1.2s: evita che una chiusura brusca di
+      // Suno diventi udibile — un decrescendo lo trasforma in un fade "voluto".
+      const outroWatcher = setInterval(() => {
+        if (!audio || audio.paused || audio.ended) return;
+        const remaining = (audio.duration || 30) - (audio.currentTime || 0);
+        if (remaining > 0 && remaining <= 1.2) {
+          try {
+            if (gainNode && ctx) {
+              const t0 = ctx.currentTime;
+              gainNode.gain.cancelScheduledValues(t0);
+              gainNode.gain.setValueAtTime(gainNode.gain.value, t0);
+              gainNode.gain.linearRampToValueAtTime(0.001, t0 + remaining);
+            } else if (audio.volume > 0.02) {
+              const steps = 12;
+              let i = 0;
+              const dt = (remaining * 1000) / steps;
+              const initial = audio.volume;
+              const iv = setInterval(() => {
+                i++;
+                audio.volume = Math.max(0, initial * (1 - i / steps));
+                if (i >= steps) clearInterval(iv);
+              }, dt);
+            }
+          } catch (e) {}
+          clearInterval(outroWatcher);
+        }
+      }, 100);
+
       audio.addEventListener("ended", () => {
+        clearInterval(outroWatcher);
         clearTimeout(capTimer);
+        // Small buffer post-ended per non troncare la coda del decoder
         setTimeout(() => {
           try { srcNode && srcNode.disconnect(); } catch (e) {}
           try { gainNode && gainNode.disconnect(); } catch (e) {}
           done();
-        }, 200);
+        }, 250);
       }, { once: true });
-      audio.addEventListener("error", () => { clearTimeout(capTimer); done(); }, { once: true });
+      audio.addEventListener("error", () => {
+        clearInterval(outroWatcher);
+        clearTimeout(capTimer);
+        done();
+      }, { once: true });
       audio.addEventListener("canplaythrough", () => {
         clearTimeout(loadTimer);
-        audio.play().catch(() => { clearTimeout(capTimer); done(); });
+        audio.play().catch(() => { clearInterval(outroWatcher); clearTimeout(capTimer); done(); });
       }, { once: true });
 
       audio.src = url;
