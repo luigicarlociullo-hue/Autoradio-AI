@@ -1998,7 +1998,16 @@ async def get_tts_audio(filename: str):
     p = elevenlabs_service.tts_path(filename)
     if not p:
         raise HTTPException(404, "TTS audio not found")
-    return FileResponse(str(p), media_type="audio/mpeg")
+    # Serve as-is (no re-encoding): FileResponse handles Range requests when
+    # Accept-Ranges header is present -> browser can seek/decode faster.
+    return FileResponse(
+        str(p),
+        media_type="audio/mpeg",
+        headers={
+            "Cache-Control": "public, max-age=604800",
+            "Accept-Ranges": "bytes",
+        },
+    )
 
 
 @api_router.get("/suno_audio/{filename}")

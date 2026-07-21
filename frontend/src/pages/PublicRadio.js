@@ -128,10 +128,9 @@ export default function PublicRadio() {
     setIsPlaying(true);
     setIsPreparing(true);
 
-    // ANTI-SILENZIO: safety pad sottile SEMPRE ATTIVO durante il player.
-    // Copre qualsiasi micro-gap tra segmenti in modo che l'ascoltatore
-    // non percepisca mai vuoti assoluti. Volume 0.04 → invisibile ma presente.
-    try { radioEngine.startSafetyPad(); } catch (e) {}
+    // Safety pad rimosso: era percepibile come rumore di fondo. Ora la
+    // continuita' audio si affida al crossfade 1s DJ<->music + queue di 2.
+    // try { radioEngine.startSafetyPad(); } catch (e) {}
 
     const resolveUrls = (seg) => {
       if (!seg) return seg;
@@ -256,6 +255,19 @@ export default function PublicRadio() {
         }
 
         console.log(`[R-A.I.] Playing segment kind=${seg.kind} title="${seg.title}" queue=${queue.length}`);
+        // Registra un hook che scatta 5s prima della fine del brano corrente:
+        // pre-warma il file audio del prossimo segmento (task explicit request).
+        try {
+          radioEngine.setPreWarmHook(() => {
+            const next = queue[0];
+            if (next) {
+              if (next.music_audio_url) radioEngine.prewarmAudio(next.music_audio_url);
+              if (next.speech_audio_url) radioEngine.prewarmAudio(next.speech_audio_url);
+              if (next.outro_speech_url) radioEngine.prewarmAudio(next.outro_speech_url);
+            }
+          });
+        } catch (e) {}
+
         try {
           await radioEngine.playSegment(seg);
         } catch (playErr) {

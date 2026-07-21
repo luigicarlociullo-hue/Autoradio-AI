@@ -1052,8 +1052,36 @@ class RadioEngine {
   }
 
   /**
+   * Registra una callback che verra' invocata 5 secondi prima della fine
+   * del segmento musicale corrente. Serve al loop per pre-caricare il
+   * prossimo audio element (fetch + decode) cosi' quando parte c'e' zero delay.
+   */
+  setPreWarmHook(fn) {
+    this._preWarmHook = fn;
+  }
+
+  /**
+   * Prewarm generico di un URL audio: crea un Audio element hidden e forza
+   * il download del contenuto. Il browser mette in cache HTTP → quando poi
+   * lo useremo davvero, canplaythrough e' istantaneo.
+   */
+  prewarmAudio(url) {
+    if (!url || this._prewarmedUrls?.has(url)) return;
+    if (!this._prewarmedUrls) this._prewarmedUrls = new Set();
+    this._prewarmedUrls.add(url);
+    try {
+      const a = new Audio();
+      a.crossOrigin = "anonymous";
+      a.preload = "auto";
+      a.muted = true;
+      a.src = url;
+      // Il browser fetcha il file. Non lo suoniamo. Lo lasciamo GC.
+      setTimeout(() => { try { a.src = ""; } catch (e) {} }, 30000);
+    } catch (e) {}
+  }
+
+  /**
    * Fade il gain di un GainNode Web Audio in modo lineare (millisecondi).
-   * nodeOrEl can be a GainNode or an HTMLAudioElement (fallback).
    */
   _fadeGain(nodeOrEl, from, to, durationMs = 800) {
     if (!nodeOrEl) return Promise.resolve();
@@ -1136,17 +1164,18 @@ class RadioEngine {
         try {
           await audio.play();
 
-          const INTRO_DUCK = 0.18;   // musica sotto la voce → parole chiare
+          const INTRO_DUCK = 0.18;   // musica sotto la voce -> parole chiare
           const FULL = 1.0;
-          const OUTRO_DUCK = 0.20;   // musica sotto la voce outro
-          // Volume controller: musicGain se disponibile, altrimenti audio.volume
+          const OUTRO_DUCK = 0.20;
+          const CROSSFADE_MS = 1000;  // crossfade DJ<->music = 1 secondo esatto
+
           const setVol = async (target, ms) => {
             if (musicGain) return this._fadeGain(musicGain, musicGain.gain.value, target, ms);
             return this._fadeGain(audio, audio.volume, target, ms);
           };
 
-          // 1) Fade-in a livello duck (musica sotto)
-          await setVol(INTRO_DUCK, 700);
+          // 1) Fade-in music a duck level (1s crossfade con eventuale audio precedente)
+          await setVol(INTRO_DUCK, CROSSFADE_MS);
 
           // 2) Intro DJ (max 14s per non coprire l'entrata vocals del brano)
           if (segment.speech_audio_url || segment.script) {
@@ -1159,28 +1188,32 @@ class RadioEngine {
               setTimeout(() => { timedOut = true; r(); }, MAX_INTRO_MS)
             );
             await Promise.race([speechPromise, timeoutPromise]);
-            if (timedOut) {
-              try { this.stopSpeech(); } catch (e) {}
-            }
+            if (timedOut) { try { this.stopSpeech(); } catch (e) {} }
           }
 
-          // 3) Music a pieno volume (fade più lento per essere piacevole)
-          await setVol(FULL, 1800);
+          // 3) DJ finito -> crossfade 1s musica a full volume
+          await setVol(FULL, CROSSFADE_MS);
 
-          // 4) Attendi fine brano meno 8s (outro window)
+          // 4) Attendi fine brano meno 8s (outro window) + pre-warm next 5s prima
+          let nextPreWarmed = false;
           await new Promise((r) => {
             const iv = setInterval(() => {
               if (!audio || audio.paused || audio.ended || this.stopRequested) {
                 clearInterval(iv); r(); return;
               }
               const remaining = (audio.duration || 60) - (audio.currentTime || 0);
+              // Pre-warm 5s prima della fine (task explicit request)
+              if (!nextPreWarmed && remaining <= 5 && this._preWarmHook) {
+                nextPreWarmed = true;
+                try { this._preWarmHook(); } catch (e) {}
+              }
               if (remaining <= 8) { clearInterval(iv); r(); }
-            }, 250);
+            }, 200);
           });
 
-          // 5) Outro DJ (opzionale) — duck aggressivo così la voce è primo piano
+          // 5) Crossfade 1s musica -> duck, poi outro DJ
           if (segment.outro_speech_url || segment.outro_script) {
-            await setVol(OUTRO_DUCK, 900);
+            await setVol(OUTRO_DUCK, CROSSFADE_MS);
             if (segment.outro_speech_url) {
               await this.playAudioUrl(segment.outro_speech_url);
             } else {
@@ -1188,12 +1221,9 @@ class RadioEngine {
             }
           }
 
-          // 6) CROSSFADE: avvia il fade-out ma NON aspettare la fine — il loop
-          // può partire subito col prossimo segmento mentre questo scompare.
-          // IMPORTANTE: sgancio `this.currentAudio` così il prossimo playSegment
-          // NON ferma bruscamente il fade-out in corso (crossfade genuino).
+          // 6) CROSSFADE finale 1s: fade-out mentre il prossimo segmento parte.
           if (this.currentAudio === audio) this.currentAudio = null;
-          setVol(0.001, 800).then(() => {
+          setVol(0.001, CROSSFADE_MS).then(() => {
             try { audio.pause(); } catch (e) {}
             try { srcNode && srcNode.disconnect(); } catch (e) {}
             try { musicGain && musicGain.disconnect(); } catch (e) {}
