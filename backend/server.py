@@ -621,6 +621,35 @@ async def toggle_station():
     return {"is_live": is_live}
 
 
+@api_router.get("/station/mode")
+async def get_station_mode():
+    """Ritorna la modalita' della stazione (auto|manual) e se e' pendente uno
+    stop graceful. Il player pubblico controlla questo endpoint dopo ogni
+    segmento per fermarsi puliti quando l'admin passa in manuale."""
+    doc = await db.station.find_one({"_id": "state"}, {"_id": 0}) or {}
+    return {
+        "mode": doc.get("mode", "auto"),
+        "pending_graceful_stop": bool(doc.get("pending_graceful_stop", False)),
+    }
+
+
+@api_router.post("/station/mode")
+async def set_station_mode(mode: str = "auto", stop_after_current: bool = False):
+    """Imposta la modalita' della stazione. mode = auto|manual.
+    Se stop_after_current=true, il player si fermera' dopo il segmento in onda."""
+    if mode not in ("auto", "manual"):
+        return JSONResponse(status_code=400, content={"error": "mode must be auto|manual"})
+    update = {"mode": mode}
+    if stop_after_current or mode == "manual":
+        update["pending_graceful_stop"] = True
+    else:
+        update["pending_graceful_stop"] = False
+    await db.station.update_one({"_id": "state"}, {"$set": update}, upsert=True)
+    return {"mode": mode, "pending_graceful_stop": update["pending_graceful_stop"]}
+
+
+
+
 # ----------------------- Tracks -----------------------
 @api_router.get("/tracks", response_model=List[Track])
 async def list_tracks(limit: int = 500):

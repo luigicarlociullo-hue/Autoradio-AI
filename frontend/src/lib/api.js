@@ -28,6 +28,8 @@ export const endpoints = {
   logout: () => api.post("/auth/logout").then(r => r.data),
   audioUrl: (path) => `${API}${path.startsWith("/api") ? path.slice(4) : path}`,
   getJingleRandom: () => api.get("/jingles/random", { timeout: 8000 }).then(r => r.data).catch(() => ({ jingle: null })),
+  getStationMode: () => api.get("/station/mode", { timeout: 5000 }).then(r => r.data).catch(() => null),
+  setStationMode: (mode, stop_after_current = false) => api.post("/station/mode", null, { params: { mode, stop_after_current } }).then(r => r.data),
   ads: () => api.get("/ads").then(r => r.data),
   adRevenue: () => api.get("/ads/revenue").then(r => r.data),
   adPlays: (id) => api.get(`/ads/${id}/plays`).then(r => r.data),

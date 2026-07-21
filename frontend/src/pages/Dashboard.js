@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { Radio, Power, Trash2, Sparkles, Zap, Music2, Newspaper, MessageCircle, LogOut, LogIn, Send, User, ChevronRight, Cpu, Users, RefreshCw, Megaphone, Euro, ExternalLink, Download, Archive } from "lucide-react";
+import { Radio, Power, Trash2, Sparkles, Zap, Music2, Newspaper, MessageCircle, LogOut, LogIn, Send, User, ChevronRight, Cpu, Users, RefreshCw, Megaphone, Euro, ExternalLink, Download, Archive, Sliders, Mic, PauseCircle, PlayCircle } from "lucide-react";
+import { lineInMixer } from "@/lib/lineInMixer";
 import { endpoints, api } from "@/lib/api";
 import BrandName from "@/components/BrandName";
 import { toast } from "sonner";
@@ -177,6 +178,9 @@ export default function Dashboard() {
 
         {/* Library downloader — lista brani + tasto Scarica ZIP + MP3 singolo */}
         <LibraryDownloader />
+
+        {/* Manual Mode & Line-In Mixer */}
+        <ManualModePanel />
 
         {/* KPI */}
         <KPI label="Segmenti" value={analytics.total_segments || 0} icon={Zap} />
@@ -709,6 +713,268 @@ function FilterChip({ active, onClick, label, testid }) {
     >
       {label}
     </button>
+  );
+}
+
+
+function ManualModePanel() {
+  const [mode, setMode] = React.useState("auto");
+  const [pendingStop, setPendingStop] = React.useState(false);
+  const [devices, setDevices] = React.useState([]);
+  const [selected, setSelected] = React.useState("");
+  const [lineActive, setLineActive] = React.useState(false);
+  const [gain, setGain] = React.useState(1.0);
+  const [level, setLevel] = React.useState(0);
+  const [starting, setStarting] = React.useState(false);
+  const rafRef = React.useRef(null);
+
+  const refreshMode = React.useCallback(async () => {
+    try {
+      const r = await api.get("/station/mode");
+      setMode(r.data.mode || "auto");
+      setPendingStop(!!r.data.pending_graceful_stop);
+    } catch (e) {}
+  }, []);
+
+  React.useEffect(() => {
+    refreshMode();
+    const iv = setInterval(refreshMode, 8000);
+    return () => clearInterval(iv);
+  }, [refreshMode]);
+
+  const loadDevices = async () => {
+    const list = await lineInMixer.listDevices();
+    setDevices(list);
+    if (list.length && !selected) setSelected(list[0].deviceId);
+  };
+
+  React.useEffect(() => { loadDevices(); }, []);
+
+  React.useEffect(() => {
+    if (!lineActive) {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      setLevel(0);
+      return;
+    }
+    const tick = () => {
+      setLevel(lineInMixer.getLevel());
+      rafRef.current = requestAnimationFrame(tick);
+    };
+    rafRef.current = requestAnimationFrame(tick);
+    return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
+  }, [lineActive]);
+
+  const requestGracefulStop = async () => {
+    try {
+      await api.post("/station/mode", null, { params: { mode: "manual", stop_after_current: true } });
+      setPendingStop(true);
+      setMode("manual");
+      toast.success("Stop programmato. Il player si fermera' dopo il segmento in onda.");
+    } catch (e) {
+      toast.error("Errore invio comando stop");
+    }
+  };
+
+  const backToAuto = async () => {
+    try {
+      await api.post("/station/mode", null, { params: { mode: "auto", stop_after_current: false } });
+      setMode("auto");
+      setPendingStop(false);
+      toast.success("Modalita' automatica riattivata");
+    } catch (e) {
+      toast.error("Errore");
+    }
+  };
+
+  const startLineIn = async () => {
+    setStarting(true);
+    try {
+      await lineInMixer.start(selected || undefined);
+      setLineActive(true);
+      lineInMixer.setGain(gain);
+      toast.success("Line-in attivo - qualita' 48kHz stereo");
+    } catch (e) {
+      toast.error(`Errore attivazione line-in: ${e.message || e}`);
+      console.error(e);
+    } finally {
+      setStarting(false);
+    }
+  };
+
+  const stopLineIn = async () => {
+    await lineInMixer.stop();
+    setLineActive(false);
+    toast.success("Line-in fermato");
+  };
+
+  const changeGain = (v) => {
+    setGain(v);
+    if (lineActive) lineInMixer.setGain(v);
+  };
+
+  const levelPct = Math.min(100, Math.round(level * 300));
+  const isClipping = levelPct > 92;
+
+  return (
+    <section data-testid="manual-mode-panel" className="lg:col-span-4 card-surface p-6">
+      <div className="flex flex-wrap items-center justify-between gap-4 mb-4">
+        <div>
+          <div className="label-mono flex items-center gap-2">
+            <Sliders className="w-4 h-4 text-fuchsia-400" /> Trasmissione manuale
+          </div>
+          <h2 className="font-display font-black text-2xl mt-1">Modalita' Manuale &amp; Line-In</h2>
+          <p className="text-zinc-400 text-sm mt-1">
+            Ferma la playlist automatica dopo il segmento in onda e trasmetti in diretta
+            dalla tua seconda scheda audio. 48 kHz stereo, zero ricodifica, zero crediti.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className={`px-3 py-1.5 rounded-full text-xs font-mono uppercase tracking-wider border ${
+            mode === "manual"
+              ? "bg-fuchsia-500/20 border-fuchsia-400 text-fuchsia-300"
+              : "bg-emerald-500/20 border-emerald-400 text-emerald-300"
+          }`} data-testid="mode-badge">
+            Mode: {mode}
+          </span>
+          {pendingStop && mode !== "manual" && (
+            <span className="px-3 py-1.5 rounded-full text-xs font-mono uppercase tracking-wider bg-amber-500/20 border border-amber-400 text-amber-300">
+              Stop pendente
+            </span>
+          )}
+        </div>
+      </div>
+
+      <div className="grid md:grid-cols-2 gap-3 mb-6">
+        <button
+          data-testid="btn-graceful-stop"
+          onClick={requestGracefulStop}
+          disabled={mode === "manual"}
+          className={`p-4 rounded-xl border transition text-left ${
+            mode === "manual"
+              ? "bg-white/[0.02] border-white/5 opacity-40 cursor-not-allowed"
+              : "bg-fuchsia-500/10 border-fuchsia-400/40 hover:border-fuchsia-400 hover:bg-fuchsia-500/20"
+          }`}
+        >
+          <div className="flex items-center gap-3">
+            <PauseCircle className="w-6 h-6 text-fuchsia-300" />
+            <div>
+              <div className="font-bold text-sm">Ferma dopo il segmento in onda</div>
+              <div className="text-xs text-zinc-400 mt-0.5">
+                Il player finisce il pezzo/parlato corrente poi si mette in pausa. Nessun taglio brusco.
+              </div>
+            </div>
+          </div>
+        </button>
+        <button
+          data-testid="btn-back-to-auto"
+          onClick={backToAuto}
+          disabled={mode === "auto" && !pendingStop}
+          className={`p-4 rounded-xl border transition text-left ${
+            mode === "auto" && !pendingStop
+              ? "bg-white/[0.02] border-white/5 opacity-40 cursor-not-allowed"
+              : "bg-emerald-500/10 border-emerald-400/40 hover:border-emerald-400 hover:bg-emerald-500/20"
+          }`}
+        >
+          <div className="flex items-center gap-3">
+            <PlayCircle className="w-6 h-6 text-emerald-300" />
+            <div>
+              <div className="font-bold text-sm">Torna alla playlist automatica</div>
+              <div className="text-xs text-zinc-400 mt-0.5">
+                Ricarica la pagina Player pubblica per far ripartire la rotazione AI.
+              </div>
+            </div>
+          </div>
+        </button>
+      </div>
+
+      <div className="rounded-xl border border-white/10 bg-black/30 p-4">
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-2">
+            <Mic className={`w-4 h-4 ${lineActive ? "text-fuchsia-400" : "text-zinc-500"}`} />
+            <span className="font-mono uppercase text-xs tracking-wider text-zinc-300">
+              Line-In - {lineActive ? "IN ONDA" : "off"}
+            </span>
+          </div>
+          <button
+            data-testid="btn-refresh-devices"
+            onClick={loadDevices}
+            className="btn-outline text-xs flex items-center gap-1"
+          >
+            <RefreshCw className="w-3 h-3" /> Aggiorna dispositivi
+          </button>
+        </div>
+
+        <div className="grid md:grid-cols-[1fr_auto] gap-3 mb-4">
+          <select
+            data-testid="line-in-device-select"
+            value={selected}
+            onChange={(e) => setSelected(e.target.value)}
+            disabled={lineActive}
+            className="bg-black/50 border border-white/10 rounded px-3 py-2 text-sm"
+          >
+            {devices.length === 0 && <option value="">Nessun dispositivo audio - concedi il permesso al microfono</option>}
+            {devices.map(d => (
+              <option key={d.deviceId} value={d.deviceId}>{d.label}</option>
+            ))}
+          </select>
+          {!lineActive ? (
+            <button
+              data-testid="btn-start-line-in"
+              onClick={startLineIn}
+              disabled={starting || devices.length === 0}
+              className="btn-primary text-sm"
+            >
+              {starting ? "Attivazione..." : "Attiva Line-In"}
+            </button>
+          ) : (
+            <button
+              data-testid="btn-stop-line-in"
+              onClick={stopLineIn}
+              className="btn-outline text-sm border-fuchsia-400 text-fuchsia-300"
+            >
+              Ferma Line-In
+            </button>
+          )}
+        </div>
+
+        <div className="grid md:grid-cols-[1fr_120px] gap-4 items-center">
+          <div>
+            <div className="flex items-center justify-between text-xs text-zinc-400 mb-1">
+              <span>Gain: {gain.toFixed(2)}x</span>
+              <span className="font-mono">{Math.round(gain * 100)}%</span>
+            </div>
+            <input
+              data-testid="line-in-gain-slider"
+              type="range"
+              min="0"
+              max="1.5"
+              step="0.01"
+              value={gain}
+              onChange={(e) => changeGain(parseFloat(e.target.value))}
+              className="w-full accent-fuchsia-500"
+            />
+          </div>
+          <div className="h-16 w-full rounded overflow-hidden border border-white/10 bg-black relative" data-testid="line-in-vu">
+            <div
+              className={`absolute bottom-0 left-0 right-0 transition-[height] duration-75 ${
+                isClipping ? "bg-red-500" : levelPct > 70 ? "bg-amber-400" : "bg-emerald-400"
+              }`}
+              style={{ height: `${levelPct}%` }}
+            />
+            <div className="absolute inset-0 flex items-end justify-center pb-1 text-[10px] font-mono text-zinc-500">
+              {isClipping ? "CLIP!" : `${levelPct}%`}
+            </div>
+          </div>
+        </div>
+
+        <p className="text-xs text-zinc-500 mt-4">
+          Suggerimento: seleziona l'ingresso della tua seconda scheda audio (es. "Line In (Focusrite)",
+          "USB Audio", "BlackHole 2ch"). L'audio esce direttamente dal browser senza ricodifica intermedia.
+          Per trasmettere anche agli ascoltatori pubblici serve un server di streaming (Icecast/Liquidsoap):
+          al momento la line-in e' udibile in locale sul tuo PC.
+        </p>
+      </div>
+    </section>
   );
 }
 

@@ -262,6 +262,20 @@ export default function PublicRadio() {
           console.error("playSegment error, skipping:", playErr);
         }
 
+        // ============================================================
+        // GRACEFUL STOP: dopo ogni segmento verifica se admin ha chiesto
+        // switch a modalita' manuale. Se si', esci pulito dal loop.
+        // ============================================================
+        try {
+          const modeRes = await endpoints.getStationMode();
+          if (modeRes && (modeRes.pending_graceful_stop || modeRes.mode === "manual")) {
+            console.log("[R-A.I.] Graceful stop requested by admin — exiting loop.");
+            toast.success("Trasmissione automatica messa in pausa. Modalita' manuale attiva.");
+            stopFlag.current = true;
+            break;
+          }
+        } catch (e) {}
+
         if (stopFlag.current) break;
         setTrackOverlay(o => (o.visible ? { ...o, visible: false } : o));
 
