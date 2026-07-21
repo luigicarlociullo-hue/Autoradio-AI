@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { Radio, Power, Trash2, Sparkles, Zap, Music2, Newspaper, MessageCircle, LogOut, LogIn, Send, User, ChevronRight, Cpu, Users, RefreshCw, Megaphone, Euro, ExternalLink } from "lucide-react";
+import { Radio, Power, Trash2, Sparkles, Zap, Music2, Newspaper, MessageCircle, LogOut, LogIn, Send, User, ChevronRight, Cpu, Users, RefreshCw, Megaphone, Euro, ExternalLink, Download, Archive } from "lucide-react";
 import { endpoints, api } from "@/lib/api";
 import BrandName from "@/components/BrandName";
 import { toast } from "sonner";
@@ -174,6 +174,9 @@ export default function Dashboard() {
             </div>
           </div>
         </section>
+
+        {/* Library downloader — lista brani + tasto Scarica ZIP + MP3 singolo */}
+        <LibraryDownloader />
 
         {/* KPI */}
         <KPI label="Segmenti" value={analytics.total_segments || 0} icon={Zap} />
@@ -514,3 +517,198 @@ function KPI({ label, value, icon: Icon }) {
     </div>
   );
 }
+
+function LibraryDownloader() {
+  const [manifest, setManifest] = React.useState(null);
+  const [tracks, setTracks] = React.useState([]);
+  const [loading, setLoading] = React.useState(true);
+  const [filter, setFilter] = React.useState("all");
+  const [zipping, setZipping] = React.useState(false);
+
+  React.useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const [m, t] = await Promise.all([
+          api.get("/admin/export/manifest").then(r => r.data).catch(() => null),
+          api.get("/tracks").then(r => r.data).catch(() => []),
+        ]);
+        if (!alive) return;
+        setManifest(m);
+        setTracks(Array.isArray(t) ? t : []);
+      } finally {
+        if (alive) setLoading(false);
+      }
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  const categoryOf = (t) => {
+    const tags = t.tags || [];
+    if (t.is_anthem) return "anthem";
+    if (t.is_jingle) return "jingles";
+    if (t.is_seed) return "seed";
+    if (t.status === "retired") return "retired";
+    if (tags.includes("english_pop_dance")) return "english_pop_dance";
+    if (tags.includes("italian_lean_v2") || tags.includes("summer_it") || tags.includes("tech_house_lean")) return "italian";
+    return "other";
+  };
+
+  const CAT_LABELS = {
+    english_pop_dance: "English Pop/Dance",
+    italian: "Italiane",
+    jingles: "Jingle R-A.I.",
+    anthem: "Anthem",
+    seed: "Seed",
+    retired: "Ritirate",
+    other: "Altre",
+  };
+
+  const filtered = React.useMemo(() => {
+    return tracks
+      .filter(t => t.audio_url && t.status !== "pending")
+      .filter(t => filter === "all" || categoryOf(t) === filter);
+  }, [tracks, filter]);
+
+  const groups = React.useMemo(() => {
+    const g = {};
+    filtered.forEach(t => {
+      const c = categoryOf(t);
+      (g[c] = g[c] || []).push(t);
+    });
+    return g;
+  }, [filtered]);
+
+  const downloadZip = async () => {
+    setZipping(true);
+    try {
+      const backend = process.env.REACT_APP_BACKEND_URL;
+      const url = `${backend}/api/admin/export`;
+      const a = document.createElement("a");
+      a.href = url;
+      a.rel = "noopener";
+      a.download = `rai_export_${new Date().toISOString().slice(0,10)}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => document.body.removeChild(a), 500);
+      toast.success("Download ZIP avviato - attendi il completamento (puo' richiedere minuti)");
+    } catch (e) {
+      toast.error("Errore avvio download");
+      console.error(e);
+    } finally {
+      setTimeout(() => setZipping(false), 1500);
+    }
+  };
+
+  const singleDownloadUrl = (t) => {
+    if (!t.audio_url) return null;
+    const backend = process.env.REACT_APP_BACKEND_URL;
+    return t.audio_url.startsWith("/api/")
+      ? `${backend}${t.audio_url}`
+      : t.audio_url;
+  };
+
+  return (
+    <section data-testid="library-downloader" className="lg:col-span-4 card-surface p-6">
+      <div className="flex flex-wrap items-center justify-between gap-4 mb-4">
+        <div>
+          <div className="label-mono flex items-center gap-2">
+            <Archive className="w-4 h-4 text-emerald-400" /> Libreria contenuti generati
+          </div>
+          <h2 className="font-display font-black text-2xl mt-1">Download &amp; Archivio</h2>
+          {manifest && (
+            <p className="text-zinc-400 text-sm mt-1">
+              {manifest.suno_files} file audio ({manifest.suno_mb} MB) - {manifest.tracks_ready} tracce ready - {manifest.segments_total} segmenti registrati
+            </p>
+          )}
+        </div>
+        <button
+          data-testid="download-zip-all"
+          onClick={downloadZip}
+          disabled={zipping}
+          className="btn-primary flex items-center gap-2 whitespace-nowrap"
+        >
+          <Download className="w-4 h-4" />
+          {zipping ? "Preparazione ZIP..." : "Scarica TUTTO come ZIP"}
+        </button>
+      </div>
+
+      <div className="flex flex-wrap gap-2 mb-4" data-testid="library-filter-chips">
+        <FilterChip active={filter === "all"} onClick={() => setFilter("all")} label={`Tutti (${tracks.filter(t => t.audio_url).length})`} testid="filter-all" />
+        {Object.entries(CAT_LABELS).map(([key, label]) => {
+          const count = tracks.filter(t => categoryOf(t) === key && t.audio_url).length;
+          if (count === 0) return null;
+          return (
+            <FilterChip
+              key={key}
+              active={filter === key}
+              onClick={() => setFilter(key)}
+              label={`${label} (${count})`}
+              testid={`filter-${key}`}
+            />
+          );
+        })}
+      </div>
+
+      {loading ? (
+        <div className="text-zinc-500 text-sm py-8 text-center">Caricamento libreria...</div>
+      ) : filtered.length === 0 ? (
+        <div className="text-zinc-500 text-sm py-8 text-center">Nessun brano in questa categoria.</div>
+      ) : (
+        <div className="space-y-6 max-h-[600px] overflow-y-auto pr-2">
+          {Object.entries(groups).map(([cat, list]) => (
+            <div key={cat}>
+              <div className="label-mono mb-2 text-cyan-400">{CAT_LABELS[cat] || cat} - {list.length}</div>
+              <div className="space-y-1">
+                {list.map(t => {
+                  const url = singleDownloadUrl(t);
+                  const fname = ((t.title || "untitled").replace(/[^\w\s-]/g, "").trim() || "untitled") + ".mp3";
+                  return (
+                    <div key={t.id} data-testid={`library-row-${t.id}`} className="flex items-center justify-between gap-3 py-2 px-3 rounded bg-white/[0.02] hover:bg-white/[0.05] border border-white/5">
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate font-medium text-sm">{t.title || "(senza titolo)"}</div>
+                        <div className="truncate text-xs text-zinc-500">
+                          {t.artist || "-"} - {t.genre || "-"} - {t.status}
+                        </div>
+                      </div>
+                      {url ? (
+                        <a
+                          href={url}
+                          download={fname}
+                          data-testid={`download-mp3-${t.id}`}
+                          className="btn-outline text-xs flex items-center gap-1 whitespace-nowrap"
+                        >
+                          <Download className="w-3 h-3" /> MP3
+                        </a>
+                      ) : (
+                        <span className="text-xs text-zinc-600">no file</span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function FilterChip({ active, onClick, label, testid }) {
+  return (
+    <button
+      data-testid={testid}
+      onClick={onClick}
+      className={
+        "px-3 py-1.5 rounded-full text-xs font-mono uppercase tracking-wider border transition " +
+        (active
+          ? "bg-emerald-500/20 border-emerald-400 text-emerald-300"
+          : "bg-white/[0.02] border-white/10 text-zinc-400 hover:border-white/25")
+      }
+    >
+      {label}
+    </button>
+  );
+}
+

@@ -1,5 +1,5 @@
 from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Cookie, Header
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -142,7 +142,7 @@ class Track(BaseModel):
     is_anthem: bool = False               # official R-A.I. anthem — played periodically as jingle
     is_jingle: bool = False               # short R-A.I. station jingle — played between segments
     suno_task_id: Optional[str] = None
-    status: Literal["ready", "pending", "failed"] = "ready"
+    status: Literal["ready", "pending", "failed", "retired", "disabled"] = "ready"
     created_at: str = Field(default_factory=now_iso)
 
 
@@ -623,7 +623,7 @@ async def toggle_station():
 
 # ----------------------- Tracks -----------------------
 @api_router.get("/tracks", response_model=List[Track])
-async def list_tracks(limit: int = 20):
+async def list_tracks(limit: int = 500):
     docs = await db.tracks.find({}, {"_id": 0}).sort("created_at", -1).to_list(limit)
     return docs
 
@@ -804,6 +804,155 @@ async def suno_status():
         "autogen_enabled": _suno_autogen_enabled(),
         "library_target": _suno_library_target(),
     }
+
+@api_router.get("/admin/export/manifest")
+async def admin_export_manifest():
+    """Preview di cosa verra' incluso nell'export ZIP: conteggi per categoria + peso stimato."""
+    tracks_total = await db.tracks.count_documents({"source": "suno"})
+    tracks_ready = await db.tracks.count_documents({"source": "suno", "status": "ready"})
+    segments_total = await db.segments.count_documents({})
+    tts_dir = ROOT_DIR / "static" / "tts"
+    tts_files = list(tts_dir.glob("*.mp3")) if tts_dir.exists() else []
+    tts_bytes = sum(p.stat().st_size for p in tts_files)
+    suno_files = list(SUNO_AUDIO_DIR.glob("track_*.mp3")) if SUNO_AUDIO_DIR.exists() else []
+    suno_bytes = sum(p.stat().st_size for p in suno_files)
+    cats = {}
+    async for t in db.tracks.find({}, {"_id": 0, "tags": 1, "is_anthem": 1, "is_jingle": 1, "is_seed": 1, "status": 1, "id": 1}):
+        c = "other"
+        if t.get("is_anthem"):
+            c = "anthem"
+        elif t.get("is_jingle"):
+            c = "jingles"
+        elif t.get("is_seed"):
+            c = "seed"
+        elif t.get("status") == "retired":
+            c = "retired"
+        else:
+            tags = t.get("tags") or []
+            if "english_pop_dance" in tags:
+                c = "english_pop_dance"
+            elif any(x in tags for x in ("italian_lean_v2", "summer_it", "tech_house_lean")):
+                c = "italian"
+        p = SUNO_AUDIO_DIR / f"track_{t.get('id')}.mp3"
+        has_file = p.exists() and p.stat().st_size >= 10_000
+        cats.setdefault(c, {"count": 0, "with_file": 0})
+        cats[c]["count"] += 1
+        if has_file:
+            cats[c]["with_file"] += 1
+    return {
+        "tracks_total": tracks_total,
+        "tracks_ready": tracks_ready,
+        "segments_total": segments_total,
+        "tts_files": len(tts_files),
+        "tts_mb": round(tts_bytes / 1024 / 1024, 2),
+        "suno_files": len(suno_files),
+        "suno_mb": round(suno_bytes / 1024 / 1024, 2),
+        "estimated_zip_mb": round((tts_bytes + suno_bytes) / 1024 / 1024, 2),
+        "categories": cats,
+    }
+
+
+@api_router.get("/admin/export")
+async def admin_export_all():
+    """Stream un ZIP con TUTTI i contenuti generati organizzati per categoria."""
+    import zipfile
+    import io
+    import json as _json
+
+    tracks = await db.tracks.find({}, {"_id": 0}).to_list(length=5000)
+    segments = await db.segments.find({}, {"_id": 0}).sort("created_at", -1).to_list(length=1000)
+
+    def track_category(t):
+        tags = t.get("tags") or []
+        if t.get("is_anthem"): return "anthem"
+        if t.get("is_jingle"): return "jingles"
+        if t.get("is_seed"): return "seed"
+        if t.get("status") == "retired": return "retired"
+        if "english_pop_dance" in tags: return "english_pop_dance"
+        if any(x in tags for x in ("italian_lean_v2", "summer_it", "tech_house_lean")):
+            return "italian"
+        return "other"
+
+    async def stream_zip():
+        buf = io.BytesIO()
+        zf = zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED)
+
+        def flush():
+            nonlocal buf
+            data = buf.getvalue()
+            buf.seek(0); buf.truncate(0)
+            return data
+
+        # Metadata JSON
+        for t in tracks:
+            t["_category"] = track_category(t)
+        zf.writestr("rai_export/metadata/tracks.json", _json.dumps(tracks, indent=2, default=str))
+        zf.writestr("rai_export/metadata/segments.json", _json.dumps(segments, indent=2, default=str))
+        zf.writestr("rai_export/metadata/export_info.json", _json.dumps({
+            "exported_at": datetime.now(timezone.utc).isoformat(),
+            "tracks_count": len(tracks),
+            "segments_count": len(segments),
+            "app": "R-A.I. Radio",
+        }, indent=2))
+        yield flush()
+
+        # Audio Suno per categoria
+        for t in tracks:
+            tid = t.get("id")
+            if not tid: continue
+            mp3_path = SUNO_AUDIO_DIR / f"track_{tid}.mp3"
+            if not mp3_path.exists() or mp3_path.stat().st_size < 10_000:
+                continue
+            cat = t["_category"]
+            safe_title = "".join(c for c in (t.get("title") or "untitled") if c.isalnum() or c in " -_")[:40].strip() or "untitled"
+            zpath = f"rai_export/music/{cat}/{safe_title}_{tid[:8]}.mp3"
+            with open(mp3_path, "rb") as fh:
+                zf.writestr(zpath, fh.read())
+            data = flush()
+            if data: yield data
+
+        # File TTS (voci DJ)
+        tts_dir = ROOT_DIR / "static" / "tts"
+        if tts_dir.exists():
+            for p in tts_dir.glob("*.mp3"):
+                try:
+                    if p.stat().st_size < 5_000: continue
+                    with open(p, "rb") as fh:
+                        zf.writestr(f"rai_export/tts_voices/{p.name}", fh.read())
+                except Exception:
+                    pass
+                data = flush()
+                if data: yield data
+
+        readme = (
+            "# R-A.I. Radio - Export\n\n"
+            f"Exported: {datetime.now(timezone.utc).isoformat()}\n\n"
+            "## Struttura\n"
+            "- music/english_pop_dance/  hit pop/dance inglesi (high rotation)\n"
+            "- music/italian/            tracce italiane\n"
+            "- music/jingles/            jingle brandizzati R-A.I.\n"
+            "- music/anthem/             inno ufficiale\n"
+            "- music/seed/               5 tracce seed sempre disponibili\n"
+            "- music/retired/            tracce ritirate dalla rotazione\n"
+            "- music/other/              altre\n"
+            "- tts_voices/               file audio delle voci DJ (parlati)\n"
+            "- metadata/tracks.json      tutti i metadati DB\n"
+            "- metadata/segments.json    ultimi 1000 segmenti\n"
+            "- metadata/export_info.json info export\n"
+        )
+        zf.writestr("rai_export/README.md", readme)
+        zf.close()
+        final = flush()
+        if final: yield final
+
+    fname = f"rai_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
+    return StreamingResponse(
+        stream_zip(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
 
 
 @api_router.get("/library/seed")
