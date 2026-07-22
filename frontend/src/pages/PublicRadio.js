@@ -366,19 +366,48 @@ export default function PublicRadio() {
 
   return (
     <div className="relative min-h-screen text-white">
-      {/* Hero background */}
+      {/* YouTube live video background: full-screen, muted, autoplay, no controls.
+          Iframe leggero (lazy load nativo del browser). Wrapper con scaling
+          per garantire copertura viewport 16:9 senza band nere.
+          z-index: 0 (dietro tutto). L'header/controlli hanno z-index >= 40. */}
       <div
-        className="absolute inset-0 -z-10"
-        style={{
-          backgroundImage: `linear-gradient(180deg, rgba(5,5,10,0.75) 0%, rgba(5,5,10,0.95) 60%, #05050A 100%), url(${HERO_BG})`,
-          backgroundSize: "cover",
-          backgroundPosition: "center",
-          backgroundAttachment: "fixed",
-        }}
-      />
+        aria-hidden
+        className="fixed inset-0 pointer-events-none overflow-hidden"
+        style={{ zIndex: 0 }}
+        data-testid="youtube-bg"
+      >
+        <div
+          className="absolute top-1/2 left-1/2"
+          style={{
+            width: "177.78vh",     /* 16:9 relative to viewport height */
+            minWidth: "100vw",
+            height: "56.25vw",     /* 9:16 relative to viewport width */
+            minHeight: "100vh",
+            transform: "translate(-50%, -50%)",
+          }}
+        >
+          <iframe
+            title="R-A.I. live visual"
+            src="https://www.youtube.com/embed/hvpaRATqHXc?autoplay=1&mute=1&controls=0&loop=1&playlist=hvpaRATqHXc&modestbranding=1&playsinline=1&rel=0&iv_load_policy=3&disablekb=1"
+            frameBorder="0"
+            allow="autoplay; encrypted-media; picture-in-picture"
+            allowFullScreen={false}
+            loading="lazy"
+            referrerPolicy="strict-origin-when-cross-origin"
+            style={{ width: "100%", height: "100%", border: 0, pointerEvents: "none" }}
+          />
+        </div>
+        {/* Overlay scuro per leggibilita' controlli sopra il video */}
+        <div
+          className="absolute inset-0"
+          style={{
+            background: "linear-gradient(180deg, rgba(5,5,10,0.55) 0%, rgba(5,5,10,0.72) 50%, rgba(5,5,10,0.90) 100%)",
+          }}
+        />
+      </div>
 
       {/* Header */}
-      <header className="glass sticky top-0 z-40">
+      <header className="glass sticky top-0 z-40 relative">
         <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <Radio className="w-6 h-6 text-pink-500" />
@@ -401,7 +430,7 @@ export default function PublicRadio() {
       </header>
 
       {/* Hero / Player */}
-      <section className="max-w-7xl mx-auto px-6 pt-16 pb-10">
+      <section className="max-w-7xl mx-auto px-6 pt-16 pb-10 relative z-10">
         <div className="label-mono mb-4">La prima radio governata solo da AI</div>
         <h1 className="font-display font-black text-4xl sm:text-5xl lg:text-6xl leading-[0.95] max-w-4xl">
           Voci sintetiche.<br />
@@ -486,7 +515,7 @@ export default function PublicRadio() {
       </section>
 
       {/* DJ roster */}
-      <section className="max-w-7xl mx-auto px-6 py-10">
+      <section className="max-w-7xl mx-auto px-6 py-10 relative z-10">
         <div className="flex items-end justify-between mb-6">
           <div>
             <div className="label-mono">La squadra</div>
@@ -515,7 +544,7 @@ export default function PublicRadio() {
       </section>
 
       {/* Timeline */}
-      <section className="max-w-7xl mx-auto px-6 py-10">
+      <section className="max-w-7xl mx-auto px-6 py-10 relative z-10">
         <div className="label-mono mb-2">Timeline</div>
         <h2 className="font-display font-bold text-2xl sm:text-3xl mb-6">Cosa è appena successo in radio</h2>
         <RadioErrorBoundary>
@@ -545,7 +574,7 @@ export default function PublicRadio() {
       </section>
 
       {/* Ask the AI */}
-      <section className="max-w-7xl mx-auto px-6 py-10">
+      <section className="max-w-7xl mx-auto px-6 py-10 relative z-10">
         <div className="glass rounded-2xl p-6 md:p-10">
           <div className="grid md:grid-cols-2 gap-8 items-center">
             <div>
@@ -585,7 +614,7 @@ export default function PublicRadio() {
         </div>
       </section>
 
-      <footer className="max-w-7xl mx-auto px-6 py-10 text-xs font-mono text-zinc-600 border-t border-white/5 mt-8">
+      <footer className="max-w-7xl mx-auto px-6 py-10 text-xs font-mono text-zinc-600 border-t border-white/5 mt-8 relative z-10">
         R-A.I. · prototipo beta · orchestrato da GPT-5.2 · Claude Sonnet 4.5 · Gemini 3 Flash · nessun umano è stato usato per registrare quest'audio.
       </footer>
 
