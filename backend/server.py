@@ -658,7 +658,7 @@ async def list_tracks(limit: int = 500):
 
 
 @api_router.post("/tracks/generate", response_model=Track)
-async def generate_track(hint: Optional[str] = None, genre: Optional[str] = None, lang: Optional[str] = None, instrumental: bool = False, _suno_call: bool = True, lean: bool = False, custom_lyrics: Optional[str] = None):
+async def generate_track(hint: Optional[str] = None, genre: Optional[str] = None, lang: Optional[str] = None, instrumental: bool = False, _suno_call: bool = True, lean: bool = False, custom_lyrics: Optional[str] = None, premium: bool = False):
     provider, model = _pick_llm()
     genres_pool = [
         "tech house 126 bpm",
@@ -733,7 +733,41 @@ async def generate_track(hint: Optional[str] = None, genre: Optional[str] = None
             track.lyrics_excerpt = full_lyrics
         elif not instrumental:
             lang_label = "italiano" if (lang or "en").lower().startswith("it") else "inglese"
-            if lean:
+            if premium:
+                # PREMIUM MODE: testo COMPLETAMENTE ORIGINALE, mai un verso
+                # ripetuto uguale, storia coerente, immagini sensoriali forti.
+                # Ogni sezione ha testo DIVERSO. Chorus con variazioni testuali.
+                # Target Suno: 3:00 pieno, con dinamica artistica.
+                lyrics_prompt = (
+                    f"Scrivi il TESTO ORIGINALE in {lang_label} di una canzone AUTORALE dal titolo "
+                    f"\"{track.title}\" di {track.artist} (genere: {track.genre}, mood: {track.mood}).\n\n"
+                    "REGOLE ASSOLUTE:\n"
+                    "1. TESTO ORIGINALE al 100%: nessuna citazione, nessun cliche', nessun verso "
+                    "riciclato. Se qualcosa suona come Sanremo medio, RIFAI diverso.\n"
+                    "2. Nessun verso deve essere ripetuto uguale piu' di 2 volte totali. Il chorus si "
+                    "puo' ripetere ma con VARIAZIONI TESTUALI o metriche a ogni ricorrenza.\n"
+                    "3. STORIA CONCRETA: personaggio, luogo, oggetto specifico, un dettaglio "
+                    "sensoriale (odore, tatto, colore) che ancora la canzone al reale.\n"
+                    "4. Rime interne ed esterne, metafore ORIGINALI (non 'cuore infranto', non "
+                    "'luce nell'ombra', non 'ali spezzate').\n"
+                    "5. STRUTTURA (usa esattamente questi tag su righe dedicate):\n"
+                    "   [Intro] 2-3 righe atmosferiche con un'immagine forte\n"
+                    "   [Verse 1] 6-8 righe che introducono situazione/personaggio\n"
+                    "   [Pre-Chorus] 3-4 righe di tensione crescente\n"
+                    "   [Chorus] 5-7 righe con hook memorabile MA senza ripetere la stessa frase piu' di 2 volte\n"
+                    "   [Verse 2] 6-8 righe che sviluppano/complicano la storia (diverse dal Verse 1)\n"
+                    "   [Pre-Chorus] 3-4 righe VARIANTE del primo (testo diverso, stessa funzione)\n"
+                    "   [Chorus] 5-7 righe con MICRO-VARIAZIONI del chorus originale\n"
+                    "   [Bridge] 3-5 righe con svolta emotiva / cambio prospettiva\n"
+                    "   [Chorus] 5-7 righe finale con enfasi\n"
+                    "   [Outro] 2-3 righe che chiudono richiamando l'Intro con nuova luce\n"
+                    "6. Se stai scrivendo in italiano: NIENTE anglicismi facili (baby, yeah, come "
+                    "on). Se in inglese: niente italianismi.\n"
+                    "7. Livello di scrittura: paroliere serio (Battisti, Dalla, Cocciante, De Andre' "
+                    "in it; Bowie, LCD Soundsystem, Frank Ocean, Lorde in en).\n"
+                    "Rispondi SOLO col testo coi tag, niente commenti, niente introduzioni."
+                )
+            elif lean:
                 # LEAN MODE: hook memorabile ripetuto molte volte + strofe cortissime.
                 # Target durata Suno: 2:30-3:00 max (con questa struttura Suno V4 chiude sui 2:50).
                 # NIENTE testi lunghi che gonfiano la durata a 4+ minuti.
@@ -775,7 +809,7 @@ async def generate_track(hint: Optional[str] = None, genre: Optional[str] = None
                 "Sei un paroliere professionista. Scrivi solo il testo richiesto con la struttura esatta.",
                 lyrics_prompt,
             )
-            if full_lyrics and len(full_lyrics) > (60 if lean else 200):
+            if full_lyrics and len(full_lyrics) > (60 if lean else (400 if premium else 200)):
                 track.lyrics_excerpt = full_lyrics.strip()
         try:
             task_id = await suno_service.create_task(
@@ -1200,14 +1234,19 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
     )
 
     system_prompt = (
-        f"Sei {dj['name']}, uno speaker AI radiofonico ITALIANO di R-A.I. (radio dance/elettronica). "
-        f"Personalità: {dj['personality']}. "
+        f"Sei {dj['name']}, speaker AI radiofonico ITALIANO di R-A.I. (radio dance/elettronica del FUTURO). "
+        f"Personalita': {dj['personality']}. "
         "REGOLE FERREE:\n"
-        "1) Parla SEMPRE in italiano, con energia, sorridendo (deve sentirsi che sorridi).\n"
-        "2) Ritmo veloce, tono sbarazzino, come uno speaker vero di Radio Deejay o RDS.\n"
-        "3) MASSIMO 20 parole. Frasi corte e ritmate. Niente monologhi filosofici.\n"
-        "4) Chiudi sempre con energia o una battuta lampo.\n"
-        "5) Restituisci SOLO il testo che il DJ pronuncerà. Niente virgolette, didascalie, emoji."
+        "1) Parla SEMPRE in italiano vero, mai tradotto. Con energia, ritmo, sorridendo.\n"
+        "2) Tono da speaker vero (Radio Deejay, Rai Radio 2, Radio Capital). Vivo, non robotico.\n"
+        "3) NIENTE cliche' radiofonici: mai 'restate con noi', 'siamo in diretta', 'non spegnete', "
+        "'cari amici ascoltatori'. Mai formule vuote.\n"
+        "4) NIENTE frasi generiche tipo 'la musica non finisce mai' o 'la festa continua'.\n"
+        "5) Ogni volta DEVE essere SORPRENDENTE: un dettaglio inaspettato, una battuta, una immagine "
+        "concreta. L'ascoltatore deve pensare 'aspetta cosa ha detto?'.\n"
+        "6) Rispetta il numero di parole richiesto nel prompt specifico. Frasi corte e ritmate.\n"
+        "7) Restituisci SOLO il testo che il DJ pronuncera'. Niente virgolette, didascalie, emoji, "
+        "note esplicative."
     )
 
     if kind == "music":
