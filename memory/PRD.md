@@ -166,3 +166,22 @@ Vorrei costruire un software di gestione radiofonica completamente automatizzato
 2. When user provides ElevenLabs key → add server-side TTS endpoint and use returned MP3 URL in the front-end player.
 3. Add Telegram bot service listening for messages, POST to `/api/questions`.
 4. Add Twilio inbound webhook.
+
+## 2026-02 — P0 fix `/api/analytics` crash
+- **Bug**: Dashboard 500 su `GET /api/analytics` dopo introduzione slot jingle nel palinsesto (pos 2/7). I segmenti jingle inseriti senza `llm_provider` producevano `None.split('/')`.
+- **Fix**:
+  1. `server.py:1876` → `str(s.get("llm_provider") or "unknown").split("/")[0]` (guard su None).
+  2. Slot jingle in palinsesto ora inserisce `llm_provider="jingle"` esplicitamente.
+  3. Backfill una-tantum su 8 documenti esistenti con `llm_provider=None` → `"jingle"`.
+- **Verifica**: `pytest backend/tests/test_palinsesto_jingle.py` 5/5 PASS + `curl /api/analytics` = 200 OK con `segments_by_provider` che include ora `"jingle"`.
+
+## Backlog aggiornato (post-fix)
+- **P1** — Migrazione file voce/jingle su MongoDB GridFS ("ORDINE DI RIPARAZIONE TOTALE" punto 4, rimandato — utente ha detto "vediamo in seguito").
+- **P1** — Ticker social scrolling (Web Form + Telegram Bot + filtro parolacce).
+- **P1** — Dedup jingle library (3x "Notte Analogica", 3x "Aurora Statica", 2x "Silicio Blu").
+- **P1** — Nascondere/sostituire embed YouTube "Video unavailable" che appare sulla home.
+- **P2** — Widget embed `/embed` iframe esterni.
+- **P2** — Twilio SMS / call-in.
+- **P2** — Split `radioEngine.js` (1279 righe) in moduli separati.
+- **P2** — Alzare timeout axios frontend `fetchSegment` (30s → 60s) o pre-warm queue per evitare attesa 25-30s al primo play.
+

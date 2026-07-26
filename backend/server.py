@@ -1284,6 +1284,7 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
                     music_audio_url=jingle["audio_url"],
                     duration_sec=jingle.get("duration_sec") or 25,
                     track_meta=jingle,
+                    llm_provider="jingle",
                 )
                 await db.segments.insert_one(segment.model_dump())
                 return segment
@@ -1873,7 +1874,7 @@ async def analytics():
         kinds[s.get("kind", "unknown")] = kinds.get(s.get("kind", "unknown"), 0) + 1
     provider_counts = {}
     async for s in db.segments.find({}, {"_id": 0, "llm_provider": 1}):
-        p = s.get("llm_provider", "unknown").split("/")[0]
+        p = str(s.get("llm_provider") or "unknown").split("/")[0]
         provider_counts[p] = provider_counts.get(p, 0) + 1
     return {
         "total_segments": total_segments,
