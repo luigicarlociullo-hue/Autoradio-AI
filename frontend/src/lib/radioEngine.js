@@ -259,7 +259,7 @@ class RadioEngine {
     this.currentMusicNodes = null;
   }
 
-  async playAudioUrl(url) {
+  async playAudioUrl(url, onStart) {
     return new Promise((resolve) => {
       if (!url) return resolve();
       try {
@@ -294,8 +294,9 @@ class RadioEngine {
           try { a._voiceGain.gain.value = 1.0; } catch (e) {}
         }
         a.onended = () => { this.currentAudio = null; resolve(); };
-        a.onerror = () => { this.currentAudio = null; resolve(); };
-        a.play().catch(() => { this.currentAudio = null; resolve(); });
+        a.onerror = () => { console.warn("playAudioUrl error/404:", url); this.currentAudio = null; resolve(); };
+        a.onplaying = () => { if (typeof onStart === "function") { try { onStart(); } catch (e) {} } };
+        a.play().catch((err) => { console.warn("play() rejected:", err); this.currentAudio = null; resolve(); });
       } catch (e) {
         resolve();
       }
@@ -1177,18 +1178,35 @@ class RadioEngine {
           // 1) Fade-in music a duck level (1s crossfade con eventuale audio precedente)
           await setVol(INTRO_DUCK, CROSSFADE_MS);
 
-          // 2) Intro DJ (max 14s per non coprire l'entrata vocals del brano)
+          // 2) Intro DJ (max 14s), MA se il file voce non parte entro 3s -> skip
+          //    e musica dritta a full volume (task explicit request: fluidità).
           if (segment.speech_audio_url || segment.script) {
             const MAX_INTRO_MS = 14000;
+            const LOAD_TIMEOUT_MS = 3000;  // 3s per iniziare a suonare, altrimenti skip
+            let djStarted = false;
             const speechPromise = segment.speech_audio_url
-              ? this.playAudioUrl(segment.speech_audio_url)
+              ? this.playAudioUrl(segment.speech_audio_url, () => { djStarted = true; })
               : this.speak(segment.script, segment.voice_key, { rate: 1.08 });
-            let timedOut = false;
-            const timeoutPromise = new Promise((r) =>
-              setTimeout(() => { timedOut = true; r(); }, MAX_INTRO_MS)
+            // Se dopo 3s la voce non e' partita, cancella subito e vai col brano
+            const loadCheckPromise = new Promise((r) => {
+              setTimeout(() => {
+                if (!djStarted) {
+                  console.warn("DJ voice failed/slow (>3s) — skipping to full-volume music");
+                  try { this.stopAudio(); } catch (e) {}
+                  try { this.stopSpeech(); } catch (e) {}
+                  r("load-timeout");
+                }
+              }, LOAD_TIMEOUT_MS);
+            });
+            const globalTimeout = new Promise((r) =>
+              setTimeout(() => { try { this.stopSpeech(); } catch (e) {} r(); }, MAX_INTRO_MS)
             );
-            await Promise.race([speechPromise, timeoutPromise]);
-            if (timedOut) { try { this.stopSpeech(); } catch (e) {} }
+            await Promise.race([speechPromise, loadCheckPromise, globalTimeout]);
+            // Se load-timeout scattato, salta subito a full volume
+            if (!djStarted) {
+              await setVol(FULL, 200);
+              // continua alla fase 4 (attesa fine brano)
+            }
           }
 
           // 3) DJ finito -> crossfade 1s musica a full volume

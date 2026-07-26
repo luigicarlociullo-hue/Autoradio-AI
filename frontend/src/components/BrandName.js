@@ -26,11 +26,12 @@ export default function BrandName({ className = "", style = {}, suffix = "" }) {
   };
   return (
     <span
-      className={className}
+      className={`notranslate ${className}`}
       style={brandStyle}
       data-testid="brand-name"
       data-brand="R-A.I."
       aria-label="R-A.I."
+      translate="no"
     >
       R-A.I.{suffix}
     </span>

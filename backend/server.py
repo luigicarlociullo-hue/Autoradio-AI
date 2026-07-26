@@ -1250,7 +1250,7 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
     # ============================================================
     if kind is None:
         state_doc = await db.station.find_one({"_id": "state"}) or {}
-        pos = int(state_doc.get("playlist_position", 0)) % 7
+        pos = int(state_doc.get("playlist_position", 0)) % 8
 
         # Ora italiana reale per il segnale orario
         try:
@@ -1265,12 +1265,32 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
         future_rubrics = ["talk", "history", "interview", "joke", "motivation", "horoscope", "news"]
         commercial_slots = ["ad_spot", "weather"]
 
-        if pos in (0, 1, 4):
+        if pos in (0, 1, 5, 6):
             kind = "music"
-        elif pos in (2, 5):
-            # Rubriche pure a tema futuro
+        elif pos in (2, 7):
+            # Jingle slot: ogni 2 brani. Pesca un jingle dalla libreria e lo
+            # restituisce direttamente come segmento music (short).
+            jingle = await db.tracks.find_one(
+                {"is_jingle": True, "status": "ready", "audio_url": {"$ne": None}},
+                {"_id": 0}, sort=[("last_played_at", 1)],
+            )
+            if jingle:
+                await db.tracks.update_one({"id": jingle["id"]}, {"$set": {"last_played_at": datetime.now(timezone.utc).isoformat()}})
+                await db.station.update_one({"_id": "state"}, {"$set": {"playlist_position": (pos + 1) % 8}}, upsert=True)
+                segment = Segment(
+                    kind="music",
+                    title=f"♪ {jingle.get('title','Jingle')} — {jingle.get('artist','R-A.I.')}",
+                    dj_name="R-A.I.", script="",
+                    music_audio_url=jingle["audio_url"],
+                    duration_sec=jingle.get("duration_sec") or 25,
+                    track_meta=jingle,
+                )
+                await db.segments.insert_one(segment.model_dump())
+                return segment
+            kind = "music"
+        elif pos == 3:
             kind = random.choice(future_rubrics)
-        else:  # pos == 3 or pos == 6 → slot commerciale/orario
+        else:  # pos == 4
             if last_time_hour != current_hour_key:
                 kind = "time_signal"
                 await db.station.update_one(
@@ -1284,7 +1304,7 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
         # Advance position (persist)
         await db.station.update_one(
             {"_id": "state"},
-            {"$set": {"playlist_position": (pos + 1) % 7}},
+            {"$set": {"playlist_position": (pos + 1) % 8}},
             upsert=True,
         )
 

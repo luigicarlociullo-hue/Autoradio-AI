@@ -1,0 +1,46 @@
+{
+  "summary": "Tested the 4 requested changes: (1) anti-Chrome-translation attributes on brand, (2) palinsesto 8-position cycle with jingle every 2 songs, (3) player fluidity DJ-voice fallback, (4) GridFS (not implemented, not tested). Backend: new pytest suite /app/backend/tests/test_palinsesto_jingle.py — 5/5 passed (station endpoint, jingle library, full 8-position cycle 0=music,1=music,2=jingle,3=rubrica,4=time_signal/ad/weather,5=music,6=music,7=jingle, jingle audio reachable, talk speech_audio_url reachable in <5s). Frontend: html lang='it' + meta google=notranslate + Content-Language=it served; every [data-testid=brand-name] on / and /dashboard renders 'R-A.I.' with translate='no' and class notranslate. Player fluidity verified by intercepting **/api/tts/** with a 20s hang: console logged 'DJ voice failed/slow (>3s) — skipping to full-volume music' and the music segment (Piove RAM) kept playing at full volume with active visualizer. One REGRESSION found: /api/analytics now returns 500 because jingle segments are inserted with llm_provider=None.",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "GET /api/analytics", "issue": "500 AttributeError: 'NoneType' object has no attribute 'split' at server.py:1876. Regression: the new jingle slot (pos 2/7) inserts Segment(...) without llm_provider, so llm_provider is None in Mongo and s.get('llm_provider','unknown').split('/') crashes (8 such docs already stored). Dashboard fires this call twice on load. Fix: (s.get('llm_provider') or 'unknown').split('/')[0] and/or set llm_provider='jingle' on the jingle segment.", "priority": "CRITICAL"}
+    ],
+    "minor": [
+      {"endpoint": "POST /api/segments/generate", "issue": "First sync generation from the browser exceeded the frontend 30s axios timeout ('fetchSegment attempt 1/3 failed: timeout of 30000ms exceeded'), delaying first audio by ~25-30s. LLM+TTS generation is slow; consider pre-generating/queueing."},
+      {"endpoint": "POST /api/segments/generate", "issue": "Ad-rotation branch (22% random) can return an ad before the palinsesto branch; it does not consume a playlist position so the cycle is preserved, but an ad can land between the 2 songs and the jingle. Verify this is intended."},
+      {"endpoint": "library/tracks", "issue": "Jingle library contains duplicate titles (3x 'Notte Analogica', 3x 'Aurora Statica', 2x 'Silicio Blu' as separate docs), so the same jingle title can repeat inside one 8-position cycle even though last_played_at rotation works."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "YouTube background (data-testid=youtube-bg)", "issue": "Embed renders 'Video unavailable — Playback on other websites has been disabled by the video owner / Watch on YouTube' text that shows through over the hero and now-playing card on / (visible in screenshots). Should be hidden/replaced with a fallback visual.", "selector": "[data-testid=\"youtube-bg\"]", "priority": "MEDIUM"},
+      {"component": "BrandName (visualizer watermark)", "issue": "Second brand-name instance on home page has computed font-family 'Unbounded, sans-serif' (caller passes a style override that beats the monospace lock the component was written to enforce). Text still reads R-A.I. correctly but the anti-collapse font fix is bypassed there.", "selector": "[data-testid=\"logo-watermark\"] [data-testid=\"brand-name\"]", "priority": "LOW"}
+    ],
+    "integration_issues": [
+      {"flow": "Dashboard analytics", "issue": "/api/analytics returns 500 on every dashboard load (2 calls), so analytics widgets cannot render real data", "affected_selectors": ["/dashboard"]},
+      {"flow": "Music playback", "issue": "One transient 'Music load error: /api/suno_audio/track_b7a05e93....mp3' in the browser although the same URL returns 200 via curl — likely a range/abort race in headless; monitor.", "affected_selectors": ["[data-testid=\"now-playing-title\"]"]}
+    ],
+    "design_issues": [
+      {"screen": "Home /", "issues": ["'Video unavailable' YouTube overlay text bleeds over hero copy and player card"]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_palinsesto_jingle.py", "/app/test_reports/pytest/palinsesto_results.xml"],
+  "action_items": [
+    "Fix /api/analytics 500: guard None llm_provider (server.py:1876) and set llm_provider (e.g. 'jingle') on jingle segments created at palinsesto positions 2/7",
+    "Hide/replace the unavailable YouTube background embed on the home page",
+    "Consider raising the 30s fetchSegment timeout or pre-warming the queue — first play currently waits ~25-30s",
+    "Optional: dedupe jingle tracks so the same jingle title doesn't repeat within a cycle"
+  ],
+  "critical_code_review_comments": [
+    "server.py analytics(): s.get('llm_provider','unknown') does not protect against explicit None values stored in Mongo — always use `or` defaults for nullable fields",
+    "radioEngine._playMusicWithVoice: after the speech element's onended sets this.currentAudio=null, the music element is no longer tracked in currentAudio, so a Stop/next playSegment stopAudio() cannot pause the still-playing music element (stopMusic covers the legacy path only). Worth auditing for overlap on manual stop.",
+    "radioEngine.js is 1279 lines — consider splitting playback strategies into separate modules"
+  ],
+  "updated_files": ["/app/backend/tests/test_palinsesto_jingle.py"],
+  "success_rate": {"backend": "83% (5/5 palinsesto tests pass; /api/analytics broken)", "frontend": "90%"},
+  "seed_data_creation": "None. Station state playlist_position was reset to 0 during cycle testing; ~11 segments generated in db.segments.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "Not needed — admin actions are open in beta; /api/auth/me returns 401 as expected when logged out",
+  "context_for_next_testing_agent": "Palinsesto cycle test resets station state via mongosh (test_database). Re-run: pytest /app/backend/tests/test_palinsesto_jingle.py -p no:randomly. Player fluidity fallback is reproducible by page.route('**/api/tts/**') with a 20s delay then clicking [data-testid=play-pause-button] and skipping until a non-jingle music segment plays; look for console 'DJ voice failed/slow (>3s)'. Brand anti-translation attributes verified on / and /dashboard. GridFS was intentionally not implemented.",
+  "rca_of_the_issue": "The new jingle slot builds Segment(kind='music', ... ) without llm_provider, which Pydantic stores as None. GET /api/analytics does s.get('llm_provider','unknown').split('/') — .get returns None (key exists) so .split raises AttributeError -> 500 for every dashboard load. Reproduce: curl /api/analytics after any jingle segment has been generated."
+}
