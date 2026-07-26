@@ -1,27 +1,38 @@
 import React from "react";
 
 /**
- * BrandName · rende sempre "R-A.I." in modo leggibile.
- * Il font display "Unbounded" a peso 900 renderizza il trattino e i punti come
- * micro-punti quasi invisibili → separo lettere e simboli, dando ai simboli un
- * font di sistema con peso più leggero così restano ben visibili.
+ * BrandName - rende SEMPRE "R-A.I." in modo assolutamente inequivocabile.
+ *
+ * Storia del bug: il font display "Unbounded" a peso 900 (usato altrove nel
+ * sito) collassa il trattino "-" e i punti "." in micro-glyph quasi invisibili,
+ * il che faceva leggere "R-A.I." come "R.Un.io" o "RAI" a seconda del render
+ * del browser (specialmente Safari mobile e Chrome ad alto DPI).
+ *
+ * Fix definitivo:
+ *   1. Font locked: system monospace (ui-monospace / SFMono / Menlo / Consolas).
+ *      Nessuna dipendenza da Unbounded o altri display font per il brand.
+ *   2. Font weight 700 uniforme (non 900 -> evita collasso simboli).
+ *   3. Letter-spacing generoso -> ogni carattere respira.
+ *   4. Testo unico "R-A.I." in un solo <span> (niente span annidati che possono
+ *      confondere il layout in certi engine di rendering).
  */
 export default function BrandName({ className = "", style = {}, suffix = "" }) {
-  // Font display "Unbounded" a peso 900 rende hyphen e punti come micro-punti quasi
-  // invisibili → forzo i simboli con font monospace, peso pieno e dimensione maggiore
-  // dell'alfabeto attorno, così restano nettissimi e leggibili come "R-A.I."
-  const symbolStyle = {
-    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace",
-    fontWeight: 900,
-    fontSize: "1.05em",
-    display: "inline-block",
-    lineHeight: 1,
-    margin: "0 0.06em",
-    verticalAlign: "baseline",
+  const brandStyle = {
+    fontFamily: 'ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace',
+    fontWeight: 700,
+    letterSpacing: "0.08em",
+    fontVariantLigatures: "none",
+    ...style,
   };
   return (
-    <span className={className} style={{ letterSpacing: "0.03em", ...style }} data-testid="brand-name">
-      R<span style={symbolStyle} aria-hidden>-</span>A<span style={symbolStyle} aria-hidden>.</span>I<span style={symbolStyle} aria-hidden>.</span>{suffix}
+    <span
+      className={className}
+      style={brandStyle}
+      data-testid="brand-name"
+      data-brand="R-A.I."
+      aria-label="R-A.I."
+    >
+      R-A.I.{suffix}
     </span>
   );
 }

@@ -1,0 +1,21 @@
+{
+  "summary": "Frontend-only branding verification of 'R-A.I.' rendering. Verified BrandName component source, DOM text + codepoints, computed styles, document.title, and visual screenshots on / and /dashboard (desktop 1920 and mobile 390). All checks PASS - brand renders exactly 'R-A.I.' (0x52 0x2d 0x41 0x2e 0x49 0x2e) with monospace font, weight 700, letter-spacing 1.44px. No 'R.Un.io'/'Run.io'/'RUn' variants found in rendered DOM (only false-positive matches inside song lyrics like 'Run the red', 'Outrun').",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "PublicRadio header @390px mobile", "issues": ["Header subtitle 'WEB RADIO · AI ONLY' wraps to 2 lines and 'Pannello Admin' button text wraps, making header slightly cramped - cosmetic only, brand text unaffected"]}
+    ]
+  },
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": ["BrandName.js is a single flat span with inline fontFamily/weight/letter-spacing and fontVariantLigatures:none - inline styles correctly override the parent 'font-display font-black' Tailwind classes (verified via getComputedStyle). Implementation is robust."],
+  "updated_files": [],
+  "success_rate": {"backend": "not tested", "frontend": "100%"},
+  "seed_data_creation": "none",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Branding bug is fixed and verified. brand-name testid present on /, /dashboard (with ' · Admin' suffix), /advertise and LogoWatermark. document.title = 'R-A.I. · Web Radio AI'. Audio/Suno features intentionally not tested in this iteration.",
+  "rca_of_the_issue": "Previous implementation used Unbounded @900 with nested spans, collapsing hyphen/dots visually. Current fix locks the brand to system monospace at weight 700 with 0.08em letter-spacing in a single span; verified rendered codepoints and screenshots show unambiguous 'R-A.I.'."
+}
