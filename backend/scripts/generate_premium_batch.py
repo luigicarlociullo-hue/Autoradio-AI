@@ -51,16 +51,8 @@ async def main():
         line = f"[{datetime.now().isoformat(timespec='seconds')}] {m}"
         print(line); f.write(line + "\n"); f.flush()
 
-    # 1) Ritira le tracce lean-v1 problematiche (english_pop_dance)
-    os.environ.setdefault("MONGO_URL", "mongodb://localhost:27017")
-    os.environ.setdefault("DB_NAME", "test_database")
-    from motor.motor_asyncio import AsyncIOMotorClient
-    db = AsyncIOMotorClient(os.environ["MONGO_URL"])[os.environ["DB_NAME"]]
-    ret = await db.tracks.update_many(
-        {"tags": "english_pop_dance", "status": {"$ne": "retired"}},
-        {"$set": {"status": "retired", "retired_reason": "lean_v1_replaced_by_premium"}},
-    )
-    log(f"Ritirate {ret.modified_count} tracce lean-v1 (english_pop_dance)")
+    # 1) NON ritiro nulla — user vuole TUTTE le tracce in rotazione insieme alle nuove
+    log("Batch premium: nessuna traccia ritirata, tutte le esistenti restano in rotazione")
 
     # 2) Genera batch premium
     created = []; ok = 0; fail = 0
@@ -82,6 +74,10 @@ async def main():
     log(f"\n=== ok={ok}/{len(PROMPTS)} fail={fail}/{len(PROMPTS)}")
 
     if created:
+        os.environ.setdefault("MONGO_URL", "mongodb://localhost:27017")
+        os.environ.setdefault("DB_NAME", "test_database")
+        from motor.motor_asyncio import AsyncIOMotorClient
+        db = AsyncIOMotorClient(os.environ["MONGO_URL"])[os.environ["DB_NAME"]]
         r = await db.tracks.update_many(
             {"id": {"$in": created}},
             {"$set": {
