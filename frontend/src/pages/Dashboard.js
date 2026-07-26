@@ -525,6 +525,7 @@ function KPI({ label, value, icon: Icon }) {
 function LibraryDownloader() {
   const [manifest, setManifest] = React.useState(null);
   const [tracks, setTracks] = React.useState([]);
+  const [segments, setSegments] = React.useState([]);
   const [loading, setLoading] = React.useState(true);
   const [filter, setFilter] = React.useState("all");
   const [zipping, setZipping] = React.useState(false);
@@ -533,13 +534,15 @@ function LibraryDownloader() {
     let alive = true;
     (async () => {
       try {
-        const [m, t] = await Promise.all([
+        const [m, t, s] = await Promise.all([
           api.get("/admin/export/manifest").then(r => r.data).catch(() => null),
-          api.get("/tracks").then(r => r.data).catch(() => []),
+          api.get("/tracks", { params: { limit: 500 } }).then(r => r.data).catch(() => []),
+          api.get("/segments/list", { params: { limit: 500 } }).then(r => r.data).catch(() => []),
         ]);
         if (!alive) return;
         setManifest(m);
         setTracks(Array.isArray(t) ? t : []);
+        setSegments(Array.isArray(s) ? s : []);
       } finally {
         if (alive) setLoading(false);
       }
@@ -547,69 +550,98 @@ function LibraryDownloader() {
     return () => { alive = false; };
   }, []);
 
-  const categoryOf = (t) => {
+  const trackCategoryOf = (t) => {
     const tags = t.tags || [];
-    if (t.is_anthem) return "anthem";
-    if (t.is_jingle) return "jingles";
-    if (t.is_seed) return "seed";
-    if (t.status === "retired") return "retired";
-    if (tags.includes("english_pop_dance")) return "english_pop_dance";
-    if (tags.includes("italian_lean_v2") || tags.includes("summer_it") || tags.includes("tech_house_lean")) return "italian";
-    return "other";
+    if (t.is_anthem) return "song_anthem";
+    if (t.is_jingle) return "song_jingle";
+    if (t.is_seed) return "song_seed";
+    if (t.status === "retired") return "song_retired";
+    if (tags.includes("english_pop_dance")) return "song_english";
+    if (tags.includes("italian_lean_v2") || tags.includes("summer_it") || tags.includes("tech_house_lean")) return "song_italian";
+    return "song_other";
   };
 
-  const CAT_LABELS = {
-    english_pop_dance: "English Pop/Dance",
-    italian: "Italiane",
-    jingles: "Jingle R-A.I.",
-    anthem: "Anthem",
-    seed: "Seed",
-    retired: "Ritirate",
-    other: "Altre",
+  const SEG_KIND_LABELS = {
+    news: "Notiziari (dal futuro)",
+    ad_spot: "Pubblicita' surreali",
+    talk: "Talk DJ",
+    interview: "Interviste immaginarie",
+    history: "Storia dal futuro",
+    horoscope: "Oroscopi cosmici",
+    motivation: "Pillole filosofiche",
+    joke: "Battute",
+    weather: "Meteo cosmico",
+    time_signal: "Segnali orari",
   };
+  const SONG_LABELS = {
+    song_english: "Song · English pop/dance",
+    song_italian: "Song · Italiane",
+    song_jingle: "Song · Jingle R-A.I.",
+    song_anthem: "Song · Anthem",
+    song_seed: "Song · Seed",
+    song_retired: "Song · Ritirate",
+    song_other: "Song · Altre",
+  };
+  const ALL_LABELS = { ...SONG_LABELS };
+  Object.entries(SEG_KIND_LABELS).forEach(([k, v]) => { ALL_LABELS[`seg_${k}`] = v; });
+
+  // Merge tracks + segments in un'unica lista con category e download_url
+  const allItems = React.useMemo(() => {
+    const backend = process.env.REACT_APP_BACKEND_URL;
+    const asUrl = (path) => !path ? null : (path.startsWith("/api/") ? `${backend}${path}` : path);
+    const items = [];
+    tracks.forEach(t => {
+      if (!t.audio_url) return;
+      items.push({
+        key: `t_${t.id}`,
+        category: trackCategoryOf(t),
+        title: t.title || "(senza titolo)",
+        subtitle: `${t.artist || "-"} - ${t.genre || "-"} - ${t.status}`,
+        url: asUrl(t.audio_url),
+        fname: ((t.title || "untitled").replace(/[^\w\s-]/g, "").trim() || "untitled") + ".mp3",
+      });
+    });
+    segments.forEach(s => {
+      if (!s.speech_audio_url) return;
+      items.push({
+        key: `s_${s.id}`,
+        category: `seg_${s.kind || "other"}`,
+        title: s.title || `(${s.kind})`,
+        subtitle: `Voce DJ: ${s.dj_name || "-"}`,
+        url: asUrl(s.speech_audio_url),
+        fname: ((s.title || s.kind || "segment").replace(/[^\w\s-]/g, "").trim() || "segment") + ".mp3",
+      });
+    });
+    return items;
+  }, [tracks, segments]);
 
   const filtered = React.useMemo(() => {
-    return tracks
-      .filter(t => t.audio_url && t.status !== "pending")
-      .filter(t => filter === "all" || categoryOf(t) === filter);
-  }, [tracks, filter]);
+    return filter === "all" ? allItems : allItems.filter(i => i.category === filter);
+  }, [allItems, filter]);
 
   const groups = React.useMemo(() => {
     const g = {};
-    filtered.forEach(t => {
-      const c = categoryOf(t);
-      (g[c] = g[c] || []).push(t);
-    });
+    filtered.forEach(i => { (g[i.category] = g[i.category] || []).push(i); });
     return g;
   }, [filtered]);
 
-  const downloadZip = async () => {
+  const downloadZip = () => {
     setZipping(true);
     try {
       const backend = process.env.REACT_APP_BACKEND_URL;
-      const url = `${backend}/api/admin/export`;
       const a = document.createElement("a");
-      a.href = url;
+      a.href = `${backend}/api/admin/export`;
       a.rel = "noopener";
       a.download = `rai_export_${new Date().toISOString().slice(0,10)}.zip`;
       document.body.appendChild(a);
       a.click();
       setTimeout(() => document.body.removeChild(a), 500);
-      toast.success("Download ZIP avviato - attendi il completamento (puo' richiedere minuti)");
+      toast.success("Download ZIP avviato - includera' musica + rubriche + metadata");
     } catch (e) {
       toast.error("Errore avvio download");
-      console.error(e);
     } finally {
       setTimeout(() => setZipping(false), 1500);
     }
-  };
-
-  const singleDownloadUrl = (t) => {
-    if (!t.audio_url) return null;
-    const backend = process.env.REACT_APP_BACKEND_URL;
-    return t.audio_url.startsWith("/api/")
-      ? `${backend}${t.audio_url}`
-      : t.audio_url;
   };
 
   return (
@@ -622,7 +654,7 @@ function LibraryDownloader() {
           <h2 className="font-display font-black text-2xl mt-1">Download &amp; Archivio</h2>
           {manifest && (
             <p className="text-zinc-400 text-sm mt-1">
-              {manifest.suno_files} file audio ({manifest.suno_mb} MB) - {manifest.tracks_ready} tracce ready - {manifest.segments_total} segmenti registrati
+              {allItems.length} elementi audio scaricabili - {manifest.suno_mb} MB musica + {manifest.tts_mb} MB voci
             </p>
           )}
         </div>
@@ -638,9 +670,9 @@ function LibraryDownloader() {
       </div>
 
       <div className="flex flex-wrap gap-2 mb-4" data-testid="library-filter-chips">
-        <FilterChip active={filter === "all"} onClick={() => setFilter("all")} label={`Tutti (${tracks.filter(t => t.audio_url).length})`} testid="filter-all" />
-        {Object.entries(CAT_LABELS).map(([key, label]) => {
-          const count = tracks.filter(t => categoryOf(t) === key && t.audio_url).length;
+        <FilterChip active={filter === "all"} onClick={() => setFilter("all")} label={`Tutti (${allItems.length})`} testid="filter-all" />
+        {Object.entries(ALL_LABELS).map(([key, label]) => {
+          const count = allItems.filter(i => i.category === key).length;
           if (count === 0) return null;
           return (
             <FilterChip
@@ -657,39 +689,28 @@ function LibraryDownloader() {
       {loading ? (
         <div className="text-zinc-500 text-sm py-8 text-center">Caricamento libreria...</div>
       ) : filtered.length === 0 ? (
-        <div className="text-zinc-500 text-sm py-8 text-center">Nessun brano in questa categoria.</div>
+        <div className="text-zinc-500 text-sm py-8 text-center">Nessun elemento in questa categoria.</div>
       ) : (
         <div className="space-y-6 max-h-[600px] overflow-y-auto pr-2">
           {Object.entries(groups).map(([cat, list]) => (
             <div key={cat}>
-              <div className="label-mono mb-2 text-cyan-400">{CAT_LABELS[cat] || cat} - {list.length}</div>
+              <div className="label-mono mb-2 text-cyan-400">{ALL_LABELS[cat] || cat} - {list.length}</div>
               <div className="space-y-1">
-                {list.map(t => {
-                  const url = singleDownloadUrl(t);
-                  const fname = ((t.title || "untitled").replace(/[^\w\s-]/g, "").trim() || "untitled") + ".mp3";
-                  return (
-                    <div key={t.id} data-testid={`library-row-${t.id}`} className="flex items-center justify-between gap-3 py-2 px-3 rounded bg-white/[0.02] hover:bg-white/[0.05] border border-white/5">
-                      <div className="min-w-0 flex-1">
-                        <div className="truncate font-medium text-sm">{t.title || "(senza titolo)"}</div>
-                        <div className="truncate text-xs text-zinc-500">
-                          {t.artist || "-"} - {t.genre || "-"} - {t.status}
-                        </div>
-                      </div>
-                      {url ? (
-                        <a
-                          href={url}
-                          download={fname}
-                          data-testid={`download-mp3-${t.id}`}
-                          className="btn-outline text-xs flex items-center gap-1 whitespace-nowrap"
-                        >
-                          <Download className="w-3 h-3" /> MP3
-                        </a>
-                      ) : (
-                        <span className="text-xs text-zinc-600">no file</span>
-                      )}
+                {list.map(i => (
+                  <div key={i.key} data-testid={`library-row-${i.key}`} className="flex items-center justify-between gap-3 py-2 px-3 rounded bg-white/[0.02] hover:bg-white/[0.05] border border-white/5">
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate font-medium text-sm">{i.title}</div>
+                      <div className="truncate text-xs text-zinc-500">{i.subtitle}</div>
                     </div>
-                  );
-                })}
+                    {i.url ? (
+                      <a href={i.url} download={i.fname} data-testid={`download-${i.key}`} className="btn-outline text-xs flex items-center gap-1 whitespace-nowrap">
+                        <Download className="w-3 h-3" /> MP3
+                      </a>
+                    ) : (
+                      <span className="text-xs text-zinc-600">no file</span>
+                    )}
+                  </div>
+                ))}
               </div>
             </div>
           ))}
@@ -698,6 +719,7 @@ function LibraryDownloader() {
     </section>
   );
 }
+
 
 function FilterChip({ active, onClick, label, testid }) {
   return (

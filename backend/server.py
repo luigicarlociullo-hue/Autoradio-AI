@@ -871,7 +871,193 @@ async def suno_status():
 @api_router.get("/admin/export/manifest")
 async def admin_export_manifest():
     """Preview di cosa verra' incluso nell'export ZIP: conteggi per categoria + peso stimato."""
+    from elevenlabs_service import TTS_DIR
     tracks_total = await db.tracks.count_documents({"source": "suno"})
+    tracks_ready = await db.tracks.count_documents({"source": "suno", "status": "ready"})
+    segments_total = await db.segments.count_documents({})
+    # File TTS su disco (path corretto: /app/backend/tts_audio/)
+    tts_files = list(TTS_DIR.glob("*.mp3")) if TTS_DIR.exists() else []
+    tts_bytes = sum(p.stat().st_size for p in tts_files)
+    suno_files = list(SUNO_AUDIO_DIR.glob("track_*.mp3")) if SUNO_AUDIO_DIR.exists() else []
+    suno_bytes = sum(p.stat().st_size for p in suno_files)
+
+    cats = {}
+    async for t in db.tracks.find({}, {"_id": 0, "tags": 1, "is_anthem": 1, "is_jingle": 1, "is_seed": 1, "status": 1, "id": 1}):
+        c = "other"
+        if t.get("is_anthem"): c = "anthem"
+        elif t.get("is_jingle"): c = "jingles"
+        elif t.get("is_seed"): c = "seed"
+        elif t.get("status") == "retired": c = "retired"
+        else:
+            tags = t.get("tags") or []
+            if "english_pop_dance" in tags: c = "english_pop_dance"
+            elif any(x in tags for x in ("italian_lean_v2", "summer_it", "tech_house_lean")): c = "italian"
+        p = SUNO_AUDIO_DIR / f"track_{t.get('id')}.mp3"
+        has_file = p.exists() and p.stat().st_size >= 10_000
+        cats.setdefault(c, {"count": 0, "with_file": 0})
+        cats[c]["count"] += 1
+        if has_file: cats[c]["with_file"] += 1
+
+    # Segments per kind (rubriche parlate)
+    seg_cats = {}
+    async for s in db.segments.find({"speech_audio_url": {"$ne": None}}, {"_id": 0, "kind": 1}):
+        k = s.get("kind") or "other"
+        seg_cats[k] = seg_cats.get(k, 0) + 1
+
+    return {
+        "tracks_total": tracks_total,
+        "tracks_ready": tracks_ready,
+        "segments_total": segments_total,
+        "tts_files": len(tts_files),
+        "tts_mb": round(tts_bytes / 1024 / 1024, 2),
+        "suno_files": len(suno_files),
+        "suno_mb": round(suno_bytes / 1024 / 1024, 2),
+        "estimated_zip_mb": round((tts_bytes + suno_bytes) / 1024 / 1024, 2),
+        "categories": cats,
+        "segment_categories": seg_cats,
+    }
+
+
+@api_router.get("/admin/export")
+async def admin_export_all():
+    """Genera un ZIP con TUTTI i contenuti generati (musica + rubriche parlate)
+    e lo streamma al client. ZIP costruito INTERAMENTE in un SpooledTemporaryFile
+    (fino a 100MB in RAM poi disco), poi streammato a chunk -> nessun rischio
+    di central directory corrotto come nel primo tentativo streaming.
+    """
+    import zipfile
+    import tempfile
+    import json as _json
+    from elevenlabs_service import TTS_DIR
+
+    tracks = await db.tracks.find({}, {"_id": 0}).to_list(length=5000)
+    segments = await db.segments.find({}, {"_id": 0}).sort("created_at", -1).to_list(length=2000)
+
+    def track_category(t):
+        tags = t.get("tags") or []
+        if t.get("is_anthem"): return "anthem"
+        if t.get("is_jingle"): return "jingles"
+        if t.get("is_seed"): return "seed"
+        if t.get("status") == "retired": return "retired"
+        if "english_pop_dance" in tags: return "english_pop_dance"
+        if any(x in tags for x in ("italian_lean_v2", "summer_it", "tech_house_lean")):
+            return "italian"
+        return "other"
+
+    tmp = tempfile.SpooledTemporaryFile(max_size=500_000_000)  # 500MB in RAM/disco
+    with zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_STORED, allowZip64=True) as zf:
+        # 1) Metadata JSON
+        for t in tracks:
+            t["_category"] = track_category(t)
+        zf.writestr("rai_export/metadata/tracks.json", _json.dumps(tracks, indent=2, default=str))
+        zf.writestr("rai_export/metadata/segments.json", _json.dumps(segments, indent=2, default=str))
+        zf.writestr("rai_export/metadata/export_info.json", _json.dumps({
+            "exported_at": datetime.now(timezone.utc).isoformat(),
+            "tracks_count": len(tracks),
+            "segments_count": len(segments),
+            "app": "R-A.I. Radio",
+        }, indent=2))
+
+        # 2) Audio Suno per categoria (music)
+        for t in tracks:
+            tid = t.get("id")
+            if not tid: continue
+            mp3_path = SUNO_AUDIO_DIR / f"track_{tid}.mp3"
+            if not mp3_path.exists() or mp3_path.stat().st_size < 10_000:
+                continue
+            cat = t["_category"]
+            safe_title = "".join(c for c in (t.get("title") or "untitled") if c.isalnum() or c in " -_")[:40].strip() or "untitled"
+            zf.write(str(mp3_path), f"rai_export/music/{cat}/{safe_title}_{tid[:8]}.mp3")
+
+        # 3) File TTS di ogni segmento parlato, organizzati per KIND (news/ad_spot/talk/...)
+        # Mappa filename -> segmento più recente
+        speech_map = {}
+        for s in segments:
+            url = s.get("speech_audio_url") or ""
+            if url.startswith("/api/tts/"):
+                fname = url.replace("/api/tts/", "").split("?")[0]
+                if fname and fname not in speech_map:
+                    speech_map[fname] = s
+
+        for fname, s in speech_map.items():
+            p = TTS_DIR / fname
+            if not p.exists() or p.stat().st_size < 3_000:
+                continue
+            kind = s.get("kind") or "other"
+            safe_title = "".join(c for c in (s.get("title") or "segment") if c.isalnum() or c in " -_")[:40].strip() or "segment"
+            zf.write(str(p), f"rai_export/rubriche/{kind}/{safe_title}_{fname}")
+
+        # 4) README
+        readme = (
+            "# R-A.I. Radio - Export\n\n"
+            f"Exported: {datetime.now(timezone.utc).isoformat()}\n\n"
+            "## Struttura\n"
+            "### music/\n"
+            "- english_pop_dance/  hit pop/dance inglesi (high rotation)\n"
+            "- italian/            tracce italiane\n"
+            "- jingles/            jingle brandizzati R-A.I.\n"
+            "- anthem/             inno ufficiale\n"
+            "- seed/               5 tracce seed sempre disponibili\n"
+            "- retired/            tracce ritirate\n"
+            "- other/              altre\n\n"
+            "### rubriche/ (voci DJ dei segmenti parlati)\n"
+            "- news/         notiziari futuristici\n"
+            "- ad_spot/      spot pubblicitari surreali\n"
+            "- talk/         monologhi DJ\n"
+            "- interview/    interviste immaginarie\n"
+            "- history/      storia dal futuro\n"
+            "- horoscope/    oroscopi cosmici\n"
+            "- motivation/   pillole filosofiche\n"
+            "- joke/         battute\n"
+            "- weather/      meteo cosmico\n"
+            "- time_signal/  segnali orari\n\n"
+            "### metadata/\n"
+            "- tracks.json      metadati tutte le tracce\n"
+            "- segments.json    ultimi 2000 segmenti\n"
+            "- export_info.json info export\n"
+        )
+        zf.writestr("rai_export/README.md", readme)
+
+    tmp.seek(0)
+    size = tmp.tell() if hasattr(tmp, 'tell') else 0
+    tmp.seek(0, 2)
+    total_size = tmp.tell()
+    tmp.seek(0)
+
+    def iter_file():
+        while True:
+            chunk = tmp.read(1024 * 64)
+            if not chunk:
+                tmp.close()
+                return
+            yield chunk
+
+    fname = f"rai_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
+    return StreamingResponse(
+        iter_file(),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{fname}"',
+            "Content-Length": str(total_size),
+        },
+    )
+
+
+@api_router.get("/segments/list")
+async def list_segments_download(kind: Optional[str] = None, limit: int = 500):
+    """Lista segmenti (rubriche parlate) con speech_audio_url per download singolo.
+    Filtrabile per kind (news, ad_spot, talk, joke, weather, ...).
+    """
+    q = {"speech_audio_url": {"$ne": None}}
+    if kind:
+        q["kind"] = kind
+    docs = await db.segments.find(q, {
+        "_id": 0, "id": 1, "kind": 1, "title": 1, "dj_name": 1, "speech_audio_url": 1, "created_at": 1,
+    }).sort("created_at", -1).limit(limit).to_list(length=limit)
+    return docs
+
+
+
     tracks_ready = await db.tracks.count_documents({"source": "suno", "status": "ready"})
     segments_total = await db.segments.count_documents({})
     tts_dir = ROOT_DIR / "static" / "tts"
@@ -902,120 +1088,6 @@ async def admin_export_manifest():
         cats[c]["count"] += 1
         if has_file:
             cats[c]["with_file"] += 1
-    return {
-        "tracks_total": tracks_total,
-        "tracks_ready": tracks_ready,
-        "segments_total": segments_total,
-        "tts_files": len(tts_files),
-        "tts_mb": round(tts_bytes / 1024 / 1024, 2),
-        "suno_files": len(suno_files),
-        "suno_mb": round(suno_bytes / 1024 / 1024, 2),
-        "estimated_zip_mb": round((tts_bytes + suno_bytes) / 1024 / 1024, 2),
-        "categories": cats,
-    }
-
-
-@api_router.get("/admin/export")
-async def admin_export_all():
-    """Stream un ZIP con TUTTI i contenuti generati organizzati per categoria."""
-    import zipfile
-    import io
-    import json as _json
-
-    tracks = await db.tracks.find({}, {"_id": 0}).to_list(length=5000)
-    segments = await db.segments.find({}, {"_id": 0}).sort("created_at", -1).to_list(length=1000)
-
-    def track_category(t):
-        tags = t.get("tags") or []
-        if t.get("is_anthem"): return "anthem"
-        if t.get("is_jingle"): return "jingles"
-        if t.get("is_seed"): return "seed"
-        if t.get("status") == "retired": return "retired"
-        if "english_pop_dance" in tags: return "english_pop_dance"
-        if any(x in tags for x in ("italian_lean_v2", "summer_it", "tech_house_lean")):
-            return "italian"
-        return "other"
-
-    async def stream_zip():
-        buf = io.BytesIO()
-        zf = zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED)
-
-        def flush():
-            nonlocal buf
-            data = buf.getvalue()
-            buf.seek(0); buf.truncate(0)
-            return data
-
-        # Metadata JSON
-        for t in tracks:
-            t["_category"] = track_category(t)
-        zf.writestr("rai_export/metadata/tracks.json", _json.dumps(tracks, indent=2, default=str))
-        zf.writestr("rai_export/metadata/segments.json", _json.dumps(segments, indent=2, default=str))
-        zf.writestr("rai_export/metadata/export_info.json", _json.dumps({
-            "exported_at": datetime.now(timezone.utc).isoformat(),
-            "tracks_count": len(tracks),
-            "segments_count": len(segments),
-            "app": "R-A.I. Radio",
-        }, indent=2))
-        yield flush()
-
-        # Audio Suno per categoria
-        for t in tracks:
-            tid = t.get("id")
-            if not tid: continue
-            mp3_path = SUNO_AUDIO_DIR / f"track_{tid}.mp3"
-            if not mp3_path.exists() or mp3_path.stat().st_size < 10_000:
-                continue
-            cat = t["_category"]
-            safe_title = "".join(c for c in (t.get("title") or "untitled") if c.isalnum() or c in " -_")[:40].strip() or "untitled"
-            zpath = f"rai_export/music/{cat}/{safe_title}_{tid[:8]}.mp3"
-            with open(mp3_path, "rb") as fh:
-                zf.writestr(zpath, fh.read())
-            data = flush()
-            if data: yield data
-
-        # File TTS (voci DJ)
-        tts_dir = ROOT_DIR / "static" / "tts"
-        if tts_dir.exists():
-            for p in tts_dir.glob("*.mp3"):
-                try:
-                    if p.stat().st_size < 5_000: continue
-                    with open(p, "rb") as fh:
-                        zf.writestr(f"rai_export/tts_voices/{p.name}", fh.read())
-                except Exception:
-                    pass
-                data = flush()
-                if data: yield data
-
-        readme = (
-            "# R-A.I. Radio - Export\n\n"
-            f"Exported: {datetime.now(timezone.utc).isoformat()}\n\n"
-            "## Struttura\n"
-            "- music/english_pop_dance/  hit pop/dance inglesi (high rotation)\n"
-            "- music/italian/            tracce italiane\n"
-            "- music/jingles/            jingle brandizzati R-A.I.\n"
-            "- music/anthem/             inno ufficiale\n"
-            "- music/seed/               5 tracce seed sempre disponibili\n"
-            "- music/retired/            tracce ritirate dalla rotazione\n"
-            "- music/other/              altre\n"
-            "- tts_voices/               file audio delle voci DJ (parlati)\n"
-            "- metadata/tracks.json      tutti i metadati DB\n"
-            "- metadata/segments.json    ultimi 1000 segmenti\n"
-            "- metadata/export_info.json info export\n"
-        )
-        zf.writestr("rai_export/README.md", readme)
-        zf.close()
-        final = flush()
-        if final: yield final
-
-    fname = f"rai_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
-    return StreamingResponse(
-        stream_zip(),
-        media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
-    )
-
-
 
 
 @api_router.get("/library/seed")

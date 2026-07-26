@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from "react";
-import { Youtube, Play } from "lucide-react";
+import { Play } from "lucide-react";
 import { toast } from "sonner";
 import radioEngine from "@/lib/radioEngine";
 import LogoWatermark from "@/components/LogoWatermark";
@@ -141,29 +141,17 @@ export default function AudioVisualizer({ isPlaying, currentKind = "", currentTi
     };
   }, [isPlaying, currentKind]);
 
-  const openYoutube = () => {
-    if (YOUTUBE_URL) {
-      window.open(YOUTUBE_URL, "_blank", "noopener,noreferrer");
-    } else {
-      toast.info("Il canale YouTube di R-A.I. verrà collegato prossimamente", {
-        description: "Torna qui: la stessa visual sarà anche in streaming sul canale.",
-      });
-    }
-  };
+  const openYoutube = () => {};  // rimosso: CTA YouTube eliminato dalla UI
 
   return (
-    <button
-      type="button"
-      onClick={openYoutube}
+    <div
       data-testid="audio-visualizer"
-      className="relative w-full block rounded-2xl overflow-hidden group focusable"
+      className="relative w-full block rounded-2xl overflow-hidden focusable"
       style={{
         aspectRatio: "16 / 9",
         background: "radial-gradient(ellipse at center, #0a0a1a 0%, #05050A 65%, #000 100%)",
         border: "1px solid rgba(255,255,255,0.08)",
-        cursor: "pointer",
       }}
-      aria-label="Guarda anche su YouTube"
     >
       <canvas ref={canvasRef} className="absolute inset-0 w-full h-full block" />
       {/* Persistent channel bug logo — always visible on the visual "video" area */}
@@ -233,13 +221,6 @@ export default function AudioVisualizer({ isPlaying, currentKind = "", currentTi
           font-weight: 700;
         }
       `}</style>
-      {/* YouTube CTA hover overlay */}
-      <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none">
-        <div className="flex items-center gap-3 px-5 py-3 rounded-full bg-black/70 backdrop-blur-md border border-white/15">
-          <Youtube className="w-5 h-5 text-red-500" />
-          <span className="font-display font-semibold text-white text-sm">Guarda anche su YouTube</span>
-        </div>
-      </div>
-    </button>
+    </div>
   );
 }
