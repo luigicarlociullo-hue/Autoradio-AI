@@ -126,6 +126,13 @@ async def synth_speech(text: str, voice_key: str = "female-1") -> str | None:
     filename = f"tts_{uuid.uuid4().hex}.mp3"
     (TTS_DIR / filename).write_bytes(audio)
     logger.info(f"TTS synthesized via {provider}: {filename} ({len(audio):,} bytes)")
+    # Best-effort push to Emergent Object Storage (no-op unless USE_OBJECT_STORAGE=true).
+    try:
+        import object_storage
+        if object_storage.is_enabled():
+            await object_storage.put_mp3(f"tts/{filename}", audio)
+    except Exception as e:
+        logger.debug(f"objstore push skipped: {e}")
     return filename
 
 

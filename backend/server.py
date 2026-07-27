@@ -23,6 +23,7 @@ import paypal_service
 import telegram_bot
 import suno_service
 import elevenlabs_service
+import object_storage
 
 
 async def synth_speech(text: str, voice_key: str = "female-1"):
@@ -78,12 +79,21 @@ async def download_and_save_suno_audio(audio_url: str, track_id: str) -> Optiona
     """Download the Suno mp3 and persist it under SUNO_AUDIO_DIR.
     Returns the backend-relative URL (`/api/suno_audio/<file>.mp3`) or None on failure.
     Idempotent: if the file already exists we skip the download.
+    When USE_OBJECT_STORAGE=true, the file is *also* pushed to Emergent
+    Object Storage so that other environments (e.g. production r-ai.it)
+    can serve it via the same /api/suno_audio/<file>.mp3 URL.
     """
     if not audio_url or not track_id:
         return None
     local_name = f"track_{track_id}.mp3"
     local_path = SUNO_AUDIO_DIR / local_name
     if local_path.exists() and local_path.stat().st_size > 0:
+        # Already on disk — best-effort push to object storage (idempotent).
+        if object_storage.is_enabled():
+            try:
+                await object_storage.upload_local_file(str(local_path), f"suno/{local_name}")
+            except Exception:
+                pass
         return f"/api/suno_audio/{local_name}"
     try:
         async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
@@ -91,6 +101,11 @@ async def download_and_save_suno_audio(audio_url: str, track_id: str) -> Optiona
             r.raise_for_status()
             local_path.write_bytes(r.content)
         logger.info(f"Suno track {track_id} downloaded → {local_path} ({local_path.stat().st_size} bytes)")
+        if object_storage.is_enabled():
+            try:
+                await object_storage.put_mp3(f"suno/{local_name}", r.content)
+            except Exception:
+                pass
         return f"/api/suno_audio/{local_name}"
     except Exception as e:
         logger.warning(f"Suno download for {track_id} failed: {e}")
@@ -2128,18 +2143,22 @@ async def get_audio(filename: str):
 @api_router.get("/tts/{filename}")
 async def get_tts_audio(filename: str):
     p = elevenlabs_service.tts_path(filename)
-    if not p:
-        raise HTTPException(404, "TTS audio not found")
-    # Serve as-is (no re-encoding): FileResponse handles Range requests when
-    # Accept-Ranges header is present -> browser can seek/decode faster.
-    return FileResponse(
-        str(p),
-        media_type="audio/mpeg",
-        headers={
-            "Cache-Control": "public, max-age=604800",
-            "Accept-Ranges": "bytes",
-        },
-    )
+    if p:
+        return FileResponse(
+            str(p),
+            media_type="audio/mpeg",
+            headers={
+                "Cache-Control": "public, max-age=604800",
+                "Accept-Ranges": "bytes",
+            },
+        )
+    # Local miss → try object storage (fresh production container after Deploy).
+    if object_storage.is_enabled():
+        data = await object_storage.fetch_mp3(f"tts/{filename}")
+        if data:
+            return Response(content=data, media_type="audio/mpeg",
+                            headers={"Cache-Control": "public, max-age=604800"})
+    raise HTTPException(404, "TTS audio not found")
 
 
 @api_router.get("/suno_audio/{filename}")
@@ -2149,16 +2168,27 @@ async def get_suno_audio(filename: str):
     if "/" in filename or ".." in filename or not filename.endswith(".mp3"):
         raise HTTPException(400, "Invalid filename")
     p = SUNO_AUDIO_DIR / filename
-    if not p.exists():
-        raise HTTPException(404, "Suno audio not found")
-    return FileResponse(
-        str(p),
-        media_type="audio/mpeg",
-        headers={
-            "Cache-Control": "public, max-age=604800",  # 7 days
-            "Accept-Ranges": "bytes",
-        },
-    )
+    if p.exists():
+        return FileResponse(
+            str(p),
+            media_type="audio/mpeg",
+            headers={
+                "Cache-Control": "public, max-age=604800",  # 7 days
+                "Accept-Ranges": "bytes",
+            },
+        )
+    # Local miss → try object storage (production container without local cache).
+    if object_storage.is_enabled():
+        data = await object_storage.fetch_mp3(f"suno/{filename}")
+        if data:
+            # Best-effort populate local cache so subsequent requests are fast.
+            try:
+                p.write_bytes(data)
+            except Exception:
+                pass
+            return Response(content=data, media_type="audio/mpeg",
+                            headers={"Cache-Control": "public, max-age=604800"})
+    raise HTTPException(404, "Suno audio not found")
 
 
 @api_router.post("/admin/migrate_suno_audio")

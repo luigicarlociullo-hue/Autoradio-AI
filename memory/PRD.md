@@ -185,3 +185,17 @@ Vorrei costruire un software di gestione radiofonica completamente automatizzato
 - **P2** — Split `radioEngine.js` (1279 righe) in moduli separati.
 - **P2** — Alzare timeout axios frontend `fetchSegment` (30s → 60s) o pre-warm queue per evitare attesa 25-30s al primo play.
 
+
+## 2026-02 — Preparazione infrastruttura shared preview↔production
+- **Problema individuato**: preview e produzione hanno MongoDB e filesystem separati. Al Deploy passa solo il codice, non i dati. Conseguenza: le 121+ canzoni Premium generate in preview non esistono su r-ai.it.
+- **Soluzione predisposta (DORMIENTE, feature-flagged)**:
+  - Nuovo modulo `/app/backend/object_storage.py` che parla con Emergent Object Storage API centralizzato (bucket condiviso preview↔prod), usa `EMERGENT_LLM_KEY`.
+  - `download_and_save_suno_audio()` e `elevenlabs_service.synth_speech()` ora pushano trasparentemente ogni nuovo mp3 sul bucket quando `USE_OBJECT_STORAGE=true`.
+  - Endpoint `/api/suno_audio/{filename}` e `/api/tts/{filename}` fanno fallback trasparente: se il file locale manca, lo scaricano da object storage (e lo cachano localmente).
+  - Script bulk migration `/app/backend/scripts/migrate_to_object_storage.py` per uploadare i 162 file .mp3 esistenti — dry-run di default, `--apply` per eseguire davvero.
+- **Come attivare** (quando il supporto Emergent conferma o quando l'utente vuole procedere):
+  1. Aggiungere `USE_OBJECT_STORAGE=true` a `/app/backend/.env` in preview.
+  2. `python /app/backend/scripts/migrate_to_object_storage.py --apply` (upload iniziale).
+  3. Aggiungere `USE_OBJECT_STORAGE=true` anche in produzione (Emergent dashboard → env vars) e ridiployare.
+  4. Da quel momento, ogni nuovo brano generato in un ambiente è disponibile in entrambi.
+- **Rischio zero**: con flag OFF (default attuale) il comportamento è identico a prima. Testato: `/api/analytics` 200, `/api/station` 200, `/api/suno_audio/*` 200 (5MB serviti).
