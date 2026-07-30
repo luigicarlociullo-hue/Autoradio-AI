@@ -1,8 +1,9 @@
 """Text-to-Speech service.
-Primary: OpenAI TTS-1 via Emergent Universal Key gateway
-         (OPENAI_API_KEY + OPENAI_BASE_URL, endpoint /audio/speech).
-Fallback: ElevenLabs (eleven_multilingual_v2) — solo se ELEVENLABS_API_KEY è presente
-         E la Universal Key non è configurata / risponde errore.
+Primary: ElevenLabs (eleven_multilingual_v2) — usato sempre quando
+         ELEVENLABS_API_KEY è presente.
+Fallback: OpenAI TTS-1-HD via Emergent Universal Key gateway
+         (OPENAI_API_KEY + OPENAI_BASE_URL, endpoint /audio/speech) — usato solo
+         se ElevenLabs fallisce o non è configurato.
 Generated MP3s are stored in TTS_DIR and served through /api/tts/{filename}.
 """
 import os
@@ -34,7 +35,7 @@ VOICE_KEY_TO_OPENAI = {
     "male-5":   "echo",
 }
 
-# ElevenLabs fallback map (unchanged)
+# ElevenLabs voice map (primary provider)
 VOICE_KEY_TO_ELEVEN = {
     "female-1": "EXAVITQu4vr4xnSDxMaL",
     "female-2": "AZnzlk1XvdvUeBnXmlld",
@@ -51,17 +52,17 @@ DEFAULT_ELEVEN_ID = "pNInz6obpgDQGcFmaJgB"
 
 
 def is_enabled() -> bool:
-    """True se abbiamo OpenAI (via Universal Key) O ElevenLabs come fallback."""
+    """True se abbiamo ElevenLabs (primario) O OpenAI via Universal Key (fallback)."""
     return bool(OPENAI_API_KEY and OPENAI_BASE_URL) or bool(ELEVENLABS_API_KEY)
 
 
 async def _synth_openai(text: str, voice_key: str) -> bytes | None:
-    """OpenAI TTS-1 via Emergent gateway. Ritorna bytes mp3 o None."""
+    """OpenAI TTS-1-HD via Emergent gateway (fallback). Ritorna bytes mp3 o None."""
     if not OPENAI_API_KEY or not OPENAI_BASE_URL:
         return None
     voice = VOICE_KEY_TO_OPENAI.get(voice_key, "nova")
     url = f"{OPENAI_BASE_URL}/audio/speech"
-    body = {"model": "tts-1", "voice": voice, "input": text[:4000]}
+    body = {"model": "tts-1-hd", "voice": voice, "input": text[:4000]}
     headers = {"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"}
     try:
         async with httpx.AsyncClient(timeout=60) as client:
@@ -79,7 +80,7 @@ async def _synth_openai(text: str, voice_key: str) -> bytes | None:
 
 
 async def _synth_elevenlabs(text: str, voice_key: str) -> bytes | None:
-    """ElevenLabs fallback (eleven_multilingual_v2). Ritorna bytes mp3 o None."""
+    """ElevenLabs primario (eleven_multilingual_v2). Ritorna bytes mp3 o None."""
     if not ELEVENLABS_API_KEY:
         return None
     voice_id = VOICE_KEY_TO_ELEVEN.get(voice_key, DEFAULT_ELEVEN_ID)
@@ -104,21 +105,21 @@ async def _synth_elevenlabs(text: str, voice_key: str) -> bytes | None:
 
 async def synth_speech(text: str, voice_key: str = "female-1") -> str | None:
     """
-    Genera TTS. Primario OpenAI TTS-1 (Universal Key), fallback ElevenLabs.
+    Genera TTS. Primario ElevenLabs, fallback OpenAI TTS-1-HD (Universal Key).
     Ritorna il filename dentro TTS_DIR, o None se entrambi falliscono.
     """
     if not text or not text.strip():
         return None
     text = text.strip()
 
-    # 1) OpenAI TTS-1 (primary)
-    audio = await _synth_openai(text, voice_key)
-    provider = "openai-tts-1"
+    # 1) ElevenLabs (primary — HD voice)
+    audio = await _synth_elevenlabs(text, voice_key)
+    provider = "elevenlabs"
 
-    # 2) Fallback ElevenLabs (only if OpenAI failed / not configured)
+    # 2) Fallback OpenAI TTS-1-HD (only if ElevenLabs failed / not configured)
     if not audio:
-        audio = await _synth_elevenlabs(text, voice_key)
-        provider = "elevenlabs"
+        audio = await _synth_openai(text, voice_key)
+        provider = "openai-tts-1-hd"
 
     if not audio:
         return None

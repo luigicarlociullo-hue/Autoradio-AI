@@ -1,0 +1,91 @@
+{
+  "summary": "Tested the 4 Master-Plan features on preview (https://autoradio-ai.preview.emergentagent.com). Backend: created /app/backend/tests/test_master_plan.py (23 pytest cases) covering POST /api/admin/tracks/upload (mode=new/replace + full validation matrix), GET /api/admin/tracks/searchable, GET /api/admin/export/category/{cat} (music/jingles/anthem/retired-metadata/talk/news + invalid), /api/analytics regression, /api/suno_audio serving and Emergent Object-Storage fallback. 22/23 passed. Frontend: verified PulsingBrand replaces the old visualizer, BottomWaveform is fixed at page bottom, and the Dashboard UploadMp3Panel + CategorizedExportPanel work end-to-end (real MP3 uploaded through the UI, real metadata ZIP downloaded through the UI). ONE CRITICAL backend bug found: every admin MP3 upload permanently breaks GET /api/tracks (500 ResponseValidationError) and admin-uploaded songs never enter the music rotation.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "GET /api/tracks (broken by POST /api/admin/tracks/upload)",
+        "issue": "After ANY admin upload, GET /api/tracks returns 500. The document inserted by admin_tracks_upload (server.py ~line 1021) omits the required Track fields genre, mood, lyrics_excerpt, llm_provider, cover_seed and sets source='admin_upload', which is not in Track.source Literal['suno','stable_audio','procedural'] (server.py 142-162). FastAPI response_model=List[Track] then raises ResponseValidationError (6 validation errors per bad doc, confirmed in backend.err.log). Reproduced: /api/tracks 200 -> upload -> 500 -> delete the admin_upload doc -> 200 again.",
+        "priority": "CRITICAL"
+      },
+      {
+        "endpoint": "POST /api/admin/tracks/upload (mode=new, kind=song)",
+        "issue": "Uploaded songs never play. The rotation pools in the music-segment builder (server.py 1669-1690) filter on {'source': 'suno'}, so source='admin_upload' tracks are never picked; and even in the anthem path Track(**anthem) (line 1659) / Track(**chosen) (1703) would raise ValidationError for the same missing fields, and music_audio_url is only set when track.source == 'suno' (line 1798). Jingles are safe (jingle path uses raw dicts). Fix: write full Track-compatible docs (genre/mood/lyrics_excerpt/llm_provider/cover_seed) and either add 'admin_upload' to the source Literal or reuse an allowed source + a tag.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": [
+      {
+        "endpoint": "GET /api/admin/export/category/music?page=1&page_size=50",
+        "issue": "ZIP is 198.6 MB (171 tracks total, 4 pages). Under the 250 MB target but heavy for a single proxied stream; consider default page_size 20-25. Also the whole ZIP is built into a temp file before streaming (no progressive streaming), so TTFB grows with page size."
+      },
+      {
+        "endpoint": "GET /api/admin/export/category/anthem",
+        "issue": "Returns 200 with X-Rai-Total-Available: 0 (no anthem track in preview DB) — ZIP contains only README.txt. Not a bug, but the UI gives no feedback that the pack is empty."
+      },
+      {
+        "endpoint": "GET /api/suno_audio/{missing}",
+        "issue": "Object-storage miss logs a WARNING with the upstream 500 body before returning 404 — noisy but correct behaviour (404 returned)."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "btn-primary / btn-outline (index.css)",
+        "issue": "No :disabled styling. The 'Aggiungi brano'/'Sostituisci brano' submit button stays full hot-pink while disabled (disabled={busy||!file||!title||!targetId}), so users cannot tell why the click does nothing. Add disabled:opacity-40 disabled:cursor-not-allowed.",
+        "selector": "[data-testid='upload-submit']",
+        "priority": "MEDIUM"
+      },
+      {
+        "component": "PublicRadio.js",
+        "issue": "Dead import: AudioVisualizer is still imported (line 7) but no longer rendered. Remove it.",
+        "selector": "n/a",
+        "priority": "LOW"
+      }
+    ],
+    "integration_issues": [
+      {
+        "flow": "Dashboard MP3 upload (mode=new)",
+        "issue": "Works (200 + [data-testid='upload-result'] shows title/size), BUT the same upload immediately breaks the Dashboard track list / GET /api/tracks with a 500 (console: 'Failed to load resource: 500'). Frontend shows no error state for that failed call.",
+        "affected_selectors": ["[data-testid='upload-submit']", "[data-testid='upload-result']"]
+      }
+    ],
+    "design_issues": [
+      {
+        "screen": "Home (desktop + mobile)",
+        "issues": [
+          "Broken YouTube embed: unstyled grey text 'Video unavailable / Playback on other websites has been disabled by the video owner / Watch on YouTube' bleeds through behind the hero and LIVE VISUAL card (very low contrast, overlaps copy). REACT_APP_YOUTUBE_URL embed should be removed or replaced with a thumbnail+link.",
+          "Mobile 390px: the fixed 'Sostieni il progetto' CTA sits over the centre of the content (covers part of the pulsing brand card and the DJ cards) and floats above the bottom waveform.",
+          "PulsingBrand accent hue is green, not the requested cyan: hue = (baseHue + 190) % 360 with baseHue=320 gives 150 (spring green) for the '-' and '.' glyphs. Use an offset of ~+230 (or hard-code #22d3ee) to stay on the magenta/cyan/purple palette."
+        ]
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_master_plan.py",
+    "/app/test_reports/pytest/master_plan.xml"
+  ],
+  "action_items": [
+    "CRITICAL: make admin_tracks_upload write a Track-model-compatible document (genre, mood, lyrics_excerpt, llm_provider, cover_seed) and allow its source value in Track.source, otherwise GET /api/tracks 500s forever after the first upload.",
+    "HIGH: include admin-uploaded songs in the music rotation pools (server.py 1669-1690) and set music_audio_url for non-suno sources (line 1798), otherwise uploaded MP3s are stored but never broadcast.",
+    "MEDIUM: add disabled styling to .btn-primary/.btn-outline so the disabled upload button is visually distinguishable.",
+    "MEDIUM: remove/replace the broken YouTube embed on the home page (text bleeds through the hero).",
+    "LOW: change PulsingBrand accent hue offset so accents render cyan instead of green; remove the unused AudioVisualizer import in PublicRadio.js.",
+    "LOW: reduce default page_size for the music ZIP (page 1 is 198 MB)."
+  ],
+  "critical_code_review_comments": [
+    "server.py: the upload endpoint bypasses the Track pydantic model and inserts a hand-written dict — always build the doc via Track(...).model_dump() so response models and rotation logic stay consistent.",
+    "server.py admin_export_category: builds the whole ZIP in a temp file before responding; for the 198 MB music page this blocks the worker and delays TTFB. Consider zipstream or smaller pages.",
+    "server.py is 2641 lines — should be split into routers (admin, radio, ads, media).",
+    "Dashboard.js is 1340 lines — extract UploadMp3Panel / CategorizedExportPanel into separate component files.",
+    "No auth on /api/admin/* endpoints (open in beta by design) — upload accepts any 5 KB-30 MB file with an audio content-type and writes it to disk + object storage; add auth before production."
+  ],
+  "updated_files": ["/app/backend/tests/test_master_plan.py"],
+  "success_rate": {"backend": "96% (22/23 pytest cases; the 1 failure is the real /api/tracks regression)", "frontend": "90% (all Master-Plan UI assertions passed; only styling/embed issues)"},
+  "seed_data_creation": "Created and then deleted TEST_MasterPlan* tracks + TEST_UI_Upload_QA (DB docs and /app/backend/static/suno files). Verified post-cleanup state: 181 searchable tracks, 162 files in static/suno, GET /api/tracks back to 200.",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "test_credentials": "/app/memory/test_credentials.md is MISSING (only PRD.md exists). Not needed: admin endpoints and /dashboard are open in beta (Google login button present but not required).",
+  "context_for_next_testing_agent": "Run `pytest /app/backend/tests/test_master_plan.py` — TestUploadSideEffects::test_tracks_endpoint_still_ok_after_upload is the guard for the CRITICAL /api/tracks 500 bug (it fails today). Note the file's cleanup fixture deletes tracks via motor/mongosh; if a run is interrupted, purge leftovers with db.tracks.deleteMany({source:'admin_upload'}) or GET /api/tracks will keep 500ing. Object storage fallback verified working (file removed from static/suno -> /api/suno_audio still 200 with identical bytes). Frontend testids verified: pulsing-brand, pulsing-brand-text ('R-A.I.'), bottom-waveform (position:fixed, at bottom on 1920x1080 and 390x844), audio-visualizer absent, upload-mp3-panel (mode-new/mode-replace/kind-select/file-input/title-input/artist-input/upload-submit/upload-result), replace-search + replace-pick-<id8> (search matches title|artist, client-side, top 60), categorized-export-panel with 15 download-cat-* buttons and page-prev/next-<cat>.",
+  "rca_of_the_issue": "POST /api/admin/tracks/upload inserts a bespoke dict into db.tracks with source='admin_upload' and without the Track model's required fields (genre, mood, lyrics_excerpt, llm_provider, cover_seed). GET /api/tracks is declared response_model=List[Track], so serialization of that document raises fastapi ResponseValidationError -> HTTP 500 for the whole collection (verified in /var/log/supervisor/backend.err.log and by deleting the doc, which restored 200). The same model/source mismatch also excludes uploaded songs from the rotation pools (which query source='suno') and from music_audio_url assignment, so uploaded MP3s are stored but never aired."
+}

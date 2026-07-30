@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { Radio, Power, Trash2, Sparkles, Zap, Music2, Newspaper, MessageCircle, LogOut, LogIn, Send, User, ChevronRight, Cpu, Users, RefreshCw, Megaphone, Euro, ExternalLink, Download, Archive, Sliders, Mic, PauseCircle, PlayCircle } from "lucide-react";
+import { Radio, Power, Trash2, Sparkles, Zap, Music2, Newspaper, MessageCircle, LogOut, LogIn, Send, User, ChevronRight, Cpu, Users, RefreshCw, Megaphone, Euro, ExternalLink, Download, Archive, Sliders, Mic, PauseCircle, PlayCircle, Upload, Package, Replace } from "lucide-react";
 import { lineInMixer } from "@/lib/lineInMixer";
 import { endpoints, api } from "@/lib/api";
 import BrandName from "@/components/BrandName";
@@ -175,6 +175,12 @@ export default function Dashboard() {
             </div>
           </div>
         </section>
+
+        {/* Upload MP3 admin — nuovi brani o sostituzione di esistenti */}
+        <UploadMp3Panel />
+
+        {/* Download ZIP categorico — pacchetti piccoli per non far crashare il server */}
+        <CategorizedExportPanel />
 
         {/* Library downloader — lista brani + tasto Scarica ZIP + MP3 singolo */}
         <LibraryDownloader />
@@ -1000,3 +1006,334 @@ function ManualModePanel() {
   );
 }
 
+
+
+// -------------------- UploadMp3Panel --------------------
+// Master Plan #1: carica MP3 come nuovo brano OPPURE sostituisci uno esistente
+// dando anche un nuovo nome. Il file finisce in /app/backend/static/suno/ e
+// (se USE_OBJECT_STORAGE=true) anche sul bucket condiviso Emergent.
+function UploadMp3Panel() {
+  const [file, setFile] = useState(null);
+  const [mode, setMode] = useState("new");
+  const [kind, setKind] = useState("song");
+  const [title, setTitle] = useState("");
+  const [artist, setArtist] = useState("R-A.I.");
+  const [targetId, setTargetId] = useState("");
+  const [tracksList, setTracksList] = useState([]);
+  const [searchQ, setSearchQ] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+
+  useEffect(() => {
+    if (mode !== "replace") return;
+    api.get("/admin/tracks/searchable").then(r => setTracksList(r.data?.tracks || [])).catch(() => setTracksList([]));
+  }, [mode]);
+
+  const filteredTracks = React.useMemo(() => {
+    if (!searchQ.trim()) return tracksList.slice(0, 60);
+    const q = searchQ.toLowerCase();
+    return tracksList.filter(t =>
+      (t.title || "").toLowerCase().includes(q) ||
+      (t.artist || "").toLowerCase().includes(q)
+    ).slice(0, 60);
+  }, [tracksList, searchQ]);
+
+  const upload = async () => {
+    if (!file) { toast.error("Seleziona un file .mp3"); return; }
+    if (!title.trim()) { toast.error("Il titolo è obbligatorio"); return; }
+    if (mode === "replace" && !targetId) { toast.error("Scegli il brano da sostituire"); return; }
+    setBusy(true);
+    setResult(null);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("mode", mode);
+      fd.append("title", title.trim());
+      fd.append("artist", artist.trim() || "R-A.I.");
+      fd.append("kind", kind);
+      if (mode === "replace") fd.append("target_id", targetId);
+      const backend = process.env.REACT_APP_BACKEND_URL;
+      const resp = await fetch(`${backend}/api/admin/tracks/upload`, {
+        method: "POST",
+        body: fd,
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+        throw new Error(err.detail || `HTTP ${resp.status}`);
+      }
+      const data = await resp.json();
+      setResult(data);
+      toast.success(mode === "replace" ? `Sostituito: ${data.title}` : `Caricato: ${data.title}`);
+      // Reset lightly
+      setFile(null);
+      setTitle("");
+      if (mode === "replace") {
+        // refresh list
+        api.get("/admin/tracks/searchable").then(r => setTracksList(r.data?.tracks || []));
+      }
+    } catch (e) {
+      toast.error(`Upload fallito: ${e.message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section data-testid="upload-mp3-panel" className="lg:col-span-4 card-surface p-6">
+      <div className="mb-4">
+        <div className="label-mono flex items-center gap-2">
+          <Upload className="w-4 h-4 text-pink-400" /> Carica MP3
+        </div>
+        <h2 className="font-display font-black text-2xl mt-1">Nuovo brano o Sostituzione</h2>
+        <p className="text-zinc-400 text-sm mt-1">
+          Carica un MP3 dal tuo PC. Puoi aggiungere un nuovo brano alla rotazione oppure
+          <strong> sostituire</strong> uno esistente (utile per correggere titolo, autore o audio).
+        </p>
+      </div>
+
+      <div className="grid md:grid-cols-2 gap-4">
+        {/* Mode selector */}
+        <div className="flex flex-col gap-2">
+          <label className="label-mono">Modalità</label>
+          <div className="flex gap-2">
+            <button
+              data-testid="mode-new"
+              onClick={() => setMode("new")}
+              className={`btn-outline flex-1 flex items-center justify-center gap-2 ${mode === "new" ? "border-pink-500 text-pink-400" : ""}`}
+            >
+              <Upload className="w-4 h-4" /> Nuovo brano
+            </button>
+            <button
+              data-testid="mode-replace"
+              onClick={() => setMode("replace")}
+              className={`btn-outline flex-1 flex items-center justify-center gap-2 ${mode === "replace" ? "border-cyan-400 text-cyan-400" : ""}`}
+            >
+              <Replace className="w-4 h-4" /> Sostituisci esistente
+            </button>
+          </div>
+        </div>
+
+        {/* Kind selector */}
+        <div className="flex flex-col gap-2">
+          <label className="label-mono">Tipo</label>
+          <select
+            data-testid="kind-select"
+            value={kind}
+            onChange={(e) => setKind(e.target.value)}
+            className="bg-zinc-900 border border-white/10 rounded px-3 py-2 text-white"
+          >
+            <option value="song">🎵 Canzone (rotazione musicale)</option>
+            <option value="jingle">📣 Jingle brandizzato R-A.I.</option>
+            <option value="anthem">🏆 Inno ufficiale</option>
+          </select>
+        </div>
+
+        {/* File input */}
+        <div className="flex flex-col gap-2 md:col-span-2">
+          <label className="label-mono">File MP3</label>
+          <input
+            data-testid="file-input"
+            type="file"
+            accept="audio/mpeg,.mp3"
+            onChange={(e) => setFile(e.target.files?.[0] || null)}
+            className="bg-zinc-900 border border-white/10 rounded px-3 py-2 text-white text-sm file:mr-3 file:py-1 file:px-3 file:rounded file:border-0 file:bg-pink-500/20 file:text-pink-300 file:cursor-pointer"
+          />
+          {file && (
+            <span className="text-xs text-emerald-400 font-mono">
+              Selezionato: {file.name} ({(file.size / 1024 / 1024).toFixed(2)} MB)
+            </span>
+          )}
+        </div>
+
+        {/* Replace: track picker */}
+        {mode === "replace" && (
+          <div className="flex flex-col gap-2 md:col-span-2">
+            <label className="label-mono">Brano da sostituire ({tracksList.length} disponibili)</label>
+            <input
+              data-testid="replace-search"
+              type="text"
+              placeholder="Cerca per titolo o artista…"
+              value={searchQ}
+              onChange={(e) => setSearchQ(e.target.value)}
+              className="bg-zinc-900 border border-white/10 rounded px-3 py-2 text-white text-sm"
+            />
+            <div className="max-h-56 overflow-y-auto border border-white/5 rounded bg-black/30">
+              {filteredTracks.length === 0 && (
+                <div className="text-zinc-500 text-xs p-3">Nessun brano trovato.</div>
+              )}
+              {filteredTracks.map(t => (
+                <button
+                  key={t.id}
+                  data-testid={`replace-pick-${t.id.slice(0,8)}`}
+                  onClick={() => setTargetId(t.id)}
+                  className={`w-full text-left px-3 py-2 text-sm border-b border-white/5 hover:bg-white/[0.06] transition ${targetId === t.id ? "bg-cyan-500/10 text-cyan-300" : "text-zinc-300"}`}
+                >
+                  <span className="font-mono text-[10px] uppercase mr-2 opacity-60">{t.kind}</span>
+                  <span className="font-semibold">{t.title}</span>
+                  <span className="text-zinc-500 ml-2">— {t.artist}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Title */}
+        <div className="flex flex-col gap-2">
+          <label className="label-mono">Titolo{mode === "replace" ? " (nuovo)" : ""}</label>
+          <input
+            data-testid="title-input"
+            type="text"
+            placeholder={mode === "replace" ? "es. Inno_Sfumato" : "Titolo del brano"}
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            className="bg-zinc-900 border border-white/10 rounded px-3 py-2 text-white"
+          />
+        </div>
+
+        {/* Artist */}
+        <div className="flex flex-col gap-2">
+          <label className="label-mono">Artista</label>
+          <input
+            data-testid="artist-input"
+            type="text"
+            placeholder="R-A.I."
+            value={artist}
+            onChange={(e) => setArtist(e.target.value)}
+            className="bg-zinc-900 border border-white/10 rounded px-3 py-2 text-white"
+          />
+        </div>
+      </div>
+
+      <div className="mt-5 flex flex-wrap items-center gap-3">
+        <button
+          data-testid="upload-submit"
+          onClick={upload}
+          disabled={busy || !file || !title.trim() || (mode === "replace" && !targetId)}
+          className="btn-primary flex items-center gap-2"
+        >
+          <Upload className="w-4 h-4" />
+          {busy ? "Caricamento…" : (mode === "replace" ? "Sostituisci brano" : "Aggiungi brano")}
+        </button>
+        {result && (
+          <span className="text-xs text-emerald-400 font-mono" data-testid="upload-result">
+            ✓ {result.title} — {(result.size_bytes / 1024 / 1024).toFixed(2)} MB
+          </span>
+        )}
+      </div>
+    </section>
+  );
+}
+
+
+// -------------------- CategorizedExportPanel --------------------
+// Master Plan #2: download ZIP per categoria, paginati, così il server non
+// crasha al 99% come col monolitico da 1GB.
+function CategorizedExportPanel() {
+  const [busyKey, setBusyKey] = useState(null);
+  const [pages, setPages] = useState({}); // { music: 1, jingles: 1, ... }
+
+  const categories = [
+    { key: "music", label: "Musica", icon: Music2, color: "text-pink-400", pageSize: 50 },
+    { key: "jingles", label: "Jingle R-A.I.", icon: Sparkles, color: "text-cyan-400", pageSize: 100 },
+    { key: "anthem", label: "Inno", icon: Radio, color: "text-yellow-400", pageSize: 100 },
+    { key: "retired", label: "Ritirati", icon: Archive, color: "text-zinc-500", pageSize: 50 },
+    { key: "talk", label: "Talk (voci)", icon: MessageCircle, color: "text-cyan-300", pageSize: 100 },
+    { key: "news", label: "News (voci)", icon: Newspaper, color: "text-purple-400", pageSize: 100 },
+    { key: "ad_spot", label: "Spot (voci)", icon: Megaphone, color: "text-emerald-400", pageSize: 100 },
+    { key: "weather", label: "Meteo (voci)", icon: Sparkles, color: "text-blue-400", pageSize: 100 },
+    { key: "horoscope", label: "Oroscopo (voci)", icon: Sparkles, color: "text-fuchsia-400", pageSize: 100 },
+    { key: "history", label: "Storia (voci)", icon: Sparkles, color: "text-amber-400", pageSize: 100 },
+    { key: "interview", label: "Interviste (voci)", icon: Users, color: "text-rose-400", pageSize: 100 },
+    { key: "motivation", label: "Motivazione (voci)", icon: Sparkles, color: "text-lime-400", pageSize: 100 },
+    { key: "joke", label: "Battute (voci)", icon: Sparkles, color: "text-orange-400", pageSize: 100 },
+    { key: "time_signal", label: "Segnali orari", icon: Sparkles, color: "text-indigo-400", pageSize: 100 },
+    { key: "metadata", label: "Metadata JSON", icon: Package, color: "text-white", pageSize: 999 },
+  ];
+
+  const downloadCat = (cat) => {
+    const page = pages[cat.key] || 1;
+    const backend = process.env.REACT_APP_BACKEND_URL;
+    setBusyKey(cat.key);
+    try {
+      const url = `${backend}/api/admin/export/category/${cat.key}?page=${page}&page_size=${cat.pageSize}`;
+      const a = document.createElement("a");
+      a.href = url;
+      a.rel = "noopener";
+      a.download = `rai_${cat.key}_p${page}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => document.body.removeChild(a), 500);
+      toast.success(`Download ${cat.label} (pag. ${page}) avviato`);
+    } catch (e) {
+      toast.error(`Errore download ${cat.label}`);
+    } finally {
+      setTimeout(() => setBusyKey(null), 1200);
+    }
+  };
+
+  const bumpPage = (key, delta) => {
+    setPages(p => ({ ...p, [key]: Math.max(1, (p[key] || 1) + delta) }));
+  };
+
+  return (
+    <section data-testid="categorized-export-panel" className="lg:col-span-4 card-surface p-6">
+      <div className="mb-4">
+        <div className="label-mono flex items-center gap-2">
+          <Package className="w-4 h-4 text-emerald-400" /> Download ZIP · Pacchetti piccoli
+        </div>
+        <h2 className="font-display font-black text-2xl mt-1">Archivio per categoria</h2>
+        <p className="text-zinc-400 text-sm mt-1">
+          Un pacchetto ZIP per categoria — molto più leggero del download totale (che può
+          crashare al 99% su librerie grandi). Musica e brani ritirati sono <strong>paginati</strong>:
+          usa i pulsanti «‹» e «›» per navigare tra le pagine.
+        </p>
+      </div>
+      <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+        {categories.map(cat => {
+          const Icon = cat.icon;
+          const page = pages[cat.key] || 1;
+          const paginated = cat.pageSize < 200;
+          return (
+            <div key={cat.key} data-testid={`export-cat-${cat.key}`} className="p-3 rounded bg-white/[0.03] border border-white/5 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <Icon className={`w-4 h-4 ${cat.color} shrink-0`} />
+                <div className="min-w-0">
+                  <div className="text-sm font-semibold truncate">{cat.label}</div>
+                  {paginated && (
+                    <div className="text-[10px] text-zinc-500 font-mono">pag. {page} · {cat.pageSize}/blocco</div>
+                  )}
+                </div>
+              </div>
+              <div className="flex items-center gap-1 shrink-0">
+                {paginated && (
+                  <>
+                    <button
+                      onClick={() => bumpPage(cat.key, -1)}
+                      disabled={page <= 1}
+                      className="btn-outline px-2 py-1 text-xs disabled:opacity-30"
+                      data-testid={`page-prev-${cat.key}`}
+                    >‹</button>
+                    <button
+                      onClick={() => bumpPage(cat.key, 1)}
+                      className="btn-outline px-2 py-1 text-xs"
+                      data-testid={`page-next-${cat.key}`}
+                    >›</button>
+                  </>
+                )}
+                <button
+                  onClick={() => downloadCat(cat)}
+                  disabled={busyKey === cat.key}
+                  data-testid={`download-cat-${cat.key}`}
+                  className="btn-primary px-3 py-1 text-xs flex items-center gap-1"
+                >
+                  <Download className="w-3 h-3" />
+                  {busyKey === cat.key ? "…" : "ZIP"}
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}

@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Cookie, Header
+from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Cookie, Header, UploadFile, File, Form
 from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -933,6 +933,272 @@ async def admin_export_manifest():
     }
 
 
+# ----------------------- Admin: Upload MP3 (Master Plan #1) -----------------------
+@api_router.get("/admin/tracks/searchable")
+async def admin_tracks_searchable():
+    """Elenco compatto di tutte le tracce non-retired per il dropdown di
+    sostituzione: id, titolo, artista, tipo (song/jingle/anthem).
+    """
+    items = []
+    cursor = db.tracks.find(
+        {"status": {"$ne": "retired"}},
+        {"_id": 0, "id": 1, "title": 1, "artist": 1, "is_jingle": 1, "is_anthem": 1, "duration_sec": 1},
+    ).sort("created_at", -1)
+    docs = await cursor.to_list(length=2000)
+    for t in docs:
+        if t.get("is_anthem"): kind = "anthem"
+        elif t.get("is_jingle"): kind = "jingle"
+        else: kind = "song"
+        items.append({
+            "id": t.get("id"),
+            "title": t.get("title") or "—",
+            "artist": t.get("artist") or "R-A.I.",
+            "kind": kind,
+            "duration_sec": t.get("duration_sec") or 0,
+        })
+    return {"tracks": items, "total": len(items)}
+
+
+@api_router.post("/admin/tracks/upload")
+async def admin_tracks_upload(
+    file: UploadFile = File(...),
+    mode: str = Form("new"),            # "new" | "replace"
+    target_id: Optional[str] = Form(None),
+    title: str = Form(...),
+    artist: Optional[str] = Form("R-A.I."),
+    kind: str = Form("song"),           # "song" | "jingle" | "anthem"
+    tags: Optional[str] = Form(""),     # comma-separated
+):
+    """Upload di un MP3 caricato dall'admin.
+    - mode='new'     → crea una nuova track e la mette subito in rotazione.
+    - mode='replace' → sostituisce il file audio di una track esistente
+                       (identificata da target_id), aggiornandone anche il titolo.
+    Il file viene salvato in /app/backend/static/suno/track_<id>.mp3 e (se
+    USE_OBJECT_STORAGE=true) pushato anche sul bucket Emergent condiviso.
+    """
+    fname_lower = (file.filename or "").lower()
+    if not (fname_lower.endswith(".mp3") or (file.content_type or "").startswith("audio/")):
+        raise HTTPException(400, "Solo file .mp3 sono accettati")
+    if mode not in ("new", "replace"):
+        raise HTTPException(400, "mode deve essere 'new' o 'replace'")
+    if kind not in ("song", "jingle", "anthem"):
+        raise HTTPException(400, "kind deve essere song|jingle|anthem")
+
+    data = await file.read()
+    if not data or len(data) < 5_000:
+        raise HTTPException(400, "File troppo piccolo o vuoto")
+    if len(data) > 30 * 1024 * 1024:  # 30 MB cap
+        raise HTTPException(400, "File troppo grande (max 30 MB)")
+
+    title = (title or "").strip() or "Senza titolo"
+    artist = (artist or "R-A.I.").strip() or "R-A.I."
+    tag_list = [t.strip() for t in (tags or "").split(",") if t.strip()]
+    tag_list.append("admin_upload")
+
+    if mode == "replace":
+        if not target_id:
+            raise HTTPException(400, "target_id richiesto per mode=replace")
+        target = await db.tracks.find_one({"id": target_id})
+        if not target:
+            raise HTTPException(404, "Track da sostituire non trovata")
+        track_id = target_id  # riusa lo stesso id → l'audio_url resta stabile
+    else:
+        track_id = str(uuid.uuid4())
+
+    local_name = f"track_{track_id}.mp3"
+    local_path = SUNO_AUDIO_DIR / local_name
+    local_path.write_bytes(data)
+
+    # Push all'object storage (best-effort, no-op se flag disattivato)
+    try:
+        await object_storage.put_mp3(f"suno/{local_name}", data)
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"objstore upload skipped: {e}")
+
+    audio_url = f"/api/suno_audio/{local_name}"
+    now = datetime.now(timezone.utc).isoformat()
+
+    doc = {
+        "id": track_id,
+        "title": title,
+        "artist": artist,
+        "audio_url": audio_url,
+        "status": "ready",
+        "source": "admin_upload",
+        "tags": tag_list,
+        "is_jingle": kind == "jingle",
+        "is_anthem": kind == "anthem",
+        "is_seed": False,
+        "duration_sec": 0,  # sarà calcolato al primo play dal frontend
+        "rotation_weight": 1.0,
+        "last_played_at": None,
+        "created_at": now,
+        "updated_at": now,
+    }
+
+    if mode == "replace":
+        # Ereditiamo i tag/attributi immutabili della vecchia track, sovrascriviamo il resto.
+        merged_tags = list(set((target.get("tags") or []) + tag_list))
+        await db.tracks.update_one(
+            {"id": track_id},
+            {"$set": {
+                "title": title,
+                "artist": artist,
+                "audio_url": audio_url,
+                "status": "ready",
+                "is_jingle": kind == "jingle",
+                "is_anthem": kind == "anthem",
+                "tags": merged_tags,
+                "updated_at": now,
+            }},
+        )
+    else:
+        await db.tracks.insert_one(doc)
+
+    logger.info(f"Admin upload {mode}: '{title}' → {audio_url} ({len(data):,} bytes)")
+    return {
+        "ok": True,
+        "mode": mode,
+        "track_id": track_id,
+        "title": title,
+        "audio_url": audio_url,
+        "size_bytes": len(data),
+    }
+
+
+@api_router.get("/admin/export/category/{category}")
+async def admin_export_category(category: str, page: int = 1, page_size: int = 50):
+    """ZIP piccolo e categorico. Molto più leggero del monolitico (che sfora
+    timeout proxy quando la libreria è grande). Un ZIP per categoria:
+      - music              : tutti i brani in rotazione (no jingle, no anthem, no retired)
+      - jingles            : jingle brandizzati R-A.I.
+      - anthem             : inno ufficiale
+      - retired            : brani ritirati
+      - talk, news, ad_spot, weather, horoscope, history,
+        interview, motivation, joke, time_signal : file TTS del kind
+      - metadata           : solo JSON metadata (nessun mp3, ~pochi KB)
+
+    Paginazione: `?page=1&page_size=50` (default). Utile per music grande.
+    """
+    import zipfile
+    import tempfile
+    import json as _json
+    from elevenlabs_service import TTS_DIR
+
+    page = max(1, int(page))
+    page_size = max(10, min(200, int(page_size)))
+    start = (page - 1) * page_size
+    end = start + page_size
+
+    now_str = datetime.now().strftime('%Y%m%d_%H%M%S')
+    tmp = tempfile.TemporaryFile()
+
+    async def _tracks_for_music_cat():
+        query = {"status": {"$ne": "retired"}, "is_jingle": {"$ne": True}, "is_anthem": {"$ne": True}}
+        return await db.tracks.find(query, {"_id": 0}).sort("created_at", -1).to_list(length=5000)
+
+    def _sanitize(name: str, maxlen: int = 40) -> str:
+        s = "".join(c for c in (name or "untitled") if c.isalnum() or c in " -_").strip()
+        return (s[:maxlen] or "untitled")
+
+    music_like = {"music", "jingles", "anthem", "retired"}
+    speech_like = {"talk", "news", "ad_spot", "weather", "horoscope", "history",
+                   "interview", "motivation", "joke", "time_signal"}
+
+    with zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_STORED, allowZip64=True) as zf:
+        added = 0
+        total_available = 0
+        if category == "metadata":
+            tracks = await db.tracks.find({}, {"_id": 0}).to_list(length=5000)
+            segments = await db.segments.find({}, {"_id": 0}).sort("created_at", -1).to_list(length=5000)
+            zf.writestr("rai_export/tracks.json", _json.dumps(tracks, indent=2, default=str))
+            zf.writestr("rai_export/segments.json", _json.dumps(segments, indent=2, default=str))
+            zf.writestr("rai_export/export_info.json", _json.dumps({
+                "exported_at": datetime.now(timezone.utc).isoformat(),
+                "category": category,
+                "tracks_count": len(tracks),
+                "segments_count": len(segments),
+            }, indent=2))
+            added = 3
+            total_available = 3
+        elif category in music_like:
+            if category == "music":
+                all_tracks = await _tracks_for_music_cat()
+            elif category == "jingles":
+                all_tracks = await db.tracks.find({"is_jingle": True}, {"_id": 0}).to_list(length=5000)
+            elif category == "anthem":
+                all_tracks = await db.tracks.find({"is_anthem": True}, {"_id": 0}).to_list(length=5000)
+            else:  # retired
+                all_tracks = await db.tracks.find({"status": "retired"}, {"_id": 0}).to_list(length=5000)
+            total_available = len(all_tracks)
+            for t in all_tracks[start:end]:
+                tid = t.get("id")
+                if not tid:
+                    continue
+                mp3_path = SUNO_AUDIO_DIR / f"track_{tid}.mp3"
+                if not (mp3_path.exists() and mp3_path.stat().st_size >= 10_000):
+                    continue
+                safe = _sanitize(t.get("title"))
+                zf.write(str(mp3_path), f"{category}/{safe}_{tid[:8]}.mp3")
+                added += 1
+        elif category in speech_like:
+            all_segments = await db.segments.find(
+                {"kind": category, "speech_audio_url": {"$ne": None}},
+                {"_id": 0},
+            ).sort("created_at", -1).to_list(length=2000)
+            total_available = len(all_segments)
+            seen = set()
+            for s in all_segments[start:end]:
+                url = s.get("speech_audio_url") or ""
+                if not url.startswith("/api/tts/"):
+                    continue
+                fname = url.replace("/api/tts/", "").split("?")[0]
+                if not fname or fname in seen:
+                    continue
+                seen.add(fname)
+                p = TTS_DIR / fname
+                if not (p.exists() and p.stat().st_size >= 3_000):
+                    continue
+                safe = _sanitize(s.get("title") or "segment")
+                zf.write(str(p), f"{category}/{safe}_{fname}")
+                added += 1
+        else:
+            raise HTTPException(400, f"Categoria sconosciuta: {category}")
+
+        total_pages = max(1, (total_available + page_size - 1) // page_size) if category != "metadata" else 1
+        zf.writestr("README.txt",
+                    f"R-A.I. export — categoria: {category}\n"
+                    f"Pagina: {page}/{total_pages}  (size={page_size})\n"
+                    f"File audio inclusi in questo ZIP: {added}\n"
+                    f"Totale disponibile in categoria: {total_available}\n"
+                    f"Generato: {datetime.now(timezone.utc).isoformat()}\n")
+
+    tmp.seek(0, 2)
+    total_size = tmp.tell()
+    tmp.seek(0)
+
+    def iter_file():
+        while True:
+            chunk = tmp.read(1024 * 64)
+            if not chunk:
+                tmp.close()
+                return
+            yield chunk
+
+    fname = f"rai_{category}_p{page}_{now_str}.zip"
+    return StreamingResponse(
+        iter_file(),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{fname}"',
+            "Content-Length": str(total_size),
+            "X-Rai-Total-Available": str(total_available),
+            "X-Rai-Page": str(page),
+            "X-Rai-Page-Size": str(page_size),
+        },
+    )
+
+
 @api_router.get("/admin/export")
 async def admin_export_all():
     """Genera un ZIP con TUTTI i contenuti generati (musica + rubriche parlate)
@@ -959,7 +1225,7 @@ async def admin_export_all():
             return "italian"
         return "other"
 
-    tmp = tempfile.SpooledTemporaryFile(max_size=500_000_000)  # 500MB in RAM/disco
+    tmp = tempfile.TemporaryFile()  # sempre su disco: zero buffering in RAM
     with zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_STORED, allowZip64=True) as zf:
         # 1) Metadata JSON
         for t in tracks:

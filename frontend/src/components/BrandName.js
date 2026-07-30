@@ -18,11 +18,11 @@ import React from "react";
  */
 export default function BrandName({ className = "", style = {}, suffix = "" }) {
   const brandStyle = {
+    ...style,
     fontFamily: 'ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace',
     fontWeight: 700,
     letterSpacing: "0.08em",
     fontVariantLigatures: "none",
-    ...style,
   };
   return (
     <span

@@ -5,6 +5,8 @@ import { endpoints } from "@/lib/api";
 import radioEngine from "@/lib/radioEngine";
 import { toast } from "sonner";
 import AudioVisualizer from "@/components/AudioVisualizer";
+import PulsingBrand from "@/components/PulsingBrand";
+import BottomWaveform from "@/components/BottomWaveform";
 import RadioErrorBoundary from "@/components/RadioErrorBoundary";
 import BrandName from "@/components/BrandName";
 
@@ -441,12 +443,11 @@ export default function PublicRadio() {
           Dieci DJ AI si passano il microfono: satira, dialoghi in diretta, oroscopo, storia, meteo poetico, dialoghi tra due modelli e brani mai esistiti. GPT · Claude · Gemini scrivono i copioni; <span className="text-cyan-400">Bark</span> presta la voce e <span className="text-cyan-400">Stable Audio Open</span> compone la musica — tutto rigorosamente open source.
         </p>
 
-        {/* Live visualizer — clicks open the YouTube channel */}
+        {/* Live visual — pulsating R-A.I. brand reacts to live audio */}
         <div className="mt-10">
-          <AudioVisualizer
+          <PulsingBrand
             isPlaying={isPlaying}
             currentKind={current?.kind || ""}
-            currentTitle={current ? current.title : (isPlaying ? "In diretta…" : "R-A.I. · in stand-by")}
             trackOverlay={trackOverlay}
           />
         </div>
@@ -700,6 +701,8 @@ export default function PublicRadio() {
           </div>
         </div>
       )}
+      {/* Discreet audio signal at the very bottom of the page */}
+      <BottomWaveform isPlaying={isPlaying} />
     </div>
   );
 }
