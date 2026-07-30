@@ -93,6 +93,14 @@ body {
 }
 .btn-primary:hover { background: #ff4fa8; }
 .btn-primary:active { transform: scale(0.97); }
+.btn-primary:disabled,
+.btn-primary[disabled] {
+  opacity: 0.4;
+  cursor: not-allowed;
+  filter: grayscale(0.4);
+}
+.btn-primary:disabled:hover,
+.btn-primary[disabled]:hover { background: #FF1493; }
 
 .btn-outline {
   background: transparent;
@@ -104,6 +112,11 @@ body {
   transition: background-color 200ms ease-out, border-color 200ms ease-out;
 }
 .btn-outline:hover { background: rgba(255,255,255,0.06); border-color: rgba(255,255,255,0.4); }
+.btn-outline:disabled,
+.btn-outline[disabled] {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
 
 .chip {
   display: inline-flex; align-items: center; gap: 6px;
@@ -132,3 +145,44 @@ body {
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-thumb { background: #181820; border-radius: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
+
+/* Animated neon background — replaces the blocked YouTube embed */
+.rai-bg { background: radial-gradient(ellipse at 20% 20%, #150520 0%, #05050a 60%, #000 100%); }
+.rai-bg-orb {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(90px);
+  opacity: 0.55;
+  will-change: transform, opacity;
+}
+.rai-bg-orb-1 {
+  width: 60vw; height: 60vw;
+  background: radial-gradient(circle, #ff1493 0%, rgba(255,20,147,0) 70%);
+  top: -20vw; left: -10vw;
+  animation: rai-orb-float-1 24s ease-in-out infinite alternate;
+}
+.rai-bg-orb-2 {
+  width: 55vw; height: 55vw;
+  background: radial-gradient(circle, #22d3ee 0%, rgba(34,211,238,0) 70%);
+  bottom: -15vw; right: -10vw;
+  animation: rai-orb-float-2 30s ease-in-out infinite alternate;
+}
+.rai-bg-orb-3 {
+  width: 45vw; height: 45vw;
+  background: radial-gradient(circle, #8a2be2 0%, rgba(138,43,226,0) 70%);
+  top: 30vh; right: 20vw;
+  animation: rai-orb-float-3 22s ease-in-out infinite alternate;
+  opacity: 0.4;
+}
+@keyframes rai-orb-float-1 {
+  0%   { transform: translate(0, 0) scale(1); opacity: 0.55; }
+  100% { transform: translate(6vw, 4vh) scale(1.08); opacity: 0.65; }
+}
+@keyframes rai-orb-float-2 {
+  0%   { transform: translate(0, 0) scale(1); opacity: 0.5; }
+  100% { transform: translate(-8vw, -3vh) scale(1.1); opacity: 0.6; }
+}
+@keyframes rai-orb-float-3 {
+  0%   { transform: translate(0, 0) scale(1); opacity: 0.4; }
+  100% { transform: translate(5vw, -6vh) scale(0.9); opacity: 0.5; }
+}

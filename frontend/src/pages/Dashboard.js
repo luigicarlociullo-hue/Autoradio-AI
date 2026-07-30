@@ -1233,7 +1233,7 @@ function CategorizedExportPanel() {
   const [pages, setPages] = useState({}); // { music: 1, jingles: 1, ... }
 
   const categories = [
-    { key: "music", label: "Musica", icon: Music2, color: "text-pink-400", pageSize: 50 },
+    { key: "music", label: "Musica", icon: Music2, color: "text-pink-400", pageSize: 25 },
     { key: "jingles", label: "Jingle R-A.I.", icon: Sparkles, color: "text-cyan-400", pageSize: 100 },
     { key: "anthem", label: "Inno", icon: Radio, color: "text-yellow-400", pageSize: 100 },
     { key: "retired", label: "Ritirati", icon: Archive, color: "text-zinc-500", pageSize: 50 },

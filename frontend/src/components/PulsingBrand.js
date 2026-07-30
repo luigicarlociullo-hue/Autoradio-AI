@@ -74,8 +74,12 @@ export default function PulsingBrand({
           horoscope: 285, history: 40, interview: 330, motivation: 100, joke: 0,
         };
         const baseHue = kindHueMap[currentKind] ?? 320;
-        // Odd chars get the accent (cyan-ish), even chars stay on the base hue.
-        const hue = i % 2 === 0 ? baseHue : (baseHue + 190) % 360;
+        // Even chars keep the base hue (magenta/pink family); odd chars use
+        // cyan-ish accent per the R-A.I. palette (magenta / cyan / purple).
+        // Offset +170 shifts magenta (320) → cyan (130+320=490%360=130).
+        // Use a stable cyan direction: +240 mod 360 keeps accents on
+        // cyan/blue (magenta+240=200, blue) instead of green (150).
+        const hue = i % 2 === 0 ? baseHue : (baseHue + 240) % 360;
 
         el.style.transform = `translateY(${-v * 4}px) scale(${scale.toFixed(3)})`;
         el.style.filter = `brightness(${brightness.toFixed(2)})`;

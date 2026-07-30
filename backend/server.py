@@ -153,7 +153,7 @@ class Track(BaseModel):
     original_audio_url: Optional[str] = None  # Suno CDN URL (expires ~7 days) for reference
     downloaded_at: Optional[str] = None
     image_url: Optional[str] = None       # optional cover art URL (Suno)
-    source: Literal["suno", "stable_audio", "procedural"] = "procedural"
+    source: Literal["suno", "stable_audio", "procedural", "admin_upload"] = "procedural"
     is_anthem: bool = False               # official R-A.I. anthem — played periodically as jingle
     is_jingle: bool = False               # short R-A.I. station jingle — played between segments
     suno_task_id: Optional[str] = None
@@ -1018,24 +1018,6 @@ async def admin_tracks_upload(
     audio_url = f"/api/suno_audio/{local_name}"
     now = datetime.now(timezone.utc).isoformat()
 
-    doc = {
-        "id": track_id,
-        "title": title,
-        "artist": artist,
-        "audio_url": audio_url,
-        "status": "ready",
-        "source": "admin_upload",
-        "tags": tag_list,
-        "is_jingle": kind == "jingle",
-        "is_anthem": kind == "anthem",
-        "is_seed": False,
-        "duration_sec": 0,  # sarà calcolato al primo play dal frontend
-        "rotation_weight": 1.0,
-        "last_played_at": None,
-        "created_at": now,
-        "updated_at": now,
-    }
-
     if mode == "replace":
         # Ereditiamo i tag/attributi immutabili della vecchia track, sovrascriviamo il resto.
         merged_tags = list(set((target.get("tags") or []) + tag_list))
@@ -1053,6 +1035,32 @@ async def admin_tracks_upload(
             }},
         )
     else:
+        # Build a Track-model-compatible document so downstream code
+        # (GET /api/tracks response_model, rotation pools, etc.) keeps working.
+        track = Track(
+            id=track_id,
+            title=title,
+            artist=artist,
+            genre="admin_upload",
+            mood="uploaded",
+            lyrics_excerpt="(uploaded via admin panel)",
+            duration_sec=0,   # calcolato al primo play dal frontend
+            llm_provider="admin_upload",
+            cover_seed=track_id[:8],
+            audio_url=audio_url,
+            downloaded_at=now,
+            source="admin_upload",
+            is_jingle=(kind == "jingle"),
+            is_anthem=(kind == "anthem"),
+            status="ready",
+        )
+        doc = track.model_dump()
+        # Extra rotation-friendly fields (not in Track model but harmless):
+        doc["tags"] = tag_list
+        doc["is_seed"] = False
+        doc["rotation_weight"] = 1.0
+        doc["last_played_at"] = None
+        doc["updated_at"] = now
         await db.tracks.insert_one(doc)
 
     logger.info(f"Admin upload {mode}: '{title}' → {audio_url} ({len(data):,} bytes)")
@@ -1666,8 +1674,10 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
             # ALTA ROTAZIONE: brani con priority='high' o rotation_weight>1
             # vengono pescati ~65% delle volte, alternandosi ai brani normali.
             # Round-robin all'interno di ciascun pool per rotare tutti equamente.
+            # Include anche gli upload admin ("admin_upload") oltre ai brani Suno.
+            _music_sources = {"$in": ["suno", "admin_upload"]}
             high_pool = await db.tracks.find(
-                {"source": "suno", "status": "ready", "audio_url": {"$ne": None},
+                {"source": _music_sources, "status": "ready", "audio_url": {"$ne": None},
                  "$or": [
                      {"priority": "high"},
                      {"rotation_weight": {"$gt": 1}},
@@ -1680,7 +1690,7 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
                 sort=[("last_played_at", 1), ("created_at", 1)],
             ).to_list(length=50)
             normal_pool = await db.tracks.find(
-                {"source": "suno", "status": "ready", "audio_url": {"$ne": None},
+                {"source": _music_sources, "status": "ready", "audio_url": {"$ne": None},
                  "$or": [{"is_anthem": {"$exists": False}}, {"is_anthem": False}],
                  "priority": {"$ne": "high"},
                  "is_jingle": {"$ne": True},
@@ -1795,10 +1805,10 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
         segment.track_id = track.id
         segment.track_meta = track.model_dump()
         segment.duration_sec = max(40, track.duration_sec // 3)
-        if track.audio_url and track.source == "suno":
+        if track.audio_url and track.source in ("suno", "admin_upload"):
             segment.music_audio_url = track.audio_url
             segment.hd_status = "ready"
-            segment.duration_sec = min(track.duration_sec, 120)
+            segment.duration_sec = min(track.duration_sec, 120) if track.duration_sec else 120
     elif kind == "news":
         # Notizie dall'anno 2087 — plausibili nel loro mondo ma surreali
         prompt = (

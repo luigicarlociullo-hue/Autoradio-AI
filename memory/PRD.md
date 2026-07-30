@@ -199,3 +199,42 @@ Vorrei costruire un software di gestione radiofonica completamente automatizzato
   3. Aggiungere `USE_OBJECT_STORAGE=true` anche in produzione (Emergent dashboard → env vars) e ridiployare.
   4. Da quel momento, ogni nuovo brano generato in un ambiente è disponibile in entrambi.
 - **Rischio zero**: con flag OFF (default attuale) il comportamento è identico a prima. Testato: `/api/analytics` 200, `/api/station` 200, `/api/suno_audio/*` 200 (5MB serviti).
+
+## 2026-02 — Master Plan R-A.I. (5 task) COMPLETATO
+### 1. Upload MP3 admin (Nuovo/Sostituisci)
+- `POST /api/admin/tracks/upload` multipart (file, mode, target_id, title, artist, kind, tags)
+- `GET /api/admin/tracks/searchable` per il picker di sostituzione
+- Doc costruita con `Track(...)` model (fix regressione /api/tracks 500)
+- Nuova sorgente `admin_upload` aggiunta al Literal di Track.source
+- Rotation music pool include ora `source: {"$in": ["suno","admin_upload"]}` → gli upload girano davvero
+- File pushato su Emergent Object Storage se USE_OBJECT_STORAGE=true (già attivo)
+- Frontend: `UploadMp3Panel` in Dashboard con dropzone, selettore Nuovo/Sostituisci, dropdown ricerca brano, tipo song/jingle/anthem
+### 2. Download ZIP piccoli categorizzati
+- `GET /api/admin/export/category/{cat}?page=N&page_size=X` — 15 categorie
+- ZIP_STORED (no ricompressione mp3) + paginazione (music default 25/pagina, ~100MB max)
+- Frontend: `CategorizedExportPanel` con grid di 15 card + pulsanti ‹ / › per navigare pagine
+### 3. Waveform in basso (discreto)
+- Nuovo componente `BottomWaveform.js` — canvas fisso h=34px con gradient cyan→magenta
+- Piazzato via fixed bottom, backdrop-blur, z-index 20
+### 4. Logo pulsante R-A.I. (cuore visivo)
+- Nuovo componente `PulsingBrand.js` — sostituisce vecchio `AudioVisualizer`
+- 6 caratteri "R-A.I." mappati su 6 bande frequenza (sub-bass → treble)
+- Reactive: transform scale, brightness, glow shadow, hue-shift per kind
+- Palette magenta base + accento ciano (offset hue +240)
+- Fallback breathing pulse quando audio idle
+### 5. Object Storage produzione
+- USE_OBJECT_STORAGE=true attivo in preview .env
+- 362 file già sul bucket condiviso preview↔produzione
+- Utente deve aggiungere la stessa env var alle env di produzione + redeploy (guida in ticket support)
+
+### Fix di contorno (dal testing agent iteration_10)
+- CSS: `.btn-primary:disabled` e `.btn-outline:disabled` ora hanno opacity + cursor:not-allowed
+- Rimosso import morto `AudioVisualizer` da PublicRadio
+- Sostituito embed YouTube rotto ("Video unavailable") con **fondo animato CSS** — 3 aloni neon fluttuanti (magenta/ciano/viola), zero dipendenze esterne, non si rompe mai
+- Hue accent PulsingBrand da verde → ciano (offset hue +240 invece di +190)
+- Default page_size music ZIP: 25 (era 50)
+
+### Test
+- `backend/tests/test_master_plan.py`: 23/23 PASS (inclusa regressione `/api/tracks` post-upload)
+- `backend/tests/test_palinsesto_jingle.py`: 5/5 PASS (regressione)
+- Preview: screenshot mostra logo pulsante ciano/magenta + waveform discreta + fondo animato (no YT unavailable)

@@ -4,7 +4,6 @@ import { Play, Pause, SkipForward, Radio, Send, Volume2, Sparkles, Users, Music2
 import { endpoints } from "@/lib/api";
 import radioEngine from "@/lib/radioEngine";
 import { toast } from "sonner";
-import AudioVisualizer from "@/components/AudioVisualizer";
 import PulsingBrand from "@/components/PulsingBrand";
 import BottomWaveform from "@/components/BottomWaveform";
 import RadioErrorBoundary from "@/components/RadioErrorBoundary";
@@ -368,42 +367,23 @@ export default function PublicRadio() {
 
   return (
     <div className="relative min-h-screen text-white">
-      {/* YouTube live video background: full-screen, muted, autoplay, no controls.
-          Iframe leggero (lazy load nativo del browser). Wrapper con scaling
-          per garantire copertura viewport 16:9 senza band nere.
-          z-index: 0 (dietro tutto). L'header/controlli hanno z-index >= 40. */}
+      {/* Animated neon background — replaces the previous YouTube embed
+          which is blocked by the video owner on external sites. Pure CSS
+          gradient + radial glows, aligned with the R-A.I. neon palette. */}
       <div
         aria-hidden
-        className="fixed inset-0 pointer-events-none overflow-hidden"
+        className="fixed inset-0 pointer-events-none overflow-hidden rai-bg"
         style={{ zIndex: 0 }}
-        data-testid="youtube-bg"
+        data-testid="animated-bg"
       >
-        <div
-          className="absolute top-1/2 left-1/2"
-          style={{
-            width: "177.78vh",     /* 16:9 relative to viewport height */
-            minWidth: "100vw",
-            height: "56.25vw",     /* 9:16 relative to viewport width */
-            minHeight: "100vh",
-            transform: "translate(-50%, -50%)",
-          }}
-        >
-          <iframe
-            title="R-A.I. live visual"
-            src="https://www.youtube.com/embed/hvpaRATqHXc?autoplay=1&mute=1&controls=0&loop=1&playlist=hvpaRATqHXc&modestbranding=1&playsinline=1&rel=0&iv_load_policy=3&disablekb=1"
-            frameBorder="0"
-            allow="autoplay; encrypted-media; picture-in-picture"
-            allowFullScreen={false}
-            loading="lazy"
-            referrerPolicy="strict-origin-when-cross-origin"
-            style={{ width: "100%", height: "100%", border: 0, pointerEvents: "none" }}
-          />
-        </div>
-        {/* Overlay scuro per leggibilita' controlli sopra il video */}
+        <div className="rai-bg-orb rai-bg-orb-1" />
+        <div className="rai-bg-orb rai-bg-orb-2" />
+        <div className="rai-bg-orb rai-bg-orb-3" />
         <div
           className="absolute inset-0"
           style={{
-            background: "linear-gradient(180deg, rgba(5,5,10,0.55) 0%, rgba(5,5,10,0.72) 50%, rgba(5,5,10,0.90) 100%)",
+            background:
+              "linear-gradient(180deg, rgba(5,5,10,0.55) 0%, rgba(5,5,10,0.72) 50%, rgba(5,5,10,0.90) 100%)",
           }}
         />
       </div>
