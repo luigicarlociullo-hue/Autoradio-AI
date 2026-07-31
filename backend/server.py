@@ -1074,6 +1074,102 @@ async def admin_tracks_upload(
     }
 
 
+# ----------------------- Admin: DB Sync (export/import tracks) ----------------
+# Serve a sincronizzare la libreria tracce fra ambienti (preview↔produzione).
+# Non tocca collezioni con dati utente (questions, ads, station, djs, users).
+@api_router.get("/admin/db/export")
+async def admin_db_export():
+    """Dump di tutte le tracce (JSON) — usato per sincronizzare preview→produzione.
+    Struttura: {version, exported_at, source_db, tracks:[...]}
+    """
+    import json as _json
+    tracks = await db.tracks.find({}, {"_id": 0}).to_list(length=10000)
+    # Normalizziamo eventuali datetime residui
+    for t in tracks:
+        for k, v in list(t.items()):
+            if isinstance(v, datetime):
+                t[k] = v.isoformat()
+    payload = {
+        "version": 1,
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "source_db": os.environ.get("DB_NAME", "?"),
+        "count": len(tracks),
+        "tracks": tracks,
+    }
+    body = _json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8")
+    fname = f"rai_tracks_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    return Response(
+        content=body,
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+@api_router.post("/admin/db/import")
+async def admin_db_import(
+    file: UploadFile = File(...),
+    mode: str = Form("merge"),   # "merge" (upsert by id) | "replace-all" (danger)
+):
+    """Importa un JSON di tracce esportato da /admin/db/export.
+    - mode='merge' (default e raccomandato): upsert per id. Le tracce esistenti
+      con lo stesso id vengono aggiornate, le altre inserite. Nessuna traccia
+      viene mai eliminata.
+    - mode='replace-all': cancella tutte le tracce e re-inserisce quelle nel file.
+      Da usare solo per un reset totale, molto pericoloso.
+
+    Le altre collezioni (questions, ads, station, djs, users, segments) non
+    vengono mai toccate — i dati degli ascoltatori sono al sicuro.
+    """
+    import json as _json
+    if mode not in ("merge", "replace-all"):
+        raise HTTPException(400, "mode deve essere 'merge' o 'replace-all'")
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "File vuoto")
+    if len(data) > 50 * 1024 * 1024:
+        raise HTTPException(400, "File troppo grande (max 50 MB)")
+    try:
+        payload = _json.loads(data.decode("utf-8"))
+    except Exception as e:
+        raise HTTPException(400, f"JSON non valido: {e}")
+
+    tracks = payload.get("tracks") if isinstance(payload, dict) else payload
+    if not isinstance(tracks, list):
+        raise HTTPException(400, "Il file deve contenere una lista 'tracks'")
+
+    stats = {"total_in_file": len(tracks), "upserted": 0, "inserted": 0,
+             "updated": 0, "skipped_invalid": 0, "deleted_before_import": 0}
+    if mode == "replace-all":
+        r = await db.tracks.delete_many({})
+        stats["deleted_before_import"] = r.deleted_count
+
+    for t in tracks:
+        if not isinstance(t, dict) or not t.get("id"):
+            stats["skipped_invalid"] += 1
+            continue
+        t.pop("_id", None)  # never trust incoming _id
+        try:
+            res = await db.tracks.update_one(
+                {"id": t["id"]},
+                {"$set": t},
+                upsert=True,
+            )
+            if res.upserted_id is not None:
+                stats["inserted"] += 1
+            elif res.modified_count:
+                stats["updated"] += 1
+            stats["upserted"] += 1
+        except Exception as e:
+            logger.warning(f"import: skip {t.get('id')}: {e}")
+            stats["skipped_invalid"] += 1
+
+    total_after = await db.tracks.count_documents({})
+    stats["total_in_db_after"] = total_after
+    logger.info(f"Admin DB import ({mode}): {stats}")
+    return {"ok": True, "mode": mode, "source_db": payload.get("source_db", "?"),
+            "exported_at": payload.get("exported_at"), "stats": stats}
+
+
 @api_router.get("/admin/export/category/{category}")
 async def admin_export_category(category: str, page: int = 1, page_size: int = 50):
     """ZIP piccolo e categorico. Molto più leggero del monolitico (che sfora

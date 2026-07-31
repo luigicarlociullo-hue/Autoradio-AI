@@ -176,6 +176,9 @@ export default function Dashboard() {
           </div>
         </section>
 
+        {/* DB Sync — export/import tracks between preview and production */}
+        <DbSyncPanel />
+
         {/* Upload MP3 admin — nuovi brani o sostituzione di esistenti */}
         <UploadMp3Panel />
 
@@ -1337,3 +1340,155 @@ function CategorizedExportPanel() {
     </section>
   );
 }
+
+
+// -------------------- DbSyncPanel --------------------
+// Sync della libreria "tracks" fra preview e produzione. Non tocca collezioni
+// con dati utente (questions, ads, station, djs, users) — quelle restano intatte.
+function DbSyncPanel() {
+  const [busy, setBusy] = useState(null); // "export" | "import" | null
+  const [file, setFile] = useState(null);
+  const [mode, setMode] = useState("merge");
+  const [result, setResult] = useState(null);
+  const [totalTracks, setTotalTracks] = useState(null);
+
+  useEffect(() => {
+    api.get("/admin/tracks/searchable")
+      .then(r => setTotalTracks(r.data?.total || 0))
+      .catch(() => setTotalTracks(null));
+  }, [result]);
+
+  const doExport = () => {
+    setBusy("export");
+    try {
+      const backend = process.env.REACT_APP_BACKEND_URL;
+      const a = document.createElement("a");
+      a.href = `${backend}/api/admin/db/export`;
+      a.rel = "noopener";
+      a.download = "rai_tracks_export.json";
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => document.body.removeChild(a), 500);
+      toast.success("Export avviato — controlla i download del browser");
+    } catch (e) {
+      toast.error("Errore export");
+    } finally {
+      setTimeout(() => setBusy(null), 1000);
+    }
+  };
+
+  const doImport = async () => {
+    if (!file) { toast.error("Seleziona il file JSON esportato"); return; }
+    setBusy("import");
+    setResult(null);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("mode", mode);
+      const backend = process.env.REACT_APP_BACKEND_URL;
+      const resp = await fetch(`${backend}/api/admin/db/import`, { method: "POST", body: fd });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+        throw new Error(err.detail || `HTTP ${resp.status}`);
+      }
+      const data = await resp.json();
+      setResult(data);
+      const s = data.stats || {};
+      toast.success(`Import OK — inseriti: ${s.inserted || 0}, aggiornati: ${s.updated || 0}, totale in DB: ${s.total_in_db_after || 0}`);
+    } catch (e) {
+      toast.error(`Import fallito: ${e.message}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <section data-testid="db-sync-panel" className="lg:col-span-4 card-surface p-6">
+      <div className="mb-4">
+        <div className="label-mono flex items-center gap-2">
+          <RefreshCw className="w-4 h-4 text-cyan-400" /> Sync DB Tracce · Preview ↔ Produzione
+        </div>
+        <h2 className="font-display font-black text-2xl mt-1">Esporta / Importa libreria</h2>
+        <p className="text-zinc-400 text-sm mt-1">
+          Preview e produzione hanno database separati. Da qui esporti le
+          {totalTracks !== null && <> <strong>{totalTracks}+</strong></>} tracce
+          in un unico JSON, poi lo carichi sull'ambiente di produzione via il pulsante
+          "Importa". Le altre collezioni (domande ascoltatori, DJ, pubblicità, impostazioni)
+          <strong> non vengono toccate</strong>.
+        </p>
+      </div>
+
+      <div className="grid md:grid-cols-2 gap-6">
+        {/* EXPORT */}
+        <div className="p-4 rounded bg-white/[0.03] border border-white/5">
+          <div className="text-cyan-300 label-mono mb-2">1 · Esporta da questo ambiente</div>
+          <p className="text-xs text-zinc-400 mb-3">
+            Scarica un file JSON con tutte le tracce (ready + retired) del database corrente.
+          </p>
+          <button
+            data-testid="db-export-btn"
+            onClick={doExport}
+            disabled={busy !== null}
+            className="btn-primary flex items-center gap-2"
+          >
+            <Download className="w-4 h-4" />
+            {busy === "export" ? "Preparazione…" : "Esporta JSON tracce"}
+          </button>
+        </div>
+
+        {/* IMPORT */}
+        <div className="p-4 rounded bg-white/[0.03] border border-white/5">
+          <div className="text-pink-300 label-mono mb-2">2 · Importa in questo ambiente</div>
+          <p className="text-xs text-zinc-400 mb-3">
+            Sull'altro ambiente (es. r-ai.it): carica qui il JSON esportato per popolare
+            il database. La modalità <em>merge</em> aggiorna/inserisce senza cancellare nulla.
+          </p>
+          <div className="flex flex-col gap-2">
+            <input
+              data-testid="db-import-file"
+              type="file"
+              accept="application/json,.json"
+              onChange={(e) => setFile(e.target.files?.[0] || null)}
+              className="bg-zinc-900 border border-white/10 rounded px-3 py-2 text-white text-sm file:mr-3 file:py-1 file:px-3 file:rounded file:border-0 file:bg-cyan-500/20 file:text-cyan-300 file:cursor-pointer"
+            />
+            <div className="flex items-center gap-3 text-xs">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="radio" name="db-import-mode" value="merge"
+                  checked={mode === "merge"} onChange={() => setMode("merge")}
+                  data-testid="db-import-mode-merge"
+                />
+                <span>Merge (raccomandato)</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer opacity-70">
+                <input
+                  type="radio" name="db-import-mode" value="replace-all"
+                  checked={mode === "replace-all"} onChange={() => setMode("replace-all")}
+                  data-testid="db-import-mode-replace"
+                />
+                <span className="text-red-300">Replace-all (⚠ cancella tutto prima)</span>
+              </label>
+            </div>
+            <button
+              data-testid="db-import-btn"
+              onClick={doImport}
+              disabled={busy !== null || !file}
+              className="btn-primary flex items-center gap-2 mt-1"
+            >
+              <Upload className="w-4 h-4" />
+              {busy === "import" ? "Importazione…" : "Importa JSON"}
+            </button>
+          </div>
+          {result && (
+            <div data-testid="db-import-result" className="mt-3 text-xs font-mono text-emerald-300 bg-black/30 p-2 rounded">
+              ✓ mode={result.mode} · da={result.source_db} · file={result.stats.total_in_file}
+              {" "}· inseriti={result.stats.inserted} · aggiornati={result.stats.updated}
+              {" "}· totale DB={result.stats.total_in_db_after}
+            </div>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
