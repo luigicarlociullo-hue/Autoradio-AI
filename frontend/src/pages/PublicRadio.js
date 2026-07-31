@@ -5,7 +5,6 @@ import { endpoints } from "@/lib/api";
 import radioEngine from "@/lib/radioEngine";
 import { toast } from "sonner";
 import PulsingBrand from "@/components/PulsingBrand";
-import BottomWaveform from "@/components/BottomWaveform";
 import RadioErrorBoundary from "@/components/RadioErrorBoundary";
 import BrandName from "@/components/BrandName";
 
@@ -681,8 +680,6 @@ export default function PublicRadio() {
           </div>
         </div>
       )}
-      {/* Discreet audio signal at the very bottom of the page */}
-      <BottomWaveform isPlaying={isPlaying} />
     </div>
   );
 }
