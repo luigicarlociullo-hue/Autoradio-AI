@@ -1,204 +1,65 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef } from "react";
 import radioEngine from "@/lib/radioEngine";
 
 /**
- * PulsingBrand v5 — clean and centered, inspired by the user's reference:
- * pure black background, tall vertical spectrum bars symmetric around a
- * center line, a slim "R-A.I." wordmark drawn like a laser over the bars,
- * and a mirrored floor reflection.
- *
- * Dynamics:
- *   • Bars react to the live audio spectrum.
- *   • Wordmark scale/glow follows the master energy.
- *   • Every glyph pushes outward from the center on bass beats.
- *   • Hue cycles slowly through neon colors (blue → cyan → violet →
- *     magenta → back), so the whole scene shifts palette over time. The
- *     hue also nudges based on the current segment kind.
+ * PulsingBrand v6 — uses the user's own reference PNG as the actual visual.
+ * The image is placed as the visualizer background, and a music-reactive
+ * filter (brightness / saturation / scale / blur) is applied on top so the
+ * static picture appears alive with the audio.  Nothing else is drawn.
  */
-const CHARS = ["R", "-", "A", ".", "I", "."];
-
 export default function PulsingBrand({
   isPlaying = false,
-  currentKind = "",
   trackOverlay = null,
 }) {
-  const canvasRef = useRef(null);
-  const reflCanvasRef = useRef(null);
-  const charRefs = useRef([]);
-  const reflCharRefs = useRef([]);
+  const imgRef = useRef(null);
+  const glowRef = useRef(null);
   const rafRef = useRef(null);
   const beatState = useRef({ prevBass: 0 });
-  const [drawn, setDrawn] = useState(false);
 
   useEffect(() => {
-    const t = setTimeout(() => setDrawn(true), 60);
-    return () => clearTimeout(t);
-  }, []);
-
-  useEffect(() => {
-    const cvs = canvasRef.current;
-    const refl = reflCanvasRef.current;
-    if (!cvs || !refl) return;
-    const ctxs = [cvs.getContext("2d"), refl.getContext("2d")];
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-
-    const resize = () => {
-      [cvs, refl].forEach((c) => {
-        const r = c.getBoundingClientRect();
-        c.width = Math.floor(r.width * dpr);
-        c.height = Math.floor(r.height * dpr);
-      });
-    };
-    resize();
-    const ro = new ResizeObserver(resize);
-    ro.observe(cvs);
-
-    const draw = () => {
+    const tick = () => {
       const analyser = radioEngine.getAnalyser();
       const binCount = analyser ? analyser.frequencyBinCount : 128;
       const freq = new Uint8Array(binCount);
       if (analyser) analyser.getByteFrequencyData(freq);
 
       const now = performance.now() * 0.001;
-      const idleAmp = isPlaying ? 0.26 : 0.10;
+      const idleAmp = isPlaying ? 0.28 : 0.10;
 
-      // Master energies
+      // Bass energy (drives the "beat pulse")
       let bassSum = 0;
       const bEnd = analyser ? Math.min(14, binCount) : 0;
       for (let i = 2; i < bEnd; i++) bassSum += freq[i];
       const bass = analyser ? bassSum / (bEnd - 2) / 255 : 0;
-      const smoothedBass = beatState.current.prevBass * 0.85 + bass * 0.15;
+      const smoothedBass = beatState.current.prevBass * 0.82 + bass * 0.18;
       beatState.current.prevBass = smoothedBass;
 
+      // Master energy (mids) drives brightness / saturation
       let midSum = 0;
       const mEnd = analyser ? Math.min(80, binCount) : 0;
       for (let i = 4; i < mEnd; i++) midSum += freq[i];
       const midAvg = analyser ? midSum / (mEnd - 4) / 255 : 0;
-      const breath = 0.5 + 0.5 * Math.sin(now * 1.8);
+      const breath = 0.5 + 0.5 * Math.sin(now * 1.6);
       const energy = analyser ? Math.max(midAvg, idleAmp * 0.5) : idleAmp * breath;
 
-      // Fixed electric-blue palette — matches the reference image exactly.
-      // No hue cycling: only dynamics come from music reactivity.
-      const HUE = 210; // electric blue
-
-      // --- Vertical spectrum bars ---
-      ctxs.forEach((ctx, ci) => {
-        const canv = ci === 0 ? cvs : refl;
-        const w = canv.width;
-        const h = canv.height;
-        if (!w || !h) return;
-        ctx.clearRect(0, 0, w, h);
-
-        const bandCount = 140;
-        const gap = 2 * dpr;
-        const barW = Math.max(1.2 * dpr, (w / bandCount) - gap);
-        const centerY = h * 0.5;
-
-        for (let i = 0; i < bandCount; i++) {
-          const half = bandCount / 2;
-          const distFromCenter = Math.abs(i - half + 0.5) / half; // 0..1
-          const binIdx = Math.floor(4 + distFromCenter * Math.min(180, binCount - 4));
-          const live = analyser ? freq[binIdx] / 255 : 0;
-          const idle =
-            idleAmp * (0.45 + 0.55 * Math.sin(now * 2.2 + i * 0.34));
-          const v = analyser ? Math.min(1, live * 1.2 + idle * 0.20) : idle;
-
-          // Shape: bars near the center are much taller so the wave forms a
-          // strong "signal peak" that sits behind the wordmark. Even edge
-          // bars stay visible thanks to the +0.30 floor.
-          const shape = Math.pow(1 - distFromCenter, 0.7);
-          const barH = Math.max(4 * dpr, v * h * 1.55 * (0.30 + 0.70 * shape));
-          const x = i * (barW + gap);
-          const y = centerY - barH / 2;
-
-          // Solid electric-blue gradient — no rainbow.
-          const grad = ctx.createLinearGradient(x, y, x, y + barH);
-          grad.addColorStop(0, `hsla(${HUE}, 100%, 78%, ${0.20 + v * 0.30})`);
-          grad.addColorStop(0.5, `hsla(${HUE}, 100%, 62%, 0.95)`);
-          grad.addColorStop(1, `hsla(${HUE}, 100%, 78%, ${0.20 + v * 0.30})`);
-          ctx.fillStyle = grad;
-          ctx.fillRect(x, y, barW, barH);
-        }
-      });
-
-      // --- Wordmark reactivity ---
-      const restCenter = (CHARS.length - 1) / 2;
-      const spreadBoost = Math.min(1, smoothedBass * 1.6 + energy * 0.35);
-      const glowMain = 4 + energy * 20;
-      const glowFar = 12 + energy * 40;
-      const scale = 1 + energy * 0.05;
-
-      for (let i = 0; i < CHARS.length; i++) {
-        const el = charRefs.current[i];
-        if (!el) continue;
-        const rel = i - restCenter;
-        const push = rel * spreadBoost * 8;
-        const dip = -energy * 3;
-        el.style.transform =
-          `translate(${push.toFixed(2)}px, ${dip.toFixed(2)}px) scale(${scale.toFixed(3)})`;
-        el.style.color = "#eaf6ff";
-        el.style.textShadow =
-          `0 0 ${glowMain}px hsla(${HUE}, 100%, 78%, ${(0.75 + energy * 0.25).toFixed(2)}),` +
-          `0 0 ${glowFar}px hsla(${HUE}, 100%, 60%, ${(0.55 + energy * 0.35).toFixed(2)}),` +
-          `0 0 ${(glowFar * 2).toFixed(0)}px hsla(${HUE}, 100%, 50%, ${(0.30 + energy * 0.30).toFixed(2)})`;
-
-        const rEl = reflCharRefs.current[i];
-        if (rEl) {
-          rEl.style.transform = el.style.transform;
-          rEl.style.color = el.style.color;
-          rEl.style.textShadow = el.style.textShadow;
-        }
+      const img = imgRef.current;
+      if (img) {
+        const scale = 1 + smoothedBass * 0.045 + energy * 0.015;
+        const brightness = 0.85 + energy * 0.55;
+        const saturate = 1 + energy * 0.7;
+        const contrast = 1 + energy * 0.15;
+        img.style.transform = `translate(-50%, -50%) scale(${scale.toFixed(3)})`;
+        img.style.filter = `brightness(${brightness.toFixed(2)}) saturate(${saturate.toFixed(2)}) contrast(${contrast.toFixed(2)})`;
       }
-
-      rafRef.current = requestAnimationFrame(draw);
+      const glow = glowRef.current;
+      if (glow) {
+        glow.style.opacity = (0.15 + energy * 0.55).toFixed(2);
+      }
+      rafRef.current = requestAnimationFrame(tick);
     };
-    rafRef.current = requestAnimationFrame(draw);
-
-    return () => {
-      cancelAnimationFrame(rafRef.current);
-      ro.disconnect();
-    };
-  }, [isPlaying, currentKind]);
-
-  const wordmarkStyle = {
-    fontFamily: '"Orbitron", "Chakra Petch", ui-monospace, monospace',
-    fontWeight: 500,
-    fontSize: "clamp(1.6rem, 4.6vw, 3.6rem)",
-    letterSpacing: "0.05em",
-    lineHeight: 1,
-    color: "#eaf6ff",
-    fontVariantLigatures: "none",
-  };
-
-  const renderWordmark = (isReflection = false) => (
-    <div
-      className="notranslate flex items-center justify-center"
-      style={{ gap: "0.24em", ...wordmarkStyle }}
-      aria-label="R-A.I."
-      translate="no"
-    >
-      {CHARS.map((c, i) => (
-        <span
-          key={i}
-          ref={(el) => {
-            if (isReflection) reflCharRefs.current[i] = el;
-            else charRefs.current[i] = el;
-          }}
-          className={`rai-glyph ${drawn ? "rai-glyph-drawn" : ""}`}
-          style={{
-            display: "inline-block",
-            transitionProperty: "transform, filter, color, text-shadow",
-            transitionDuration: "0.18s",
-            transitionTimingFunction: "cubic-bezier(0.2, 0.9, 0.25, 1)",
-            willChange: "transform, filter, color, text-shadow",
-            animationDelay: `${i * 90}ms`,
-          }}
-        >
-          {c}
-        </span>
-      ))}
-    </div>
-  );
+    rafRef.current = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafRef.current);
+  }, [isPlaying]);
 
   return (
     <div
@@ -210,7 +71,43 @@ export default function PulsingBrand({
         border: "1px solid rgba(80,160,255,0.15)",
       }}
     >
-      {/* Corner label */}
+      {/* The user's reference image, centered and gently scaling with the beat */}
+      <img
+        ref={imgRef}
+        src="/rai-visual-bg.png"
+        alt="R-A.I."
+        data-testid="pulsing-brand-image"
+        style={{
+          position: "absolute",
+          top: "50%",
+          left: "50%",
+          width: "100%",
+          height: "100%",
+          objectFit: "cover",
+          transform: "translate(-50%, -50%)",
+          transformOrigin: "center",
+          transition: "filter 90ms linear",
+          willChange: "transform, filter",
+        }}
+      />
+
+      {/* Blue glow overlay that pulses with music energy */}
+      <div
+        ref={glowRef}
+        aria-hidden
+        style={{
+          position: "absolute",
+          inset: 0,
+          pointerEvents: "none",
+          background:
+            "radial-gradient(ellipse at center, rgba(80,180,255,0.55) 0%, rgba(80,180,255,0.15) 40%, rgba(0,0,0,0) 70%)",
+          mixBlendMode: "screen",
+          opacity: 0.15,
+          transition: "opacity 80ms linear",
+        }}
+      />
+
+      {/* Corner LIVE indicator only */}
       <div className="absolute top-3 left-4 flex items-center gap-2 pointer-events-none z-30">
         <span className="font-mono text-[10px] tracking-widest text-cyan-300 uppercase">
           Live Signal
@@ -223,75 +120,7 @@ export default function PulsingBrand({
         )}
       </div>
 
-      {/* Upper stage — bars + wordmark, centered */}
-      <div
-        className="absolute left-0 right-0 top-0 pointer-events-none"
-        style={{ height: "62%", zIndex: 5 }}
-      >
-        <canvas
-          ref={canvasRef}
-          className="absolute inset-0 w-full h-full"
-          data-testid="pulsing-brand-canvas"
-        />
-        <div className="absolute inset-0 flex items-center justify-center">
-          <div data-testid="pulsing-brand-text">
-            {renderWordmark(false)}
-          </div>
-        </div>
-        {/* One-shot laser sweep on mount */}
-        <div className="absolute inset-0 pointer-events-none overflow-hidden">
-          <div className="rai-laser-sweep" aria-hidden />
-        </div>
-      </div>
-
-      {/* Reflection */}
-      <div
-        className="absolute left-0 right-0 bottom-0 pointer-events-none overflow-hidden"
-        style={{
-          height: "38%",
-          transform: "scaleY(-1)",
-          opacity: 0.45,
-          maskImage:
-            "linear-gradient(to bottom, rgba(0,0,0,0.9) 0%, rgba(0,0,0,0) 90%)",
-          WebkitMaskImage:
-            "linear-gradient(to bottom, rgba(0,0,0,0.9) 0%, rgba(0,0,0,0) 90%)",
-          filter: "blur(1px)",
-        }}
-      >
-        <canvas
-          ref={reflCanvasRef}
-          className="absolute inset-0 w-full"
-          style={{ height: "160%" }}
-        />
-        <div className="absolute inset-0 flex items-start justify-center pt-[4%]">
-          {renderWordmark(true)}
-        </div>
-      </div>
-
-      {/* Horizon line */}
-      <div
-        aria-hidden
-        className="absolute left-0 right-0 pointer-events-none"
-        style={{
-          bottom: "38%",
-          height: 1,
-          background:
-            "linear-gradient(90deg, rgba(0,0,0,0) 0%, rgba(180,220,255,0.55) 50%, rgba(0,0,0,0) 100%)",
-          boxShadow: "0 0 12px rgba(180,220,255,0.35)",
-        }}
-      />
-
-      {/* Vignette */}
-      <div
-        aria-hidden
-        className="absolute inset-0 pointer-events-none"
-        style={{
-          background:
-            "radial-gradient(ellipse at center, transparent 45%, rgba(0,0,0,0.55) 100%)",
-        }}
-      />
-
-      {/* Track overlay */}
+      {/* Track overlay (unchanged from previous versions) */}
       {trackOverlay && (
         <div
           className="track-overlay"
@@ -320,51 +149,12 @@ export default function PulsingBrand({
       )}
 
       <style>{`
-        .rai-glyph {
-          opacity: 0;
-          transform: translateY(6px) scale(0.85);
-        }
-        .rai-glyph-drawn {
-          animation: raiGlyphIn 900ms cubic-bezier(0.2,0.9,0.25,1) forwards;
-        }
-        @keyframes raiGlyphIn {
-          0%   { opacity: 0;   transform: translateY(6px) scale(0.85); }
-          45%  { opacity: 1;   transform: translateY(-2px) scale(1.03); }
-          100% { opacity: 1;   transform: translateY(0) scale(1); }
-        }
-        .rai-laser-sweep {
-          position: absolute;
-          top: 0;
-          bottom: 0;
-          width: 3px;
-          left: -5%;
-          background: linear-gradient(180deg,
-                       rgba(180,230,255,0) 0%,
-                       rgba(180,230,255,0.95) 45%,
-                       rgba(255,255,255,1) 50%,
-                       rgba(180,230,255,0.95) 55%,
-                       rgba(180,230,255,0) 100%);
-          filter: blur(1.5px);
-          box-shadow: 0 0 20px #7cd6ff, 0 0 40px #7cd6ff;
-          animation: raiLaserSweep 1400ms cubic-bezier(0.22,1,0.36,1) 1 both;
-        }
-        @keyframes raiLaserSweep {
-          0%   { left: -5%;  opacity: 0.0; }
-          10%  { opacity: 0.9; }
-          80%  { opacity: 0.9; }
-          100% { left: 105%; opacity: 0.0; }
-        }
-        @keyframes neonPulseCycle {
-          0%   { text-shadow: 0 0 8px #4bb4ff, 0 0 20px #4bb4ff; color: #cfe8ff; }
-          33%  { text-shadow: 0 0 8px #b56cff, 0 0 20px #b56cff; color: #eadcff; }
-          66%  { text-shadow: 0 0 8px #ff4fa8, 0 0 20px #ff4fa8; color: #ffd8ea; }
-          100% { text-shadow: 0 0 8px #4bb4ff, 0 0 20px #4bb4ff; color: #cfe8ff; }
-        }
         .track-title {
           font-family: 'Orbitron', 'Chakra Petch', sans-serif;
           font-size: clamp(0.85em, 1.4vw, 1.1em);
           font-weight: 600;
-          animation: neonPulseCycle 8s linear infinite;
+          color: #eaf6ff;
+          text-shadow: 0 0 8px #4bb4ff, 0 0 20px #4bb4ff;
           letter-spacing: 3px;
           text-transform: uppercase;
         }
