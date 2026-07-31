@@ -427,8 +427,47 @@ export default function PublicRadio() {
           <PulsingBrand
             isPlaying={isPlaying}
             currentKind={current?.kind || ""}
-            trackOverlay={trackOverlay}
+            trackOverlay={null}
           />
+          {/* Track title/artist rendered BELOW the visual box so it never
+              clashes with the mirrored reflection at the bottom of the image. */}
+          {trackOverlay?.visible && (
+            <div
+              data-testid="track-overlay"
+              className="text-center mt-4 transition-opacity duration-700"
+              style={{ opacity: trackOverlay.visible ? 1 : 0 }}
+            >
+              <div
+                data-testid="track-overlay-title"
+                style={{
+                  fontFamily: "'Orbitron','Chakra Petch',sans-serif",
+                  fontWeight: 700,
+                  color: "#eaf6ff",
+                  textShadow: "0 0 10px #4bb4ff, 0 0 24px #4bb4ff",
+                  letterSpacing: "3px",
+                  textTransform: "uppercase",
+                  fontSize: "clamp(1rem, 1.6vw, 1.35rem)",
+                }}
+              >
+                {trackOverlay.title}
+              </div>
+              {trackOverlay.artist && (
+                <div
+                  data-testid="track-overlay-artist"
+                  style={{
+                    fontFamily: "'Chakra Petch',sans-serif",
+                    color: "#a8dcff",
+                    textShadow: "0 0 8px #4bb4ff",
+                    letterSpacing: "2px",
+                    fontSize: "clamp(0.75rem, 1vw, 0.9rem)",
+                    marginTop: 6,
+                  }}
+                >
+                  {trackOverlay.artist}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Now playing panel */}
