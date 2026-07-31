@@ -179,14 +179,8 @@ export default function Dashboard() {
         {/* DB Sync — export/import tracks between preview and production */}
         <DbSyncPanel />
 
-        {/* Upload MP3 admin — nuovi brani o sostituzione di esistenti */}
-        <UploadMp3Panel />
-
-        {/* Download ZIP categorico — pacchetti piccoli per non far crashare il server */}
-        <CategorizedExportPanel />
-
-        {/* Library downloader — lista brani + tasto Scarica ZIP + MP3 singolo */}
-        <LibraryDownloader />
+        {/* Unified track manager — clean table with search, upload, replace */}
+        <TrackManagerPanel />
 
         {/* Manual Mode & Line-In Mixer */}
         <ManualModePanel />
@@ -1489,6 +1483,328 @@ function DbSyncPanel() {
         </div>
       </div>
     </section>
+  );
+}
+
+
+
+// ==================== TrackManagerPanel (single, clean archive) ====================
+// Master Plan del 2026-02:
+//   • Tabella unica con Nome, Tipo (Song/Jingle/Inno), Download, Sostituisci.
+//   • Pulsante AGGIUNGI NUOVO: apre modal file + nome + tipo (Song/Jingle).
+//   • Pulsante SOSTITUISCI su ogni riga: apre modal file + nuovo nome (obbligatorio).
+//     Sostituzione atomica lato server: vecchio file cancellato, nuovo nome
+//     propagato ai segmenti in coda → il Player mostra subito il nuovo nome.
+function TrackManagerPanel() {
+  const [tracks, setTracks] = useState([]);
+  const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState("all"); // all|song|jingle|anthem
+  const [loading, setLoading] = useState(true);
+  const [modal, setModal] = useState(null); // { kind: 'new'|'replace', target?: track }
+
+  const load = React.useCallback(() => {
+    setLoading(true);
+    api.get("/admin/tracks/searchable")
+      .then(r => setTracks(r.data?.tracks || []))
+      .catch(() => setTracks([]))
+      .finally(() => setLoading(false));
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const filtered = React.useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return tracks.filter(t => {
+      if (filter !== "all" && t.kind !== filter) return false;
+      if (!q) return true;
+      return (t.title || "").toLowerCase().includes(q) ||
+             (t.artist || "").toLowerCase().includes(q);
+    });
+  }, [tracks, search, filter]);
+
+  const backend = process.env.REACT_APP_BACKEND_URL;
+  const downloadUrl = (id) => `${backend}/api/suno_audio/track_${id}.mp3`;
+
+  const typeBadge = (kind) => {
+    const styles = {
+      song:   { bg: "bg-pink-500/15", txt: "text-pink-300",  label: "Song" },
+      jingle: { bg: "bg-cyan-500/15", txt: "text-cyan-300",  label: "Jingle" },
+      anthem: { bg: "bg-yellow-500/15", txt: "text-yellow-300", label: "Inno" },
+    };
+    const s = styles[kind] || { bg: "bg-white/10", txt: "text-white", label: kind };
+    return (
+      <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold uppercase ${s.bg} ${s.txt}`}>
+        {s.label}
+      </span>
+    );
+  };
+
+  return (
+    <section data-testid="track-manager-panel" className="lg:col-span-4 card-surface p-6">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+        <div>
+          <div className="label-mono flex items-center gap-2">
+            <Music2 className="w-4 h-4 text-pink-400" /> Archivio Brani · Gestione unificata
+          </div>
+          <h2 className="font-display font-black text-2xl mt-1">
+            {loading ? "Carico…" : `${tracks.length} brani in libreria`}
+          </h2>
+        </div>
+        <button
+          data-testid="add-new-track-btn"
+          onClick={() => setModal({ kind: "new" })}
+          className="btn-primary flex items-center gap-2"
+        >
+          <Upload className="w-4 h-4" /> AGGIUNGI NUOVO
+        </button>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-3 mb-3">
+        <input
+          data-testid="track-search"
+          type="text"
+          placeholder="Cerca per nome o artista…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="flex-1 min-w-[220px] bg-zinc-900 border border-white/10 rounded px-3 py-2 text-sm text-white"
+        />
+        <div className="flex gap-1">
+          {[
+            { k: "all",    label: "Tutti" },
+            { k: "song",   label: "Song" },
+            { k: "jingle", label: "Jingle" },
+            { k: "anthem", label: "Inno" },
+          ].map(f => (
+            <button
+              key={f.k}
+              data-testid={`filter-${f.k}`}
+              onClick={() => setFilter(f.k)}
+              className={`px-3 py-1.5 rounded text-xs font-mono uppercase border transition ${
+                filter === f.k
+                  ? "border-pink-500 text-pink-300 bg-pink-500/10"
+                  : "border-white/10 text-zinc-400 hover:border-white/30"
+              }`}
+            >
+              {f.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="text-xs text-zinc-500 mb-2 font-mono">
+        Mostrati: {filtered.length} / {tracks.length}
+      </div>
+
+      <div className="max-h-[560px] overflow-y-auto rounded border border-white/5">
+        <table className="w-full text-sm">
+          <thead className="sticky top-0 bg-zinc-900/95 backdrop-blur">
+            <tr className="text-left text-[10px] uppercase tracking-widest text-zinc-500">
+              <th className="px-3 py-2 font-mono">Nome</th>
+              <th className="px-3 py-2 font-mono w-20">Tipo</th>
+              <th className="px-3 py-2 font-mono w-24 text-center">Download</th>
+              <th className="px-3 py-2 font-mono w-28 text-center">Sostituisci</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.length === 0 && (
+              <tr><td colSpan={4} className="px-3 py-6 text-center text-zinc-500 text-sm">
+                Nessun brano corrisponde ai filtri.
+              </td></tr>
+            )}
+            {filtered.map(t => (
+              <tr
+                key={t.id}
+                data-testid={`track-row-${t.id.slice(0,8)}`}
+                className="border-t border-white/[0.04] hover:bg-white/[0.03]"
+              >
+                <td className="px-3 py-2">
+                  <div className="text-white font-medium truncate max-w-[420px]" title={t.title}>{t.title}</div>
+                  <div className="text-[10px] text-zinc-500 font-mono">{t.artist} · {t.id.slice(0,8)}</div>
+                </td>
+                <td className="px-3 py-2">{typeBadge(t.kind)}</td>
+                <td className="px-3 py-2 text-center">
+                  <a
+                    data-testid={`dl-${t.id.slice(0,8)}`}
+                    href={downloadUrl(t.id)}
+                    download={`${(t.title||'track').replace(/[^a-z0-9\-_ ]/gi,'_').slice(0,40)}.mp3`}
+                    className="inline-flex items-center gap-1 px-3 py-1 rounded bg-cyan-500/10 border border-cyan-500/30 text-cyan-300 text-xs hover:bg-cyan-500/20 transition"
+                  >
+                    <Download className="w-3 h-3" /> MP3
+                  </a>
+                </td>
+                <td className="px-3 py-2 text-center">
+                  <button
+                    data-testid={`replace-${t.id.slice(0,8)}`}
+                    onClick={() => setModal({ kind: "replace", target: t })}
+                    className="inline-flex items-center gap-1 px-3 py-1 rounded bg-pink-500/10 border border-pink-500/30 text-pink-300 text-xs hover:bg-pink-500/20 transition"
+                  >
+                    <Replace className="w-3 h-3" /> Sostituisci
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {modal && (
+        <TrackModal
+          mode={modal.kind}
+          target={modal.target}
+          onClose={() => setModal(null)}
+          onDone={() => { setModal(null); load(); }}
+        />
+      )}
+    </section>
+  );
+}
+
+
+// TrackModal — used both for new upload and for replacement.
+function TrackModal({ mode, target, onClose, onDone }) {
+  const [file, setFile] = useState(null);
+  const [title, setTitle] = useState("");
+  const [kind, setKind] = useState(target?.kind === "jingle" ? "jingle" : "song");
+  const [busy, setBusy] = useState(false);
+
+  const isReplace = mode === "replace";
+
+  const submit = async () => {
+    if (!file)  { toast.error("Seleziona un file .mp3"); return; }
+    if (!title.trim()) { toast.error("Il nome è obbligatorio"); return; }
+    setBusy(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("mode", isReplace ? "replace" : "new");
+      fd.append("title", title.trim());
+      fd.append("artist", "R-A.I.");
+      // Replace preserves original kind; new upload uses user-selected kind.
+      fd.append("kind", isReplace ? (target?.kind || "song") : kind);
+      if (isReplace) fd.append("target_id", target.id);
+      const backend = process.env.REACT_APP_BACKEND_URL;
+      const resp = await fetch(`${backend}/api/admin/tracks/upload`, { method: "POST", body: fd });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+        throw new Error(err.detail || `HTTP ${resp.status}`);
+      }
+      const data = await resp.json();
+      toast.success(isReplace
+        ? `Sostituito: ${data.title}`
+        : `Aggiunto: ${data.title}`);
+      onDone();
+    } catch (e) {
+      toast.error(`Operazione fallita: ${e.message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div
+      data-testid="track-modal"
+      className="fixed inset-0 z-[80] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
+      onClick={onClose}
+    >
+      <div
+        className="max-w-lg w-full bg-zinc-950 border border-white/10 rounded-xl p-6 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="mb-4">
+          <div className="label-mono flex items-center gap-2 text-pink-400">
+            {isReplace ? <Replace className="w-4 h-4"/> : <Upload className="w-4 h-4"/>}
+            {isReplace ? "Sostituisci brano" : "Aggiungi nuovo brano"}
+          </div>
+          <h3 className="font-display font-black text-xl mt-1 text-white">
+            {isReplace ? target?.title : "Nuovo file MP3"}
+          </h3>
+          {isReplace && (
+            <p className="text-xs text-zinc-500 mt-1">
+              Il vecchio file verrà cancellato fisicamente. Il nuovo nome verrà
+              mostrato immediatamente nel Player durante la riproduzione.
+            </p>
+          )}
+        </div>
+
+        <div className="flex flex-col gap-3">
+          <div>
+            <label className="label-mono mb-1 block">File MP3</label>
+            <input
+              data-testid="modal-file"
+              type="file"
+              accept="audio/mpeg,.mp3"
+              onChange={(e) => setFile(e.target.files?.[0] || null)}
+              className="w-full bg-zinc-900 border border-white/10 rounded px-3 py-2 text-white text-sm file:mr-3 file:py-1 file:px-3 file:rounded file:border-0 file:bg-pink-500/20 file:text-pink-300 file:cursor-pointer"
+            />
+            {file && (
+              <span className="text-xs text-emerald-400 font-mono mt-1 block">
+                {file.name} · {(file.size/1024/1024).toFixed(2)} MB
+              </span>
+            )}
+          </div>
+
+          <div>
+            <label className="label-mono mb-1 block">
+              {isReplace ? "Nuovo nome (obbligatorio)" : "Nome brano"}
+            </label>
+            <input
+              data-testid="modal-title"
+              type="text"
+              autoFocus
+              placeholder={isReplace ? "es. Inno_Sfumato" : "es. Notte Elettrica"}
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              className="w-full bg-zinc-900 border border-white/10 rounded px-3 py-2 text-white"
+            />
+          </div>
+
+          {!isReplace && (
+            <div>
+              <label className="label-mono mb-1 block">Tipo</label>
+              <div className="flex gap-2">
+                <button
+                  data-testid="modal-kind-song"
+                  onClick={() => setKind("song")}
+                  className={`flex-1 py-2 rounded border font-mono text-xs uppercase transition ${
+                    kind === "song"
+                      ? "border-pink-500 text-pink-300 bg-pink-500/10"
+                      : "border-white/10 text-zinc-400"
+                  }`}
+                >
+                  🎵 Song
+                </button>
+                <button
+                  data-testid="modal-kind-jingle"
+                  onClick={() => setKind("jingle")}
+                  className={`flex-1 py-2 rounded border font-mono text-xs uppercase transition ${
+                    kind === "jingle"
+                      ? "border-cyan-400 text-cyan-300 bg-cyan-500/10"
+                      : "border-white/10 text-zinc-400"
+                  }`}
+                >
+                  📣 Jingle
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            data-testid="modal-cancel"
+            onClick={onClose}
+            className="btn-outline px-4 py-2"
+          >Annulla</button>
+          <button
+            data-testid="modal-submit"
+            onClick={submit}
+            disabled={busy || !file || !title.trim()}
+            className="btn-primary px-4 py-2 flex items-center gap-2"
+          >
+            {busy ? "Attendi…" : (isReplace ? "Sostituisci" : "Aggiungi")}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 

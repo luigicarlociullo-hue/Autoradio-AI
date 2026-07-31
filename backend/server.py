@@ -1007,9 +1007,27 @@ async def admin_tracks_upload(
 
     local_name = f"track_{track_id}.mp3"
     local_path = SUNO_AUDIO_DIR / local_name
+
+    # Atomic replace: if this is a replacement and the OLD file lived at a
+    # different location than /api/suno_audio/track_<id>.mp3 (e.g. legacy
+    # naming), delete that old file so we don't leave orphans on disk.
+    if mode == "replace" and target:
+        old_url = target.get("audio_url") or ""
+        if old_url.startswith("/api/suno_audio/") and not old_url.endswith(local_name):
+            legacy_name = old_url.replace("/api/suno_audio/", "").split("?")[0]
+            legacy_path = SUNO_AUDIO_DIR / legacy_name
+            if legacy_path.exists():
+                try:
+                    legacy_path.unlink()
+                    logger.info(f"Replace: deleted legacy local file {legacy_path}")
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"Replace: failed to delete legacy file {legacy_path}: {e}")
+
+    # Write the new mp3 (this atomically overwrites any existing track_<id>.mp3).
     local_path.write_bytes(data)
 
-    # Push all'object storage (best-effort, no-op se flag disattivato)
+    # Push all'object storage (best-effort, no-op se flag disattivato).
+    # Same path → same object key → the new file transparently replaces the old.
     try:
         await object_storage.put_mp3(f"suno/{local_name}", data)
     except Exception as e:  # noqa: BLE001
@@ -1033,6 +1051,16 @@ async def admin_tracks_upload(
                 "tags": merged_tags,
                 "updated_at": now,
             }},
+        )
+        # Update the title on any segment currently in the playback queue that
+        # references this track, so the new name shows up in the player at the
+        # very next poll instead of only on the next generation cycle.
+        seg_res = await db.segments.update_many(
+            {"music_audio_url": audio_url, "kind": {"$in": ["music"]}},
+            {"$set": {"title": f"♪ {title} — {artist}"}},
+        )
+        logger.info(
+            f"Replace: track {track_id} title→'{title}', segments updated: {seg_res.modified_count}"
         )
     else:
         # Build a Track-model-compatible document so downstream code
