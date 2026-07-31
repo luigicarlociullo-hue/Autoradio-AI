@@ -1,19 +1,23 @@
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import radioEngine from "@/lib/radioEngine";
 
 /**
- * PulsingBrand — v2, holographic tech look.
+ * PulsingBrand v3 — laser-drawn wordmark over equalizer bars.
  *
- * Inspired by user's reference image:
- *   • Pure black background
- *   • Vertical electric-blue spectrum bars behind the wordmark, symmetric
- *     around the center like a proper audio visualizer
- *   • Slim "R-A.I." wordmark in Orbitron, small (~3-6% of viewport), with
- *     a crisp cyan/white core and a soft outer glow that breathes with the
- *     master audio energy
- *   • Mirror reflection on the floor — bars + text — faded via mask
- *   • Fine grid / scan-line overlay for the extra tech vibe
+ * • Background: pure black + faint tech grid + vertical spectrum bars
+ *   driven by the live audio analyser (symmetric, blue palette).
+ * • Wordmark "R-A.I." rendered as SVG stroked text so we can draw it
+ *   with a "laser" effect on mount (stroke-dashoffset animation from full
+ *   length to zero), then fade in the fill.
+ * • Once drawn, the six glyphs (R, -, A, ., I, .) push outwards from the
+ *   center on every bass beat, then return to rest → the letters "breathe"
+ *   with the music, and spread apart on kicks.
+ * • The waveform equalizer is drawn on a canvas behind the SVG, so the
+ *   wordmark stays crisp while the equalizer lives underneath it.
+ * • Floor reflection uses the same canvas mirrored + a mirrored SVG.
  */
+const CHARS = ["R", "-", "A", ".", "I", "."];
+
 export default function PulsingBrand({
   isPlaying = false,
   currentKind = "",
@@ -21,9 +25,17 @@ export default function PulsingBrand({
 }) {
   const barsRef = useRef(null);
   const reflBarsRef = useRef(null);
-  const brandRef = useRef(null);
-  const reflBrandRef = useRef(null);
   const rafRef = useRef(null);
+  const charRefs = useRef([]);
+  const reflCharRefs = useRef([]);
+  const beatState = useRef({ prevBass: 0, restPos: [], lastBeatAt: 0 });
+  const [drawn, setDrawn] = useState(false);
+
+  // Trigger laser-draw animation on mount / when it becomes visible.
+  useEffect(() => {
+    const t = setTimeout(() => setDrawn(true), 60);
+    return () => clearTimeout(t);
+  }, []);
 
   useEffect(() => {
     const bars = barsRef.current;
@@ -50,17 +62,26 @@ export default function PulsingBrand({
       if (analyser) analyser.getByteFrequencyData(freq);
 
       const now = performance.now() * 0.001;
-      const idleAmp = isPlaying ? 0.28 : 0.10;
+      const idleAmp = isPlaying ? 0.24 : 0.08;
 
-      // Master energy (average of first 60 bins) drives the wordmark glow.
-      let sum = 0;
-      const takeBins = analyser ? Math.min(80, binCount) : 40;
-      for (let i = 4; i < takeBins; i++) sum += analyser ? freq[i] : 0;
-      const avg = analyser ? sum / (takeBins - 4) / 255 : 0;
+      // Beat detection: bass energy vs slow-moving envelope.
+      let bassSum = 0;
+      const bassEnd = analyser ? Math.min(14, binCount) : 0;
+      for (let i = 2; i < bassEnd; i++) bassSum += freq[i];
+      const bass = analyser ? bassSum / (bassEnd - 2) / 255 : 0;
+      const prevBass = beatState.current.prevBass;
+      const smoothedBass = prevBass * 0.85 + bass * 0.15;
+      beatState.current.prevBass = smoothedBass;
+
+      // Master energy (mids average) drives glow intensity.
+      let midSum = 0;
+      const midTo = analyser ? Math.min(80, binCount) : 0;
+      for (let i = 4; i < midTo; i++) midSum += freq[i];
+      const midAvg = analyser ? midSum / (midTo - 4) / 255 : 0;
       const breath = 0.5 + 0.5 * Math.sin(now * 1.8);
-      const energy = analyser ? Math.max(avg, idleAmp * 0.4) : idleAmp * breath;
+      const energy = analyser ? Math.max(midAvg, idleAmp * 0.5) : idleAmp * breath;
 
-      // --- Bars ---
+      // --- Equalizer bars (background + reflection) ---
       ctxs.forEach((ctx, ci) => {
         const cvs = ci === 0 ? bars : refl;
         const w = cvs.width;
@@ -68,57 +89,62 @@ export default function PulsingBrand({
         if (!w || !h) return;
         ctx.clearRect(0, 0, w, h);
 
-        const bandCount = 96;
+        const bandCount = 108;
         const gap = 2 * dpr;
         const barW = Math.max(1 * dpr, (w / bandCount) - gap);
         const centerY = h * 0.5;
-        // We render bars mirrored around the horizontal center-line so it
-        // looks like a "signal" running through the wordmark's baseline.
-        // Left half uses low freq, right half uses high freq, symmetric.
         for (let i = 0; i < bandCount; i++) {
           const half = bandCount / 2;
-          // Distance from center → maps to a specific frequency bin.
-          const distFromCenter = Math.abs(i - half + 0.5) / half; // 0..1
+          const distFromCenter = Math.abs(i - half + 0.5) / half;
           const binIdx = Math.floor(6 + distFromCenter * Math.min(180, binCount - 6));
           const live = analyser ? freq[binIdx] / 255 : 0;
           const idle = idleAmp * (0.45 + 0.55 * Math.sin(now * 2.2 + i * 0.34));
-          const v = analyser ? Math.min(1, live * 1.15 + idle * 0.25) : idle;
+          const v = analyser ? Math.min(1, live * 1.15 + idle * 0.22) : idle;
 
-          // Bars near the center are taller; taper towards the edges to
-          // make the "peak" behind the wordmark, as in the reference image.
-          const shape = Math.pow(1 - distFromCenter, 1.25);
-          const barH = Math.max(2 * dpr, v * h * 0.85 * (0.35 + 0.65 * shape));
-
+          // Taller near center → creates the peak shape behind the wordmark.
+          const shape = Math.pow(1 - distFromCenter, 1.2);
+          const barH = Math.max(2 * dpr, v * h * 0.9 * (0.30 + 0.70 * shape));
           const x = i * (barW + gap);
           const y = centerY - barH / 2;
 
           const grad = ctx.createLinearGradient(x, y, x, y + barH);
-          grad.addColorStop(0, `rgba(120, 200, 255, ${0.15 + v * 0.25})`);
-          grad.addColorStop(0.5, `rgba(60, 150, 255, ${0.75 + v * 0.25})`);
-          grad.addColorStop(1, `rgba(120, 200, 255, ${0.15 + v * 0.25})`);
+          grad.addColorStop(0, `rgba(140, 210, 255, ${0.15 + v * 0.25})`);
+          grad.addColorStop(0.5, `rgba(70, 155, 255, ${0.75 + v * 0.25})`);
+          grad.addColorStop(1, `rgba(140, 210, 255, ${0.15 + v * 0.25})`);
           ctx.fillStyle = grad;
           ctx.fillRect(x, y, barW, barH);
         }
       });
 
-      // --- Wordmark glow modulation ---
-      const glowMain = 6 + energy * 30;
-      const glowFar = 18 + energy * 55;
-      const y = -energy * 3;
-      const scale = 1 + energy * 0.06;
-      // Hue: keep it electric-blue by default. Slight shift for talk/news kinds.
-      const kindHueMap = { talk: 190, news: 220, answer: 200, weather: 205,
-        horoscope: 260, history: 30, interview: 210, motivation: 150, joke: 40 };
-      const hue = kindHueMap[currentKind] ?? 210;
-      if (brandRef.current) {
-        brandRef.current.style.transform = `translateY(${y.toFixed(2)}px) scale(${scale.toFixed(3)})`;
-        brandRef.current.style.textShadow =
-          `0 0 ${glowMain}px hsla(${hue},100%,70%,${(0.7 + energy * 0.3).toFixed(2)}),
-           0 0 ${glowFar}px hsla(${hue},100%,55%,${(0.5 + energy * 0.35).toFixed(2)}),
-           0 0 ${(glowFar * 2).toFixed(0)}px hsla(${hue},100%,50%,${(0.25 + energy * 0.3).toFixed(2)})`;
-      }
-      if (reflBrandRef.current) {
-        reflBrandRef.current.style.textShadow = brandRef.current?.style.textShadow || "";
+      // --- Wordmark reactivity ---
+      // Each char pushes outward from the center on bass energy.
+      // Rest positions are equally-spaced integers 0..5 → offset from center 2.5.
+      const restCenter = (CHARS.length - 1) / 2; // 2.5
+      const spreadBoost = Math.min(1, smoothedBass * 1.6 + energy * 0.35);
+      const glowMain = 4 + energy * 22;
+      const glowFar = 12 + energy * 40;
+      const scale = 1 + energy * 0.05;
+
+      const kindHueMap = { talk: 195, news: 220, answer: 205, weather: 205,
+        horoscope: 250, history: 30, interview: 210, motivation: 150, joke: 40 };
+      const hue = kindHueMap[currentKind] ?? 205;
+
+      for (let i = 0; i < CHARS.length; i++) {
+        const el = charRefs.current[i];
+        if (!el) continue;
+        const rel = i - restCenter;               // -2.5 .. +2.5
+        const push = rel * spreadBoost * 8;       // horizontal spread in px
+        const dip = -energy * 3;                  // slight vertical rise on kicks
+        el.style.transform = `translate(${push.toFixed(2)}px, ${dip.toFixed(2)}px) scale(${scale.toFixed(3)})`;
+        el.style.filter =
+          `drop-shadow(0 0 ${glowMain}px hsla(${hue},100%,72%,${(0.65 + energy*0.35).toFixed(2)}))` +
+          ` drop-shadow(0 0 ${glowFar}px hsla(${hue},100%,55%,${(0.5 + energy*0.35).toFixed(2)}))`;
+
+        const rel2 = reflCharRefs.current[i];
+        if (rel2) {
+          rel2.style.transform = `translate(${push.toFixed(2)}px, ${dip.toFixed(2)}px) scale(${scale.toFixed(3)})`;
+          rel2.style.filter = el.style.filter;
+        }
       }
 
       rafRef.current = requestAnimationFrame(draw);
@@ -131,17 +157,46 @@ export default function PulsingBrand({
     };
   }, [isPlaying, currentKind]);
 
-  const wordmarkStyle = {
-    fontFamily: '"Orbitron", "Chakra Petch", ui-monospace, monospace',
-    fontWeight: 500,
-    fontSize: "clamp(1.4rem, 4.2vw, 3.4rem)",
-    letterSpacing: "0.28em",
-    color: "#eaf6ff",
-    lineHeight: 1,
-    fontVariantLigatures: "none",
-    willChange: "transform, text-shadow",
-    transition: "color 0.4s linear",
-  };
+  // Layout of characters as flex row of individual span elements. We keep them
+  // as normal HTML text (not SVG paths) so translations, filters and Unicode
+  // are trivial to handle, and so browser text hinting stays sharp.
+  const renderWordmark = (isReflection = false) => (
+    <div
+      className="notranslate flex items-center justify-center"
+      style={{
+        gap: "0.24em",
+        fontFamily: '"Orbitron", "Chakra Petch", ui-monospace, monospace',
+        fontWeight: 500,
+        letterSpacing: "0.05em",
+        fontSize: "clamp(1.6rem, 4.6vw, 3.6rem)",
+        color: "#eaf6ff",
+        lineHeight: 1,
+      }}
+      aria-label="R-A.I."
+      translate="no"
+    >
+      {CHARS.map((c, i) => (
+        <span
+          key={i}
+          ref={(el) => {
+            if (isReflection) reflCharRefs.current[i] = el;
+            else charRefs.current[i] = el;
+          }}
+          className={`rai-glyph ${drawn ? "rai-glyph-drawn" : ""}`}
+          style={{
+            display: "inline-block",
+            transitionProperty: "transform, filter, opacity",
+            transitionDuration: "0.18s",
+            transitionTimingFunction: "cubic-bezier(0.2, 0.9, 0.25, 1)",
+            willChange: "transform, filter",
+            animationDelay: `${i * 90}ms`,
+          }}
+        >
+          {c}
+        </span>
+      ))}
+    </div>
+  );
 
   return (
     <div
@@ -182,7 +237,7 @@ export default function PulsingBrand({
         )}
       </div>
 
-      {/* Upper half — bars + wordmark */}
+      {/* Upper stage — bars + wordmark */}
       <div
         className="absolute left-0 right-0 top-0 pointer-events-none"
         style={{ height: "60%" }}
@@ -200,23 +255,22 @@ export default function PulsingBrand({
             height: "60%",
             transform: "translate(-50%,-50%)",
             background:
-              "radial-gradient(ellipse at center, rgba(80,180,255,0.35) 0%, rgba(80,180,255,0.10) 40%, rgba(0,0,0,0) 70%)",
+              "radial-gradient(ellipse at center, rgba(80,180,255,0.30) 0%, rgba(80,180,255,0.10) 40%, rgba(0,0,0,0) 70%)",
             filter: "blur(20px)",
           }}
         />
-        <div
-          className="absolute inset-0 flex items-center justify-center notranslate select-none"
-          aria-label="R-A.I."
-          translate="no"
-        >
-          <span
-            ref={brandRef}
-            data-testid="pulsing-brand-text"
-            style={wordmarkStyle}
-            className="notranslate"
-          >
-            R-A.I.
-          </span>
+
+        {/* Laser scan sweep — a thin bright line that runs through the
+            wordmark once on mount, giving the illusion the letters were
+            drawn by a beam. */}
+        <div className="absolute inset-0 pointer-events-none overflow-hidden">
+          <div className="rai-laser-sweep" aria-hidden />
+        </div>
+
+        <div className="absolute inset-0 flex items-center justify-center" data-testid="pulsing-brand-text-wrap">
+          <div data-testid="pulsing-brand-text">
+            {renderWordmark(false)}
+          </div>
         </div>
       </div>
 
@@ -236,22 +290,15 @@ export default function PulsingBrand({
       >
         <canvas
           ref={reflBarsRef}
-          className="absolute inset-0 w-full h-full"
+          className="absolute inset-0 w-full"
           style={{ height: "150%" }}
         />
         <div className="absolute inset-0 flex items-start justify-center pt-[6%]">
-          <span
-            ref={reflBrandRef}
-            style={{ ...wordmarkStyle, color: "#a8dcff" }}
-            className="notranslate"
-            aria-hidden
-          >
-            R-A.I.
-          </span>
+          {renderWordmark(true)}
         </div>
       </div>
 
-      {/* Bottom "floor" line — subtle horizon */}
+      {/* Horizon line */}
       <div
         aria-hidden
         className="absolute left-0 right-0 pointer-events-none"
@@ -274,7 +321,7 @@ export default function PulsingBrand({
         }}
       />
 
-      {/* Neon track overlay */}
+      {/* Track overlay */}
       {trackOverlay && (
         <div
           className="track-overlay"
@@ -303,6 +350,50 @@ export default function PulsingBrand({
       )}
 
       <style>{`
+        /* Laser-draw entrance: each glyph starts invisible and slightly
+           offset, then materialises with a bright flash as if traced by a
+           laser beam. Stagger via inline animationDelay. */
+        .rai-glyph {
+          opacity: 0;
+          transform: translateY(6px) scale(0.85);
+          filter: drop-shadow(0 0 4px #4bb4ff);
+          animation: none;
+        }
+        .rai-glyph-drawn {
+          animation: raiGlyphDraw 900ms cubic-bezier(0.2,0.9,0.25,1) forwards;
+        }
+        @keyframes raiGlyphDraw {
+          0%   { opacity: 0;   transform: translateY(6px) scale(0.85);
+                 text-shadow: 0 0 24px #a8dcff, 0 0 42px #4bb4ff; }
+          40%  { opacity: 1;   transform: translateY(-2px) scale(1.02);
+                 text-shadow: 0 0 32px #a8dcff, 0 0 56px #4bb4ff; }
+          100% { opacity: 1;   transform: translateY(0) scale(1);
+                 text-shadow: 0 0 8px #4bb4ff, 0 0 22px #4bb4ff; }
+        }
+        /* Laser sweep — thin bright vertical line running through the wordmark. */
+        .rai-laser-sweep {
+          position: absolute;
+          top: 0;
+          bottom: 0;
+          width: 3px;
+          left: -5%;
+          background: linear-gradient(180deg,
+                       rgba(140,220,255,0) 0%,
+                       rgba(140,220,255,0.95) 45%,
+                       rgba(255,255,255,1) 50%,
+                       rgba(140,220,255,0.95) 55%,
+                       rgba(140,220,255,0) 100%);
+          filter: blur(1.5px);
+          box-shadow: 0 0 20px #4bb4ff, 0 0 40px #4bb4ff;
+          animation: raiLaserSweep 1200ms cubic-bezier(0.22,1,0.36,1) 1 both;
+        }
+        @keyframes raiLaserSweep {
+          0%   { left: -5%;  opacity: 0.0; }
+          10%  { opacity: 0.9; }
+          80%  { opacity: 0.9; }
+          100% { left: 105%; opacity: 0.0; }
+        }
+
         @keyframes neonPulseBlue {
           0%, 100% { text-shadow: 0 0 8px #4bb4ff, 0 0 20px #4bb4ff, 0 0 40px #4bb4ff; }
           50%      { text-shadow: 0 0 4px #a8dcff, 0 0 14px #a8dcff, 0 0 28px #a8dcff; }
