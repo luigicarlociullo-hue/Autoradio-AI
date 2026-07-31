@@ -23,12 +23,15 @@ export default function PulsingBrand({
   currentKind = "",
   trackOverlay = null,
 }) {
+  const radialRef = useRef(null);
+  const radialReflRef = useRef(null);
   const barsRef = useRef(null);
   const reflBarsRef = useRef(null);
   const rafRef = useRef(null);
   const charRefs = useRef([]);
   const reflCharRefs = useRef([]);
   const beatState = useRef({ prevBass: 0, restPos: [], lastBeatAt: 0 });
+  const rotationRef = useRef(0);
   const [drawn, setDrawn] = useState(false);
 
   // Trigger laser-draw animation on mount / when it becomes visible.
@@ -40,12 +43,15 @@ export default function PulsingBrand({
   useEffect(() => {
     const bars = barsRef.current;
     const refl = reflBarsRef.current;
-    if (!bars || !refl) return;
+    const radial = radialRef.current;
+    const radialRefl = radialReflRef.current;
+    if (!bars || !refl || !radial) return;
     const ctxs = [bars.getContext("2d"), refl.getContext("2d")];
+    const radialCtxs = [radial.getContext("2d"), radialRefl ? radialRefl.getContext("2d") : null];
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
 
     const resize = () => {
-      [bars, refl].forEach((c) => {
+      [bars, refl, radial, radialRefl].filter(Boolean).forEach((c) => {
         const r = c.getBoundingClientRect();
         c.width = Math.floor(r.width * dpr);
         c.height = Math.floor(r.height * dpr);
@@ -54,6 +60,7 @@ export default function PulsingBrand({
     resize();
     const ro = new ResizeObserver(resize);
     ro.observe(bars);
+    ro.observe(radial);
 
     const draw = () => {
       const analyser = radioEngine.getAnalyser();
@@ -81,7 +88,71 @@ export default function PulsingBrand({
       const breath = 0.5 + 0.5 * Math.sin(now * 1.8);
       const energy = analyser ? Math.max(midAvg, idleAmp * 0.5) : idleAmp * breath;
 
-      // --- Equalizer bars (background + reflection) ---
+      // Hue lookup — pre-computed so both radial (deep background) and
+      // wordmark glow (top layer) share the same accent color.
+      const kindHueMap = { talk: 195, news: 220, answer: 205, weather: 205,
+        horoscope: 250, history: 30, interview: 210, motivation: 150, joke: 40 };
+      const hue = kindHueMap[currentKind] ?? 205;
+
+      // --- Radial spectrum "laser rays" (deepest background layer) ---
+      // A ring shoots colored neon rays outwards in every direction, filling
+      // the container behind the horizontal wave and the wordmark.
+      rotationRef.current += 0.003 + energy * 0.02;
+      const rot = rotationRef.current;
+      radialCtxs.forEach((rctx, ri) => {
+        if (!rctx) return;
+        const cvs = ri === 0 ? radial : radialRefl;
+        const w = cvs.width;
+        const h = cvs.height;
+        if (!w || !h) return;
+        // Motion-trail fade instead of clear → creates saturated ghost trails.
+        rctx.globalCompositeOperation = "source-over";
+        rctx.fillStyle = "rgba(0, 0, 0, 0.20)";
+        rctx.fillRect(0, 0, w, h);
+
+        const cx = w / 2;
+        const cy = h / 2;
+        const baseRadius = Math.min(w, h) * 0.18;
+        const raysBase = 128;
+        rctx.globalCompositeOperation = "screen";
+        for (let i = 0; i < raysBase; i++) {
+          const freqIdx = Math.floor((i / raysBase) * Math.min(180, binCount));
+          const v = analyser ? freq[freqIdx] / 255 : (0.12 + 0.4 * Math.sin(now * 2 + i * 0.15) * idleAmp);
+          const angle = rot + (i / raysBase) * Math.PI * 2;
+          const rayLen = 30 * dpr + v * baseRadius * 3.6;
+          const x1 = cx + Math.cos(angle) * baseRadius;
+          const y1 = cy + Math.sin(angle) * baseRadius;
+          const x2 = cx + Math.cos(angle) * (baseRadius + rayLen);
+          const y2 = cy + Math.sin(angle) * (baseRadius + rayLen);
+          // Multi-color neon: hue cycles across the ring for the "colored
+          // laser bolts" look, biased towards the electric-blue base hue.
+          const baseHue = hue - 30;
+          const rayHue = (baseHue + v * 90 + i * 2.6) % 360;
+          const grad = rctx.createLinearGradient(x1, y1, x2, y2);
+          grad.addColorStop(0, `hsla(${rayHue}, 100%, 60%, ${0.10 + v * 0.55})`);
+          grad.addColorStop(1, `hsla(${rayHue}, 100%, 72%, ${0.85 + v * 0.15})`);
+          rctx.strokeStyle = grad;
+          rctx.lineWidth = (1.6 + v * 3.5) * dpr;
+          rctx.lineCap = "round";
+          rctx.beginPath();
+          rctx.moveTo(x1, y1);
+          rctx.lineTo(x2, y2);
+          rctx.stroke();
+        }
+
+        // Central pulsing core — the "circle" from which the rays shoot.
+        const coreR = baseRadius * (0.55 + energy * 0.45);
+        const coreGrad = rctx.createRadialGradient(cx, cy, 2, cx, cy, coreR);
+        coreGrad.addColorStop(0, `hsla(${hue}, 100%, 78%, ${0.75 + energy * 0.25})`);
+        coreGrad.addColorStop(0.55, `hsla(${(hue + 40) % 360}, 100%, 55%, ${0.35 + energy * 0.35})`);
+        coreGrad.addColorStop(1, "rgba(0,0,0,0)");
+        rctx.fillStyle = coreGrad;
+        rctx.beginPath();
+        rctx.arc(cx, cy, coreR, 0, Math.PI * 2);
+        rctx.fill();
+      });
+
+      // --- Equalizer bars (thick horizontal wave, on top of radial) ---
       ctxs.forEach((ctx, ci) => {
         const cvs = ci === 0 ? bars : refl;
         const w = cvs.width;
@@ -101,9 +172,11 @@ export default function PulsingBrand({
           const idle = idleAmp * (0.45 + 0.55 * Math.sin(now * 2.2 + i * 0.34));
           const v = analyser ? Math.min(1, live * 1.15 + idle * 0.22) : idle;
 
-          // Taller near center → creates the peak shape behind the wordmark.
-          const shape = Math.pow(1 - distFromCenter, 1.2);
-          const barH = Math.max(2 * dpr, v * h * 0.9 * (0.30 + 0.70 * shape));
+          // Bar shape: dominant peak behind the wordmark, still substantial
+          // at the edges. Bars occupy up to ~140% of the available height so
+          // the wave visually overpowers the small wordmark on kicks.
+          const shape = Math.pow(1 - distFromCenter, 0.9);
+          const barH = Math.max(3 * dpr, v * h * 1.35 * (0.55 + 0.45 * shape));
           const x = i * (barW + gap);
           const y = centerY - barH / 2;
 
@@ -124,10 +197,6 @@ export default function PulsingBrand({
       const glowMain = 4 + energy * 22;
       const glowFar = 12 + energy * 40;
       const scale = 1 + energy * 0.05;
-
-      const kindHueMap = { talk: 195, news: 220, answer: 205, weather: 205,
-        horoscope: 250, history: 30, interview: 210, motivation: 150, joke: 40 };
-      const hue = kindHueMap[currentKind] ?? 205;
 
       for (let i = 0; i < CHARS.length; i++) {
         const el = charRefs.current[i];
@@ -237,10 +306,18 @@ export default function PulsingBrand({
         )}
       </div>
 
+      {/* Deepest layer — full-container radial "circle with laser rays" */}
+      <canvas
+        ref={radialRef}
+        data-testid="pulsing-radial-canvas"
+        className="absolute inset-0 w-full h-full pointer-events-none"
+        style={{ zIndex: 1, filter: "blur(0.3px)", opacity: 0.85 }}
+      />
+
       {/* Upper stage — bars + wordmark */}
       <div
         className="absolute left-0 right-0 top-0 pointer-events-none"
-        style={{ height: "60%" }}
+        style={{ height: "60%", zIndex: 5 }}
       >
         <canvas
           ref={barsRef}
@@ -288,6 +365,11 @@ export default function PulsingBrand({
           filter: "blur(1px)",
         }}
       >
+        <canvas
+          ref={radialReflRef}
+          className="absolute inset-0 w-full pointer-events-none"
+          style={{ height: "150%", opacity: 0.7 }}
+        />
         <canvas
           ref={reflBarsRef}
           className="absolute inset-0 w-full"
