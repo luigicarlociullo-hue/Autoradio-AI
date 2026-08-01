@@ -120,57 +120,64 @@ export default function PulsingBrand({
       )}
 
       <style>{`
-        /* Shimmer: glow color and radius cycle gently, giving the text a
-           "living light" feel without being distracting. */
+        /* Shimmer: glow color and radius cycle noticeably so the effect is
+           clearly visible even at a glance. */
         @keyframes raiTrackShimmer {
           0%, 100% {
             text-shadow:
-              0 0 8px  rgba(120,200,255,0.85),
-              0 0 22px rgba(80,170,255,0.65),
-              0 0 44px rgba(80,170,255,0.35);
+              0 0 10px rgba(140,220,255,1),
+              0 0 26px rgba(90,180,255,0.85),
+              0 0 55px rgba(80,170,255,0.60),
+              0 0 90px rgba(80,170,255,0.35);
           }
           50% {
             text-shadow:
-              0 0 12px rgba(200,230,255,1),
-              0 0 30px rgba(140,220,255,0.85),
-              0 0 60px rgba(120,200,255,0.55);
+              0 0 18px rgba(220,240,255,1),
+              0 0 40px rgba(170,230,255,1),
+              0 0 80px rgba(140,220,255,0.85),
+              0 0 130px rgba(120,200,255,0.55);
           }
         }
-        /* Slow "shimmer sweep" — a bright band moves across the letters. */
+        /* Bright sweep: a wide highlight moves across the letters so the
+           "shine" is unmistakable. */
         @keyframes raiShimmerSweep {
-          0%   { background-position: -140% 0; }
-          100% { background-position: 240% 0; }
+          0%   { background-position: -180% 0; }
+          100% { background-position: 280% 0; }
         }
         .track-title {
           font-family: 'Orbitron', 'Chakra Petch', sans-serif;
           font-weight: 700;
           letter-spacing: 3px;
           text-transform: uppercase;
-          font-size: clamp(0.95em, 1.5vw, 1.25em);
+          font-size: clamp(1.05em, 1.7vw, 1.4em);
           color: #eaf6ff;
           background: linear-gradient(90deg,
-                       #cfe8ff 0%,
-                       #ffffff 45%,
-                       #a8dcff 50%,
-                       #ffffff 55%,
-                       #cfe8ff 100%);
-          background-size: 200% 100%;
+                       #b8dcff 0%,
+                       #ffffff 40%,
+                       #d0f0ff 50%,
+                       #ffffff 60%,
+                       #b8dcff 100%);
+          background-size: 220% 100%;
           -webkit-background-clip: text;
                   background-clip: text;
           -webkit-text-fill-color: transparent;
           animation:
-            raiTrackShimmer 3.2s ease-in-out infinite,
-            raiShimmerSweep 4.5s linear infinite;
+            raiTrackShimmer 2.4s ease-in-out infinite,
+            raiShimmerSweep 3.6s linear infinite;
+          filter: drop-shadow(0 0 6px rgba(120,200,255,0.7));
         }
         .track-artist {
           font-family: 'Chakra Petch', sans-serif;
-          font-size: clamp(0.7em, 1vw, 0.9em);
-          color: #a8dcff;
-          text-shadow: 0 0 6px #4bb4ff, 0 0 14px rgba(120,200,255,0.6);
+          font-size: clamp(0.72em, 1vw, 0.9em);
+          color: #cfe8ff;
+          text-shadow:
+            0 0 8px rgba(140,220,255,1),
+            0 0 22px rgba(90,180,255,0.75),
+            0 0 44px rgba(80,170,255,0.45);
           margin-top: 4px;
           letter-spacing: 2px;
-          font-weight: 500;
-          animation: raiTrackShimmer 3.2s ease-in-out infinite;
+          font-weight: 600;
+          animation: raiTrackShimmer 2.8s ease-in-out infinite;
         }
       `}</style>
     </div>
