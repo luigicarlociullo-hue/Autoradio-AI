@@ -98,7 +98,7 @@ export default function PulsingBrand({
           data-testid="track-overlay"
           style={{
             position: "absolute",
-            top: "62%",           /* dark horizon band between image and reflection */
+            top: "56%",           /* centered in the dark horizon band, above the reflection */
             left: 0,
             right: 0,
             textAlign: "center",
