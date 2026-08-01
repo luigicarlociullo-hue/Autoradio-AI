@@ -98,7 +98,7 @@ export default function PulsingBrand({
           data-testid="track-overlay"
           style={{
             position: "absolute",
-            bottom: 20,
+            top: "62%",           /* dark horizon band between image and reflection */
             left: 0,
             right: 0,
             textAlign: "center",
@@ -120,23 +120,57 @@ export default function PulsingBrand({
       )}
 
       <style>{`
+        /* Shimmer: glow color and radius cycle gently, giving the text a
+           "living light" feel without being distracting. */
+        @keyframes raiTrackShimmer {
+          0%, 100% {
+            text-shadow:
+              0 0 8px  rgba(120,200,255,0.85),
+              0 0 22px rgba(80,170,255,0.65),
+              0 0 44px rgba(80,170,255,0.35);
+          }
+          50% {
+            text-shadow:
+              0 0 12px rgba(200,230,255,1),
+              0 0 30px rgba(140,220,255,0.85),
+              0 0 60px rgba(120,200,255,0.55);
+          }
+        }
+        /* Slow "shimmer sweep" — a bright band moves across the letters. */
+        @keyframes raiShimmerSweep {
+          0%   { background-position: -140% 0; }
+          100% { background-position: 240% 0; }
+        }
         .track-title {
           font-family: 'Orbitron', 'Chakra Petch', sans-serif;
-          font-size: clamp(0.85em, 1.4vw, 1.1em);
-          font-weight: 600;
-          color: #eaf6ff;
-          text-shadow: 0 0 8px #4bb4ff, 0 0 20px #4bb4ff;
+          font-weight: 700;
           letter-spacing: 3px;
           text-transform: uppercase;
+          font-size: clamp(0.95em, 1.5vw, 1.25em);
+          color: #eaf6ff;
+          background: linear-gradient(90deg,
+                       #cfe8ff 0%,
+                       #ffffff 45%,
+                       #a8dcff 50%,
+                       #ffffff 55%,
+                       #cfe8ff 100%);
+          background-size: 200% 100%;
+          -webkit-background-clip: text;
+                  background-clip: text;
+          -webkit-text-fill-color: transparent;
+          animation:
+            raiTrackShimmer 3.2s ease-in-out infinite,
+            raiShimmerSweep 4.5s linear infinite;
         }
         .track-artist {
           font-family: 'Chakra Petch', sans-serif;
-          font-size: clamp(0.6em, 0.9vw, 0.8em);
+          font-size: clamp(0.7em, 1vw, 0.9em);
           color: #a8dcff;
-          text-shadow: 0 0 6px #4bb4ff;
+          text-shadow: 0 0 6px #4bb4ff, 0 0 14px rgba(120,200,255,0.6);
           margin-top: 4px;
           letter-spacing: 2px;
           font-weight: 500;
+          animation: raiTrackShimmer 3.2s ease-in-out infinite;
         }
       `}</style>
     </div>
