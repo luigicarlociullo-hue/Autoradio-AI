@@ -75,6 +75,12 @@ export default function PublicRadio() {
   const [tick, setTick] = useState(0);
   const [trackOverlay, setTrackOverlay] = useState({ visible: false, title: "", artist: "" });
   const [showDonate, setShowDonate] = useState(false);
+  // Broadcast state (mode + admin command tracking) — polled every 3s so
+  // any click in the admin Control Room propagates to this browser.
+  const [broadcastMode, setBroadcastMode] = useState("auto");
+  const [manualStreamUrl, setManualStreamUrl] = useState("");
+  const lastCommandSeqRef = useRef(0);
+  const externalAudioRef = useRef(null);
   const DONATE_URL = "https://paypal.me/radioAI";
 
   const playingRef = useRef(false);
@@ -118,6 +124,68 @@ export default function PublicRadio() {
       if (overlayTimerRef.current) { clearTimeout(overlayTimerRef.current); overlayTimerRef.current = null; }
     };
   }, []);
+
+  // Broadcast state poller: mirrors admin commands (skip/pause/resume/jingle)
+  // and mode changes (auto ↔ live_external) into this listener browser.
+  useEffect(() => {
+    const applyCommand = (cmd) => {
+      if (!cmd) return;
+      switch (cmd.type) {
+        case "skip":
+          console.log("[R-A.I.] admin SKIP received");
+          try { radioEngine.stopAll(); } catch (e) {}
+          break;
+        case "pause":
+          console.log("[R-A.I.] admin PAUSE received");
+          stopFlag.current = true;
+          try { radioEngine.stopAll(); } catch (e) {}
+          setIsPlaying(false);
+          break;
+        case "resume":
+          console.log("[R-A.I.] admin RESUME received");
+          // Give a hint to the UI; a real resume requires a user gesture on
+          // some browsers so we surface a toast.
+          toast.info("L'admin ha inviato PLAY — clicca Ascolta ora per riprendere.");
+          break;
+        case "jingle_now":
+          console.log("[R-A.I.] admin JINGLE NOW — next segment will be a jingle");
+          break;
+        default: break;
+      }
+    };
+
+    const poll = async () => {
+      try {
+        const r = await endpoints.getStationMode();
+        if (!r) return;
+        setBroadcastMode(r.mode || "auto");
+        setManualStreamUrl(r.manual_stream_url || "");
+        const seq = Number(r.command_seq || 0);
+        if (seq > lastCommandSeqRef.current) {
+          if (lastCommandSeqRef.current !== 0) applyCommand(r.last_command);
+          lastCommandSeqRef.current = seq;
+        }
+      } catch (e) { /* silent */ }
+    };
+    poll();
+    const iv = setInterval(poll, 3000);
+    return () => clearInterval(iv);
+  }, []);
+
+  // Auto-manage external stream <audio> when in live_external mode.
+  useEffect(() => {
+    if (broadcastMode !== "live_external") {
+      // Leaving live_external: stop the external audio.
+      if (externalAudioRef.current) {
+        try { externalAudioRef.current.pause(); } catch (e) {}
+      }
+      return;
+    }
+    // Entering live_external: ensure AI player is stopped.
+    stopFlag.current = true;
+    try { radioEngine.stopAll(); } catch (e) {}
+    setIsPlaying(false);
+  }, [broadcastMode]);
 
   useEffect(() => { refresh(); /* eslint-disable-next-line */ }, [tick]);
 
@@ -280,9 +348,11 @@ export default function PublicRadio() {
         // ============================================================
         try {
           const modeRes = await endpoints.getStationMode();
-          if (modeRes && (modeRes.pending_graceful_stop || modeRes.mode === "manual")) {
+          if (modeRes && (modeRes.pending_graceful_stop || modeRes.mode === "manual" || modeRes.mode === "live_external")) {
             console.log("[R-A.I.] Graceful stop requested by admin — exiting loop.");
-            toast.success("Trasmissione automatica messa in pausa. Modalita' manuale attiva.");
+            toast.success(modeRes.mode === "live_external"
+              ? "Passaggio in LIVE MANUALE · streaming esterno in onda"
+              : "Trasmissione automatica messa in pausa. Modalità manuale attiva.");
             stopFlag.current = true;
             break;
           }
@@ -425,11 +495,44 @@ export default function PublicRadio() {
         {/* Live visual — pulsating R-A.I. brand reacts to live audio */}
         <div className="mt-10">
           <PulsingBrand
-            isPlaying={isPlaying}
+            isPlaying={isPlaying || broadcastMode === "live_external"}
             currentKind={current?.kind || ""}
             trackOverlay={trackOverlay}
           />
         </div>
+
+        {/* LIVE MANUAL — external Icecast/Shoutcast stream takes over for
+            everyone whenever the admin flips the switch in the Control Room. */}
+        {broadcastMode === "live_external" && (
+          <div
+            data-testid="live-external-banner"
+            className="mt-4 rounded-2xl border border-cyan-400/40 bg-cyan-500/10 p-4 flex flex-col md:flex-row items-center gap-4"
+          >
+            <div className="flex items-center gap-3">
+              <span className="live-dot" style={{ background: "#22d3ee", boxShadow: "0 0 12px #22d3ee" }} />
+              <div>
+                <div className="font-mono text-xs tracking-widest text-cyan-300 uppercase">LIVE MANUALE</div>
+                <div className="text-white font-bold">Voce umana in diretta</div>
+              </div>
+            </div>
+            {manualStreamUrl ? (
+              <audio
+                ref={externalAudioRef}
+                data-testid="external-audio"
+                src={manualStreamUrl}
+                controls
+                autoPlay
+                crossOrigin="anonymous"
+                className="flex-1 min-w-[220px] w-full"
+                style={{ maxWidth: 640 }}
+              />
+            ) : (
+              <div className="text-amber-300 text-sm">
+                URL stream non ancora impostato — l'admin lo configura dalla Control Room.
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Now playing panel */}
         <div className="mt-6 glass rounded-2xl p-6 md:p-8">

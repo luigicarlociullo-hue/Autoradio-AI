@@ -150,6 +150,13 @@ export default function Dashboard() {
 
       <main className="max-w-[1400px] mx-auto px-6 py-8 grid grid-cols-1 lg:grid-cols-4 gap-6">
 
+        {/* NEW: Broadcast control bar — Play/Pause/Skip/Jingle propagated
+            to every public listener via /api/admin/command */}
+        <BroadcastControlBar />
+
+        {/* NEW: Live External — switch listeners to an Icecast/Shoutcast URL */}
+        <LiveExternalPanel />
+
         {/* Control room */}
         <section className="lg:col-span-4 rounded-xl overflow-hidden relative border border-white/10">
           <div className="absolute inset-0 -z-10" style={{ backgroundImage: `linear-gradient(180deg, rgba(5,5,10,0.7) 0%, rgba(5,5,10,0.92) 100%), url(${STUDIO_BG})`, backgroundSize: "cover", backgroundPosition: "center" }} />
@@ -1805,6 +1812,254 @@ function TrackModal({ mode, target, onClose, onDone }) {
         </div>
       </div>
     </div>
+  );
+}
+
+
+
+// ==================== BroadcastControlBar (top of Dashboard) ====================
+// Play / Pause / Skip / Jingle NOW — each click propagates to every
+// listener's browser via /api/admin/command. Listeners poll every ~3s.
+function BroadcastControlBar() {
+  const [busy, setBusy] = useState(null);
+  const [state, setState] = useState({ command_seq: 0, last_command: null, mode: "auto" });
+
+  const refresh = React.useCallback(async () => {
+    try {
+      const r = await api.get("/station/mode");
+      setState(r.data || {});
+    } catch (e) { /* silent */ }
+  }, []);
+  useEffect(() => { refresh(); const iv = setInterval(refresh, 4000); return () => clearInterval(iv); }, [refresh]);
+
+  const send = async (cmd) => {
+    setBusy(cmd);
+    try {
+      const fd = new FormData();
+      fd.append("cmd_type", cmd);
+      const backend = process.env.REACT_APP_BACKEND_URL;
+      const resp = await fetch(`${backend}/api/admin/command`, { method: "POST", body: fd });
+      if (!resp.ok) throw new Error((await resp.json().catch(()=>({}))).detail || resp.statusText);
+      const data = await resp.json();
+      const labels = { skip: "Skip inviato", pause: "Pause inviato", resume: "Play inviato", jingle_now: "Jingle inviato" };
+      toast.success(`${labels[cmd] || cmd} · seq #${data.command_seq}`);
+      refresh();
+    } catch (e) {
+      toast.error(`Errore: ${e.message}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const isLive = state.mode === "auto";
+  const modeLabel = { auto: "PILOTA AI", manual: "MANUAL LINE-IN", live_external: "LIVE ESTERNO" }[state.mode] || state.mode;
+
+  const cmds = [
+    { key: "resume",     label: "Play",   icon: PlayCircle,  bg: "bg-emerald-500/15", br: "border-emerald-400/40", tx: "text-emerald-300" },
+    { key: "pause",      label: "Pause",  icon: PauseCircle, bg: "bg-amber-500/15",   br: "border-amber-400/40",   tx: "text-amber-300" },
+    { key: "skip",       label: "Skip",   icon: ChevronRight,bg: "bg-cyan-500/15",    br: "border-cyan-400/40",    tx: "text-cyan-300" },
+    { key: "jingle_now", label: "Jingle", icon: Sparkles,    bg: "bg-pink-500/15",    br: "border-pink-400/40",    tx: "text-pink-300" },
+  ];
+
+  return (
+    <section data-testid="broadcast-control-bar" className="lg:col-span-4 rounded-xl border border-white/10 bg-gradient-to-b from-white/[0.04] to-white/[0.01] p-4">
+      <div className="flex flex-wrap items-center gap-4">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="label-mono text-cyan-300 flex items-center gap-2">
+            <Radio className="w-4 h-4" /> Comandi broadcast
+          </div>
+          <span
+            data-testid="broadcast-mode-badge"
+            className={`px-3 py-1 rounded-full text-[10px] font-mono uppercase tracking-widest border ${
+              isLive
+                ? "bg-emerald-500/15 border-emerald-400 text-emerald-300"
+                : state.mode === "live_external"
+                  ? "bg-cyan-500/15 border-cyan-400 text-cyan-300"
+                  : "bg-fuchsia-500/15 border-fuchsia-400 text-fuchsia-300"
+            }`}
+          >
+            {modeLabel}
+          </span>
+          {state.last_command && (
+            <span className="text-xs text-zinc-500 font-mono truncate">
+              last: {state.last_command.type} #{state.command_seq}
+            </span>
+          )}
+        </div>
+        <div className="flex-1 min-w-0" />
+        <div className="flex flex-wrap gap-2">
+          {cmds.map(c => {
+            const Icon = c.icon;
+            return (
+              <button
+                key={c.key}
+                data-testid={`broadcast-cmd-${c.key}`}
+                onClick={() => send(c.key)}
+                disabled={busy === c.key}
+                className={`flex items-center gap-2 px-4 py-2 rounded-lg border transition text-sm font-semibold ${c.bg} ${c.br} ${c.tx} hover:brightness-125 disabled:opacity-40`}
+              >
+                <Icon className="w-4 h-4" />
+                {busy === c.key ? "…" : c.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      <div className="mt-3 text-[11px] text-zinc-500 font-mono">
+        I comandi vengono applicati su tutti i browser ascoltatori entro ~3 secondi (polling).
+      </div>
+    </section>
+  );
+}
+
+
+// ==================== LiveExternalPanel ====================
+// Switch listeners to an Icecast/Shoutcast URL so the admin can broadcast
+// live voice from a real webcast service (Zeno.FM etc.).
+function LiveExternalPanel() {
+  const [state, setState] = useState({ mode: "auto", manual_stream_url: "" });
+  const [urlDraft, setUrlDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [switching, setSwitching] = useState(false);
+
+  const load = React.useCallback(async () => {
+    try {
+      const r = await api.get("/station/mode");
+      setState(r.data || {});
+      setUrlDraft(r.data?.manual_stream_url || "");
+    } catch (e) {}
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const saveUrl = async () => {
+    const url = urlDraft.trim();
+    if (url && !/^https?:\/\//i.test(url)) {
+      toast.error("URL deve iniziare con http:// o https://");
+      return;
+    }
+    setSaving(true);
+    try {
+      const fd = new FormData();
+      fd.append("url", url);
+      const backend = process.env.REACT_APP_BACKEND_URL;
+      const resp = await fetch(`${backend}/api/station/stream-url`, { method: "POST", body: fd });
+      if (!resp.ok) throw new Error((await resp.json().catch(()=>({}))).detail || resp.statusText);
+      toast.success(url ? "URL streaming salvato" : "URL rimosso");
+      load();
+    } catch (e) {
+      toast.error(`Errore: ${e.message}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const switchMode = async (mode) => {
+    if (mode === "live_external" && !state.manual_stream_url) {
+      toast.error("Salva prima un URL streaming");
+      return;
+    }
+    setSwitching(true);
+    try {
+      const params = new URLSearchParams({ mode });
+      await api.post(`/station/mode?${params.toString()}`);
+      toast.success(mode === "live_external" ? "LIVE MANUALE attivo · listener passano al tuo stream" : "Ritorno a PILOTA AI");
+      load();
+    } catch (e) {
+      toast.error("Errore cambio modalità");
+    } finally {
+      setSwitching(false);
+    }
+  };
+
+  const isLive = state.mode === "live_external";
+
+  return (
+    <section data-testid="live-external-panel" className="lg:col-span-4 card-surface p-6">
+      <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
+        <div>
+          <div className="label-mono flex items-center gap-2">
+            <Mic className="w-4 h-4 text-cyan-400" /> Live Manuale · Webcast esterno
+          </div>
+          <h2 className="font-display font-black text-2xl mt-1">
+            {isLive ? "LIVE MANUALE ATTIVO" : "PILOTA AI"}
+          </h2>
+          <p className="text-zinc-400 text-sm mt-1 max-w-xl">
+            Quando attivi <strong>LIVE MANUALE</strong>, i listener passano allo stream Icecast/Shoutcast
+            che indichi qui sotto. La rotazione AI (Leo, Aria, Max, Suno) si ferma
+            per tutti fino a quando torni su <strong>PILOTA AI</strong>.
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <button
+            data-testid="switch-to-ai"
+            onClick={() => switchMode("auto")}
+            disabled={switching || state.mode === "auto"}
+            className={`px-4 py-2 rounded-lg border text-sm font-semibold transition ${
+              state.mode === "auto"
+                ? "bg-emerald-500/20 border-emerald-400 text-emerald-300"
+                : "border-white/15 text-zinc-300 hover:border-emerald-400/60"
+            }`}
+          >
+            🤖 PILOTA AI
+          </button>
+          <button
+            data-testid="switch-to-live"
+            onClick={() => switchMode("live_external")}
+            disabled={switching}
+            className={`px-4 py-2 rounded-lg border text-sm font-semibold transition ${
+              isLive
+                ? "bg-cyan-500/20 border-cyan-400 text-cyan-300 shadow-lg shadow-cyan-500/20"
+                : "border-white/15 text-zinc-300 hover:border-cyan-400/60"
+            }`}
+          >
+            🎙️ LIVE MANUALE
+          </button>
+        </div>
+      </div>
+
+      <div className="p-4 rounded-lg bg-black/30 border border-white/5">
+        <label className="label-mono block mb-2">URL streaming (Icecast/Shoutcast)</label>
+        <div className="flex flex-wrap gap-2">
+          <input
+            data-testid="stream-url-input"
+            type="url"
+            placeholder="es. https://stream.zeno.fm/xxxxxxxxxx"
+            value={urlDraft}
+            onChange={(e) => setUrlDraft(e.target.value)}
+            className="flex-1 min-w-[280px] bg-zinc-900 border border-white/10 rounded px-3 py-2 text-sm font-mono text-white"
+          />
+          <button
+            data-testid="stream-url-save"
+            onClick={saveUrl}
+            disabled={saving}
+            className="btn-primary px-4 py-2 text-sm"
+          >
+            {saving ? "Salvo…" : "Salva URL"}
+          </button>
+        </div>
+        <div className="mt-3 text-[11px] text-zinc-500 font-mono">
+          Corrente: <span className="text-cyan-300">{state.manual_stream_url || "(non impostato)"}</span>
+        </div>
+      </div>
+
+      <details className="mt-4 rounded-lg bg-cyan-500/[0.04] border border-cyan-500/20 p-4 text-sm">
+        <summary className="cursor-pointer text-cyan-300 font-semibold">
+          💡 Come ottenere un URL streaming gratuito (Zeno.FM)
+        </summary>
+        <ol className="mt-3 space-y-2 text-zinc-300 list-decimal list-inside">
+          <li>Vai su <a className="underline text-cyan-300" href="https://zeno.fm" target="_blank" rel="noopener noreferrer">zeno.fm</a> e registra un account (gratis, no carta).</li>
+          <li>Clicca "<em>Create station</em>", scegli un nome (es. "R-A.I. Live") e completa il wizard.</li>
+          <li>Nella tua station dashboard trovi il campo <em>"Stream URL"</em> — copialo. Formato: <code className="text-cyan-300 bg-black/40 px-1 rounded">https://stream.zeno.fm/xxxxxxxxxx</code></li>
+          <li>Incolla quell'URL nel campo qui sopra e clicca <strong>"Salva URL"</strong>.</li>
+          <li>Per trasmettere in diretta usa <strong>Zeno Studio</strong> (app web dalla loro dashboard) oppure un client come <strong>BUTT / Mixxx / OBS</strong> con le credenziali <em>source</em> che Zeno ti dà.</li>
+          <li>Quando sei in onda su Zeno, clicca <strong>"LIVE MANUALE"</strong> qui sopra: tutti i listener di r-ai.it sentiranno la tua voce entro pochi secondi.</li>
+          <li>Per tornare alla musica AI clicca <strong>"PILOTA AI"</strong>.</li>
+        </ol>
+        <div className="mt-3 text-[11px] text-zinc-500">
+          Alternative: <em>Radio.co</em> (trial 7 gg), <em>AzuraCast</em> (self-hosted, gratis se hai un VPS), <em>Shoutcast Directory</em> (gratis, richiede software).
+        </div>
+      </details>
+    </section>
   );
 }
 

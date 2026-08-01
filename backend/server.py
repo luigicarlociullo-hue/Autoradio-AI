@@ -638,29 +638,90 @@ async def toggle_station():
 
 @api_router.get("/station/mode")
 async def get_station_mode():
-    """Ritorna la modalita' della stazione (auto|manual) e se e' pendente uno
-    stop graceful. Il player pubblico controlla questo endpoint dopo ogni
-    segmento per fermarsi puliti quando l'admin passa in manuale."""
+    """Ritorna lo stato completo della stazione: modalita' (auto|manual|
+    live_external), stop pendente, URL streaming esterno, ultimo comando
+    admin (seq + type). Il player pubblico polla questo endpoint ogni 3s.
+    """
     doc = await db.station.find_one({"_id": "state"}, {"_id": 0}) or {}
     return {
         "mode": doc.get("mode", "auto"),
         "pending_graceful_stop": bool(doc.get("pending_graceful_stop", False)),
+        "manual_stream_url": doc.get("manual_stream_url") or "",
+        "command_seq": int(doc.get("command_seq") or 0),
+        "last_command": doc.get("last_command") or None,
     }
 
 
 @api_router.post("/station/mode")
 async def set_station_mode(mode: str = "auto", stop_after_current: bool = False):
-    """Imposta la modalita' della stazione. mode = auto|manual.
-    Se stop_after_current=true, il player si fermera' dopo il segmento in onda."""
-    if mode not in ("auto", "manual"):
-        return JSONResponse(status_code=400, content={"error": "mode must be auto|manual"})
+    """Modalita' stazione. mode = auto | manual | live_external.
+      - auto:          playlist AI in rotazione (default)
+      - manual:        AI ferma, listener sentono silenzio o line-in browser
+      - live_external: AI ferma, tutti i listener passano al tuo URL Icecast
+    """
+    if mode not in ("auto", "manual", "live_external"):
+        return JSONResponse(status_code=400,
+                            content={"error": "mode must be auto|manual|live_external"})
     update = {"mode": mode}
-    if stop_after_current or mode == "manual":
+    if stop_after_current or mode in ("manual", "live_external"):
         update["pending_graceful_stop"] = True
     else:
         update["pending_graceful_stop"] = False
     await db.station.update_one({"_id": "state"}, {"$set": update}, upsert=True)
     return {"mode": mode, "pending_graceful_stop": update["pending_graceful_stop"]}
+
+
+@api_router.post("/station/stream-url")
+async def set_station_stream_url(url: str = Form(...)):
+    """Salva l'URL dello stream esterno (Icecast/Shoutcast) usato dalla
+    modalita' live_external. Il player pubblico legge questa URL e la usa
+    come <audio src>.
+    """
+    url = (url or "").strip()
+    if url and not (url.startswith("http://") or url.startswith("https://")):
+        raise HTTPException(400, "URL deve iniziare con http:// o https://")
+    if len(url) > 500:
+        raise HTTPException(400, "URL troppo lungo")
+    await db.station.update_one({"_id": "state"},
+                                {"$set": {"manual_stream_url": url}},
+                                upsert=True)
+    return {"ok": True, "manual_stream_url": url}
+
+
+@api_router.post("/admin/command")
+async def admin_broadcast_command(cmd_type: str = Form(...)):
+    """Invia un comando istantaneo a tutti i player pubblici collegati.
+    I browser dei listener pollano /api/station/mode ogni ~3s e, se rilevano
+    un command_seq nuovo, applicano il comando localmente:
+      - skip:         forza il fetch del prossimo segmento
+      - pause:        mette il player in pausa
+      - resume:       riprende la riproduzione
+      - jingle_now:   costringe il prossimo segmento a essere un jingle
+    """
+    allowed = {"skip", "pause", "resume", "jingle_now"}
+    if cmd_type not in allowed:
+        raise HTTPException(400, f"cmd_type deve essere uno di: {sorted(allowed)}")
+    doc = await db.station.find_one({"_id": "state"}, {"_id": 0}) or {}
+    seq = int(doc.get("command_seq") or 0) + 1
+    payload = {
+        "type": cmd_type,
+        "issued_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.station.update_one(
+        {"_id": "state"},
+        {"$set": {"command_seq": seq, "last_command": payload}},
+        upsert=True,
+    )
+    # For "jingle_now" we ALSO set a queue flag so the next /api/next_segment
+    # call from any browser will be forced to return a jingle segment.
+    if cmd_type == "jingle_now":
+        await db.station.update_one(
+            {"_id": "state"},
+            {"$set": {"force_next_jingle": True}},
+            upsert=True,
+        )
+    logger.info(f"Broadcast command #{seq}: {cmd_type}")
+    return {"ok": True, "command_seq": seq, "type": cmd_type}
 
 
 
@@ -1664,6 +1725,33 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
     if kind is None:
         state_doc = await db.station.find_one({"_id": "state"}) or {}
         pos = int(state_doc.get("playlist_position", 0)) % 8
+
+        # Admin "Jingle NOW" command: consume the flag and return an actual
+        # branded jingle from the library immediately (no LLM/TTS latency).
+        if state_doc.get("force_next_jingle"):
+            await db.station.update_one(
+                {"_id": "state"}, {"$set": {"force_next_jingle": False}}, upsert=True
+            )
+            jingle = await db.tracks.find_one(
+                {"is_jingle": True, "status": "ready", "audio_url": {"$ne": None}},
+                {"_id": 0}, sort=[("last_played_at", 1)],
+            )
+            if jingle:
+                await db.tracks.update_one(
+                    {"id": jingle["id"]},
+                    {"$set": {"last_played_at": datetime.now(timezone.utc).isoformat()}},
+                )
+                segment = Segment(
+                    kind="music",
+                    title=f"♪ {jingle.get('title','Jingle')} — {jingle.get('artist','R-A.I.')}",
+                    dj_name="R-A.I.", script="",
+                    music_audio_url=jingle["audio_url"],
+                    duration_sec=jingle.get("duration_sec") or 25,
+                    track_meta=jingle,
+                    llm_provider="jingle",
+                )
+                await db.segments.insert_one(segment.model_dump())
+                return segment
 
         # Ora italiana reale per il segnale orario
         try:
