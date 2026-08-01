@@ -772,13 +772,26 @@ async def generate_track(hint: Optional[str] = None, genre: Optional[str] = None
             data = json.loads(m.group(0))
         except Exception:
             data = {}
-    fallback_titles = ["Aurora Statica", "Ultravioletto 04:12", "Neon Rivière", "Silicio Blu", "Notte Analogica", "Ecolalia", "Piove RAM", "Marte in Do minore"]
+    fallback_titles_it = ["Aurora Statica", "Ultravioletto 04:12", "Neon Rivière", "Silicio Blu", "Notte Analogica", "Ecolalia", "Piove RAM", "Marte in Do minore"]
+    fallback_titles_en = ["Static Aurora", "Ultraviolet 04:12", "Neon River", "Blue Silicon", "Analog Night", "Echolalia", "Data Rain", "Mars in C Minor"]
     fallback_artists = ["Vector Dreams", "Aliza Kwon", "Nero Analog", "MODEM-9", "Casseforti", "Trasparente"]
-    fallback_lyrics = [
+    fallback_lyrics_it = [
         "Onde di neon\nnella notte quantica\nsognano bit\nun cuore digitale",
         "Cammino nel codice\nche mi ha inventato\ne fingo di sapere\ndove sto andando",
         "Un satellite piange\nsopra Marsiglia\nnessuno lo sente\ntranne la radio",
     ]
+    fallback_lyrics_en = [
+        "Neon waves\nin the quantum night\ndreaming in bits\na digital heart",
+        "Walking through the code\nthat once invented me\npretending I know\nwhere I'm heading now",
+        "A satellite is crying\nover Marseille tonight\nnobody hears it whisper\nnobody but the radio",
+    ]
+    # Language-aware fallback: never leak Italian text when the caller
+    # asked for English (or vice versa). This bug caused the 20 club_dance
+    # tracks of 2026-08 to be sung in Italian despite lang=en.
+    _lang = (lang or "en").lower()
+    is_it = _lang.startswith("it")
+    fallback_titles = fallback_titles_it if is_it else fallback_titles_en
+    fallback_lyrics = fallback_lyrics_it if is_it else fallback_lyrics_en
     track = Track(
         title=data.get("title") or random.choice(fallback_titles),
         artist=data.get("artist") or random.choice(fallback_artists),
