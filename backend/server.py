@@ -156,6 +156,7 @@ class Track(BaseModel):
     source: Literal["suno", "stable_audio", "procedural", "admin_upload"] = "procedural"
     is_anthem: bool = False               # official R-A.I. anthem — played periodically as jingle
     is_jingle: bool = False               # short R-A.I. station jingle — played between segments
+    on_air: bool = True                   # admin toggle: if False, excluded from rotation
     suno_task_id: Optional[str] = None
     status: Literal["ready", "pending", "failed", "retired", "disabled"] = "ready"
     created_at: str = Field(default_factory=now_iso)
@@ -1016,7 +1017,8 @@ async def admin_tracks_searchable():
     items = []
     cursor = db.tracks.find(
         {"status": {"$ne": "retired"}},
-        {"_id": 0, "id": 1, "title": 1, "artist": 1, "is_jingle": 1, "is_anthem": 1, "duration_sec": 1},
+        {"_id": 0, "id": 1, "title": 1, "artist": 1, "is_jingle": 1, "is_anthem": 1,
+         "duration_sec": 1, "on_air": 1},
     ).sort("created_at", -1)
     docs = await cursor.to_list(length=2000)
     for t in docs:
@@ -1029,6 +1031,7 @@ async def admin_tracks_searchable():
             "artist": t.get("artist") or "R-A.I.",
             "kind": kind,
             "duration_sec": t.get("duration_sec") or 0,
+            "on_air": t.get("on_air") if t.get("on_air") is not None else True,
         })
     return {"tracks": items, "total": len(items)}
 
@@ -1270,6 +1273,107 @@ async def admin_db_import(
     logger.info(f"Admin DB import ({mode}): {stats}")
     return {"ok": True, "mode": mode, "source_db": payload.get("source_db", "?"),
             "exported_at": payload.get("exported_at"), "stats": stats}
+
+
+# ----------------------- Admin: track on-air toggle -----------------------
+@api_router.post("/admin/tracks/{track_id}/on-air")
+async def admin_toggle_on_air(track_id: str, on_air: bool = Form(...)):
+    """Enable / disable a single track for rotation. When False, the
+    rotation pools (`high_pool`, `normal_pool`) and the jingle picker
+    all skip it."""
+    r = await db.tracks.update_one(
+        {"id": track_id},
+        {"$set": {"on_air": bool(on_air),
+                  "updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    if r.matched_count == 0:
+        raise HTTPException(404, "Track non trovata")
+    return {"ok": True, "track_id": track_id, "on_air": bool(on_air)}
+
+
+# ----------------------- Admin: rotation rules -----------------------
+@api_router.get("/admin/rotation-rules")
+async def admin_get_rotation_rules():
+    """Attuali cadenze del palinsesto (jingle e talk)."""
+    doc = await db.station.find_one({"_id": "state"}) or {}
+    return {
+        "jingle_every_n_songs": int(doc.get("jingle_every_n_songs") or 2),
+        "dj_talk_every_n_songs": int(doc.get("dj_talk_every_n_songs") or 4),
+    }
+
+
+@api_router.post("/admin/rotation-rules")
+async def admin_set_rotation_rules(
+    jingle_every_n_songs: int = Form(...),
+    dj_talk_every_n_songs: int = Form(...),
+):
+    """Set the rotation cadence.
+      jingle_every_n_songs  → interspersa un jingle brandizzato ogni N brani
+      dj_talk_every_n_songs → interspersa una rubrica DJ ogni Y brani
+    Valori validi: 1..20.
+    """
+    j = max(1, min(20, int(jingle_every_n_songs)))
+    d = max(1, min(20, int(dj_talk_every_n_songs)))
+    await db.station.update_one(
+        {"_id": "state"},
+        {"$set": {"jingle_every_n_songs": j, "dj_talk_every_n_songs": d}},
+        upsert=True,
+    )
+    logger.info(f"Rotation rules updated: jingle every {j}, dj_talk every {d}")
+    return {"ok": True, "jingle_every_n_songs": j, "dj_talk_every_n_songs": d}
+
+
+# ----------------------- Admin: one-click sync to production -----------------------
+@api_router.post("/admin/db/sync-to-production")
+async def admin_sync_to_production(target_url: str = Form("https://r-ai.it")):
+    """Esporta le tracce di questo ambiente e le POSTa direttamente
+    all'endpoint /api/admin/db/import di produzione. Un click, niente
+    download/upload manuale.
+    Il target_url e' configurabile (default https://r-ai.it).
+    """
+    if not target_url.startswith(("http://", "https://")):
+        raise HTTPException(400, "target_url deve iniziare con http(s)://")
+    target = target_url.rstrip("/") + "/api/admin/db/import"
+
+    # 1) Export locale in memoria
+    tracks = await db.tracks.find({}, {"_id": 0}).to_list(length=10000)
+    for t in tracks:
+        for k, v in list(t.items()):
+            if isinstance(v, datetime):
+                t[k] = v.isoformat()
+    payload = {
+        "version": 1,
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "source_db": os.environ.get("DB_NAME", "?"),
+        "count": len(tracks),
+        "tracks": tracks,
+    }
+    import json as _json
+    body_bytes = _json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+    # 2) POST a produzione come multipart form (mode=merge)
+    try:
+        async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
+            files = {"file": ("rai_tracks_sync.json", body_bytes, "application/json")}
+            data = {"mode": "merge"}
+            r = await client.post(target, files=files, data=data)
+            if r.status_code != 200:
+                raise HTTPException(
+                    502,
+                    f"Produzione ha risposto {r.status_code}: {r.text[:400]}"
+                )
+            result = r.json()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(502, f"Errore contattando produzione: {e}")
+
+    return {
+        "ok": True,
+        "target": target,
+        "sent_tracks": len(tracks),
+        "production_response": result,
+    }
 
 
 @api_router.get("/admin/export/category/{category}")
@@ -1737,6 +1841,13 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
     # ============================================================
     if kind is None:
         state_doc = await db.station.find_one({"_id": "state"}) or {}
+        # Configurable rotation rules (defaults preserve the original 8-slot
+        # feel: jingle every 2 music tracks, DJ talk every 4 music tracks).
+        j_every = int(state_doc.get("jingle_every_n_songs") or 2)
+        d_every = int(state_doc.get("dj_talk_every_n_songs") or 4)
+        songs_since_jingle = int(state_doc.get("songs_since_jingle") or 0)
+        songs_since_dj_talk = int(state_doc.get("songs_since_dj_talk") or 0)
+        # Legacy: keep playlist_position rolling for stats/back-compat only.
         pos = int(state_doc.get("playlist_position", 0)) % 8
 
         # Admin "Jingle NOW" command: consume the flag and return an actual
@@ -1746,7 +1857,8 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
                 {"_id": "state"}, {"$set": {"force_next_jingle": False}}, upsert=True
             )
             jingle = await db.tracks.find_one(
-                {"is_jingle": True, "status": "ready", "audio_url": {"$ne": None}},
+                {"is_jingle": True, "status": "ready", "audio_url": {"$ne": None},
+                 "on_air": {"$ne": False}},
                 {"_id": 0}, sort=[("last_played_at", 1)],
             )
             if jingle:
@@ -1779,18 +1891,34 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
         future_rubrics = ["talk", "history", "interview", "joke", "motivation", "horoscope", "news"]
         commercial_slots = ["ad_spot", "weather"]
 
-        if pos in (0, 1, 5, 6):
-            kind = "music"
-        elif pos in (2, 7):
-            # Jingle slot: ogni 2 brani. Pesca un jingle dalla libreria e lo
-            # restituisce direttamente come segmento music (short).
+        # ---- Rotation slot decision based on configurable rules ----
+        # Priority order: time signal (once per hour) → jingle → dj_talk → music.
+        if last_time_hour != current_hour_key:
+            kind = "time_signal"
+            await db.station.update_one(
+                {"_id": "state"},
+                {"$set": {"last_time_signal_hour": current_hour_key}},
+                upsert=True,
+            )
+        elif songs_since_jingle >= j_every:
             jingle = await db.tracks.find_one(
-                {"is_jingle": True, "status": "ready", "audio_url": {"$ne": None}},
+                {"is_jingle": True, "status": "ready", "audio_url": {"$ne": None},
+                 "on_air": {"$ne": False}},
                 {"_id": 0}, sort=[("last_played_at", 1)],
             )
             if jingle:
-                await db.tracks.update_one({"id": jingle["id"]}, {"$set": {"last_played_at": datetime.now(timezone.utc).isoformat()}})
-                await db.station.update_one({"_id": "state"}, {"$set": {"playlist_position": (pos + 1) % 8}}, upsert=True)
+                await db.tracks.update_one(
+                    {"id": jingle["id"]},
+                    {"$set": {"last_played_at": datetime.now(timezone.utc).isoformat()}},
+                )
+                await db.station.update_one(
+                    {"_id": "state"},
+                    {"$set": {
+                        "playlist_position": (pos + 1) % 8,
+                        "songs_since_jingle": 0,
+                    }},
+                    upsert=True,
+                )
                 segment = Segment(
                     kind="music",
                     title=f"♪ {jingle.get('title','Jingle')} — {jingle.get('artist','R-A.I.')}",
@@ -1802,21 +1930,32 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
                 )
                 await db.segments.insert_one(segment.model_dump())
                 return segment
+            # No jingle available → fall through to music, reset counter anyway
+            await db.station.update_one({"_id": "state"},
+                {"$set": {"songs_since_jingle": 0}}, upsert=True)
             kind = "music"
-        elif pos == 3:
+        elif songs_since_dj_talk >= d_every:
             kind = random.choice(future_rubrics)
-        else:  # pos == 4
-            if last_time_hour != current_hour_key:
-                kind = "time_signal"
-                await db.station.update_one(
-                    {"_id": "state"},
-                    {"$set": {"last_time_signal_hour": current_hour_key}},
-                    upsert=True,
-                )
-            else:
-                kind = random.choice(commercial_slots)
+            await db.station.update_one({"_id": "state"},
+                {"$set": {"songs_since_dj_talk": 0}}, upsert=True)
+        else:
+            kind = "music"
 
-        # Advance position (persist)
+        # Update per-slot counters for the music case (so future calls
+        # trigger jingle/talk at the right cadence).
+        if kind == "music":
+            songs_since_jingle += 1
+            songs_since_dj_talk += 1
+            await db.station.update_one(
+                {"_id": "state"},
+                {"$set": {
+                    "songs_since_jingle": songs_since_jingle,
+                    "songs_since_dj_talk": songs_since_dj_talk,
+                }},
+                upsert=True,
+            )
+
+        # Legacy playlist_position advance (kept for stats/back-compat).
         await db.station.update_one(
             {"_id": "state"},
             {"$set": {"playlist_position": (pos + 1) % 8}},
@@ -1903,6 +2042,7 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
             _music_sources = {"$in": ["suno", "admin_upload"]}
             high_pool = await db.tracks.find(
                 {"source": _music_sources, "status": "ready", "audio_url": {"$ne": None},
+                 "on_air": {"$ne": False},
                  "$or": [
                      {"priority": "high"},
                      {"rotation_weight": {"$gt": 1}},
@@ -1916,6 +2056,7 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
             ).to_list(length=50)
             normal_pool = await db.tracks.find(
                 {"source": _music_sources, "status": "ready", "audio_url": {"$ne": None},
+                 "on_air": {"$ne": False},
                  "$or": [{"is_anthem": {"$exists": False}}, {"is_anthem": False}],
                  "priority": {"$ne": "high"},
                  "is_jingle": {"$ne": True},

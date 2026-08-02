@@ -186,6 +186,9 @@ export default function Dashboard() {
         {/* DB Sync — export/import tracks between preview and production */}
         <DbSyncPanel />
 
+        {/* NEW: Rotation rules (jingle every X, DJ talk every Y) */}
+        <RotationRulesPanel />
+
         {/* Unified track manager — clean table with search, upload, replace */}
         <TrackManagerPanel />
 
@@ -1419,7 +1422,18 @@ function DbSyncPanel() {
         </p>
       </div>
 
-      <div className="grid md:grid-cols-2 gap-6">
+      <div className="grid md:grid-cols-3 gap-6">
+        {/* ONE-CLICK SYNC TO PRODUCTION */}
+        <div className="p-4 rounded bg-gradient-to-br from-pink-500/10 to-cyan-500/10 border border-pink-500/30">
+          <div className="text-pink-300 label-mono mb-2 flex items-center gap-2">
+            <RefreshCw className="w-4 h-4" /> Sync automatico → r-ai.it
+          </div>
+          <p className="text-xs text-zinc-400 mb-3">
+            Un click: esporta le tracce locali e le importa direttamente nel database di produzione (r-ai.it).
+          </p>
+          <SyncToProductionButton />
+        </div>
+
         {/* EXPORT */}
         <div className="p-4 rounded bg-white/[0.03] border border-white/5">
           <div className="text-cyan-300 label-mono mb-2">1 · Esporta da questo ambiente</div>
@@ -1497,22 +1511,32 @@ function DbSyncPanel() {
 
 // ==================== TrackManagerPanel (single, clean archive) ====================
 // Master Plan del 2026-02:
-//   • Tabella unica con Nome, Tipo (Song/Jingle/Inno), Download, Sostituisci.
+//   • Tabella unica con Nome, Tipo (Song/Jingle/Inno), Preview▶, On-Air toggle,
+//     Download, Sostituisci.
 //   • Pulsante AGGIUNGI NUOVO: apre modal file + nome + tipo (Song/Jingle).
 //   • Pulsante SOSTITUISCI su ogni riga: apre modal file + nuovo nome (obbligatorio).
-//     Sostituzione atomica lato server: vecchio file cancellato, nuovo nome
-//     propagato ai segmenti in coda → il Player mostra subito il nuovo nome.
+//     Sostituzione atomica lato server.
 function TrackManagerPanel() {
   const [tracks, setTracks] = useState([]);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all"); // all|song|jingle|anthem
   const [loading, setLoading] = useState(true);
   const [modal, setModal] = useState(null); // { kind: 'new'|'replace', target?: track }
+  const [previewId, setPreviewId] = useState(null);
+  const previewAudioRef = React.useRef(null);
+  const [onAirState, setOnAirState] = useState({}); // { [trackId]: true|false }
 
   const load = React.useCallback(() => {
     setLoading(true);
     api.get("/admin/tracks/searchable")
-      .then(r => setTracks(r.data?.tracks || []))
+      .then(r => {
+        const list = r.data?.tracks || [];
+        setTracks(list);
+        // Seed on_air state from track docs (they include on_air field)
+        const map = {};
+        list.forEach(t => { map[t.id] = t.on_air !== false; });
+        setOnAirState(map);
+      })
       .catch(() => setTracks([]))
       .finally(() => setLoading(false));
   }, []);
@@ -1530,6 +1554,51 @@ function TrackManagerPanel() {
 
   const backend = process.env.REACT_APP_BACKEND_URL;
   const downloadUrl = (id) => `${backend}/api/suno_audio/track_${id}.mp3`;
+
+  const togglePreview = (id) => {
+    if (previewId === id) {
+      // Already previewing → stop
+      if (previewAudioRef.current) {
+        previewAudioRef.current.pause();
+        previewAudioRef.current = null;
+      }
+      setPreviewId(null);
+      return;
+    }
+    // Stop any current preview
+    if (previewAudioRef.current) {
+      previewAudioRef.current.pause();
+      previewAudioRef.current = null;
+    }
+    const a = new Audio(downloadUrl(id));
+    a.volume = 0.9;
+    a.play().catch(() => toast.error("Preview: impossibile riprodurre"));
+    a.addEventListener("ended", () => setPreviewId(null));
+    previewAudioRef.current = a;
+    setPreviewId(id);
+  };
+
+  const toggleOnAir = async (id, current) => {
+    const next = !current;
+    setOnAirState(s => ({ ...s, [id]: next }));  // optimistic
+    try {
+      const fd = new FormData();
+      fd.append("on_air", next ? "true" : "false");
+      const r = await fetch(`${backend}/api/admin/tracks/${id}/on-air`, { method: "POST", body: fd });
+      if (!r.ok) throw new Error((await r.json().catch(()=>({}))).detail || r.statusText);
+      toast.success(next ? "Brano ON AIR" : "Brano OFF (escluso dalla rotazione)");
+    } catch (e) {
+      setOnAirState(s => ({ ...s, [id]: current }));  // rollback
+      toast.error(`Errore: ${e.message}`);
+    }
+  };
+
+  // Stop preview when panel unmounts
+  useEffect(() => () => {
+    if (previewAudioRef.current) {
+      try { previewAudioRef.current.pause(); } catch (e) {}
+    }
+  }, []);
 
   const typeBadge = (kind) => {
     const styles = {
@@ -1607,27 +1676,60 @@ function TrackManagerPanel() {
             <tr className="text-left text-[10px] uppercase tracking-widest text-zinc-500">
               <th className="px-3 py-2 font-mono">Nome</th>
               <th className="px-3 py-2 font-mono w-20">Tipo</th>
+              <th className="px-3 py-2 font-mono w-16 text-center">Preview</th>
+              <th className="px-3 py-2 font-mono w-24 text-center">In Onda</th>
               <th className="px-3 py-2 font-mono w-24 text-center">Download</th>
               <th className="px-3 py-2 font-mono w-28 text-center">Sostituisci</th>
             </tr>
           </thead>
           <tbody>
             {filtered.length === 0 && (
-              <tr><td colSpan={4} className="px-3 py-6 text-center text-zinc-500 text-sm">
+              <tr><td colSpan={6} className="px-3 py-6 text-center text-zinc-500 text-sm">
                 Nessun brano corrisponde ai filtri.
               </td></tr>
             )}
-            {filtered.map(t => (
+            {filtered.map(t => {
+              const isOn = onAirState[t.id] !== false;
+              const isPreviewing = previewId === t.id;
+              return (
               <tr
                 key={t.id}
                 data-testid={`track-row-${t.id.slice(0,8)}`}
-                className="border-t border-white/[0.04] hover:bg-white/[0.03]"
+                className={`border-t border-white/[0.04] hover:bg-white/[0.03] ${!isOn ? "opacity-50" : ""}`}
               >
                 <td className="px-3 py-2">
                   <div className="text-white font-medium truncate max-w-[420px]" title={t.title}>{t.title}</div>
                   <div className="text-[10px] text-zinc-500 font-mono">{t.artist} · {t.id.slice(0,8)}</div>
                 </td>
                 <td className="px-3 py-2">{typeBadge(t.kind)}</td>
+                <td className="px-3 py-2 text-center">
+                  <button
+                    data-testid={`preview-${t.id.slice(0,8)}`}
+                    onClick={() => togglePreview(t.id)}
+                    className={`inline-flex items-center justify-center w-8 h-8 rounded-full border transition ${
+                      isPreviewing
+                        ? "bg-emerald-500/25 border-emerald-400 text-emerald-300"
+                        : "bg-white/5 border-white/15 text-white hover:bg-white/10"
+                    }`}
+                    title={isPreviewing ? "Stop preview" : "Ascolta"}
+                  >
+                    {isPreviewing ? <PauseCircle className="w-4 h-4"/> : <PlayCircle className="w-4 h-4"/>}
+                  </button>
+                </td>
+                <td className="px-3 py-2 text-center">
+                  <button
+                    data-testid={`onair-${t.id.slice(0,8)}`}
+                    onClick={() => toggleOnAir(t.id, isOn)}
+                    className={`inline-flex items-center gap-1 px-3 py-1 rounded text-xs font-mono uppercase border transition ${
+                      isOn
+                        ? "bg-emerald-500/15 border-emerald-500/50 text-emerald-300 hover:bg-emerald-500/25"
+                        : "bg-red-500/10 border-red-500/40 text-red-300 hover:bg-red-500/20"
+                    }`}
+                    title={isOn ? "Clicca per escludere dalla rotazione" : "Clicca per rimettere in rotazione"}
+                  >
+                    {isOn ? "ON" : "OFF"}
+                  </button>
+                </td>
                 <td className="px-3 py-2 text-center">
                   <a
                     data-testid={`dl-${t.id.slice(0,8)}`}
@@ -1648,7 +1750,8 @@ function TrackManagerPanel() {
                   </button>
                 </td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -2059,6 +2162,144 @@ function LiveExternalPanel() {
           Alternative: <em>Radio.co</em> (trial 7 gg), <em>AzuraCast</em> (self-hosted, gratis se hai un VPS), <em>Shoutcast Directory</em> (gratis, richiede software).
         </div>
       </details>
+    </section>
+  );
+}
+
+
+
+// One-click sync from preview → production (r-ai.it)
+function SyncToProductionButton() {
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+  const [target, setTarget] = useState("https://r-ai.it");
+
+  const doSync = async () => {
+    setBusy(true);
+    setResult(null);
+    try {
+      const fd = new FormData();
+      fd.append("target_url", target);
+      const backend = process.env.REACT_APP_BACKEND_URL;
+      const resp = await fetch(`${backend}/api/admin/db/sync-to-production`, { method: "POST", body: fd });
+      if (!resp.ok) throw new Error((await resp.json().catch(()=>({}))).detail || resp.statusText);
+      const data = await resp.json();
+      setResult(data);
+      const s = data.production_response?.stats || {};
+      toast.success(`Sync OK: inseriti ${s.inserted||0}, aggiornati ${s.updated||0}, totale prod ${s.total_in_db_after||"?"}`);
+    } catch (e) {
+      toast.error(`Sync fallito: ${e.message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div>
+      <input
+        data-testid="sync-target-url"
+        type="url"
+        value={target}
+        onChange={(e) => setTarget(e.target.value)}
+        className="w-full bg-zinc-900 border border-white/10 rounded px-2 py-1 text-xs font-mono text-white mb-2"
+      />
+      <button
+        data-testid="sync-to-prod-btn"
+        onClick={doSync}
+        disabled={busy}
+        className="w-full btn-primary py-2 text-sm flex items-center justify-center gap-2"
+      >
+        <RefreshCw className={`w-4 h-4 ${busy ? "animate-spin" : ""}`} />
+        {busy ? "Sincronizzo…" : "SINCRONIZZA CON R-AI.IT"}
+      </button>
+      {result && (
+        <div data-testid="sync-result" className="mt-2 text-[11px] font-mono text-emerald-300">
+          ✓ inviati {result.sent_tracks} record
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+// Rotation rules — jingle_every_n / dj_talk_every_n
+function RotationRulesPanel() {
+  const [j, setJ] = useState(2);
+  const [d, setD] = useState(4);
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    api.get("/admin/rotation-rules")
+      .then(r => {
+        setJ(r.data?.jingle_every_n_songs ?? 2);
+        setD(r.data?.dj_talk_every_n_songs ?? 4);
+        setLoaded(true);
+      });
+  }, []);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const fd = new FormData();
+      fd.append("jingle_every_n_songs", String(j));
+      fd.append("dj_talk_every_n_songs", String(d));
+      const backend = process.env.REACT_APP_BACKEND_URL;
+      const r = await fetch(`${backend}/api/admin/rotation-rules`, { method: "POST", body: fd });
+      if (!r.ok) throw new Error((await r.json().catch(()=>({}))).detail || r.statusText);
+      toast.success(`Regole salvate: jingle ogni ${j}, DJ ogni ${d}`);
+    } catch (e) {
+      toast.error(`Errore: ${e.message}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <section data-testid="rotation-rules-panel" className="lg:col-span-4 card-surface p-6">
+      <div className="mb-4">
+        <div className="label-mono flex items-center gap-2">
+          <Sliders className="w-4 h-4 text-amber-400" /> Impostazioni Rotazione · Palinsesto
+        </div>
+        <h2 className="font-display font-black text-2xl mt-1">Cadenze automatiche</h2>
+        <p className="text-zinc-400 text-sm mt-1">
+          Il palinsesto rispetta queste due regole in tempo reale. Il time signal all'ora piena è sempre incluso.
+        </p>
+      </div>
+      <div className="grid sm:grid-cols-2 gap-4">
+        <div className="p-4 rounded bg-white/[0.03] border border-white/5">
+          <label className="label-mono block mb-2">Jingle ogni <span className="text-pink-300">N</span> brani</label>
+          <input
+            data-testid="rule-jingle-n"
+            type="number" min={1} max={20}
+            value={j}
+            onChange={(e) => setJ(Number(e.target.value)||1)}
+            className="w-full bg-zinc-900 border border-white/10 rounded px-3 py-2 text-2xl font-mono text-pink-300 text-center"
+          />
+          <div className="text-xs text-zinc-500 mt-1">Attuale: 1 jingle brandizzato ogni {j} brani musicali</div>
+        </div>
+        <div className="p-4 rounded bg-white/[0.03] border border-white/5">
+          <label className="label-mono block mb-2">DJ parla ogni <span className="text-cyan-300">Y</span> brani</label>
+          <input
+            data-testid="rule-dj-n"
+            type="number" min={1} max={20}
+            value={d}
+            onChange={(e) => setD(Number(e.target.value)||1)}
+            className="w-full bg-zinc-900 border border-white/10 rounded px-3 py-2 text-2xl font-mono text-cyan-300 text-center"
+          />
+          <div className="text-xs text-zinc-500 mt-1">Attuale: 1 rubrica DJ (Leo/Aria/Max) ogni {d} brani musicali</div>
+        </div>
+      </div>
+      <div className="mt-4">
+        <button
+          data-testid="rules-save"
+          onClick={save}
+          disabled={!loaded || saving}
+          className="btn-primary px-4 py-2 flex items-center gap-2"
+        >
+          {saving ? "Salvo…" : "Applica al palinsesto"}
+        </button>
+      </div>
     </section>
   );
 }
