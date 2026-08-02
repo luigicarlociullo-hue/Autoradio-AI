@@ -14,6 +14,12 @@ Vorrei costruire un software di gestione radiofonica completamente automatizzato
 - Auth: Emergent Google OAuth (free) for admin.
 
 ## What's implemented (2026-08 · v10 · Stability fixes)
+- **v11.5 · TRACK OVERLAY NEON — Singolo rigo marquee fucsia** (2026-02, this session):
+  - **`PulsingBrand.js`**: sostituito il vecchio overlay title+artist a due righe con **un solo rigo marquee scorrevole**:
+    - Testo unico `TITOLO · ARTISTA` (con separatore `•`) che scorre in loop continuo (22s, `raiTrackMarquee`), duplicato per un effetto seamless.
+    - **Colore neon fucsia** `#FF1493` (palette `--neon-pink` del sito) con pulsazione del glow (`raiNeonPulse` 2.4s) — come il primo visual.
+    - Posizionato a `top: 60%` con `translateY(-50%)` → cade esattamente nella banda scura tra l'immagine e il suo riflesso basso.
+    - Maschera gradient laterale (`maskImage`) per un fade-in/out ai bordi che sfuma dolcemente l'entrata/uscita del testo scorrevole.
 - **v11.4 · JINGLE INTEGRALE — Rimosso fade-out finale** (2026-02, this session):
   - **`radioEngine.js` `playJingle()`**: **rimosso** l'`outroWatcher` che sfumava il jingle negli ultimi 1.2s. Ora il jingle suona per **intero** fino alla coda naturale del file audio; l'evento `ended` chiude tutto senza decrescendo. Fade-in di 200ms mantenuto solo all'attacco per evitare click.
 - **v11.3 · BUDGET GUARDRAIL — Stop-on-Empty-LLM prima di chiamare Suno** (2026-02, this session):
