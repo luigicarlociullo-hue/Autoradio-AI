@@ -1065,36 +1065,12 @@ class RadioEngine {
         }
       } catch (e) {}
 
-      // Fade-out morbido negli ultimi 1.2s: evita che una chiusura brusca di
-      // Suno diventi udibile — un decrescendo lo trasforma in un fade "voluto".
-      const outroWatcher = setInterval(() => {
-        if (!audio || audio.paused || audio.ended) return;
-        const remaining = (audio.duration || 30) - (audio.currentTime || 0);
-        if (remaining > 0 && remaining <= 1.2) {
-          try {
-            if (gainNode && ctx) {
-              const t0 = ctx.currentTime;
-              gainNode.gain.cancelScheduledValues(t0);
-              gainNode.gain.setValueAtTime(gainNode.gain.value, t0);
-              gainNode.gain.linearRampToValueAtTime(0.001, t0 + remaining);
-            } else if (audio.volume > 0.02) {
-              const steps = 12;
-              let i = 0;
-              const dt = (remaining * 1000) / steps;
-              const initial = audio.volume;
-              const iv = setInterval(() => {
-                i++;
-                audio.volume = Math.max(0, initial * (1 - i / steps));
-                if (i >= steps) clearInterval(iv);
-              }, dt);
-            }
-          } catch (e) {}
-          clearInterval(outroWatcher);
-        }
-      }, 100);
+      // NESSUN FADE-OUT: il jingle deve suonare per intero fino alla coda
+      // naturale (richiesta esplicita dell'utente 2026-02). Nessun
+      // `outroWatcher`, nessun decrescendo negli ultimi secondi — il file
+      // termina esattamente quando termina la sorgente audio.
 
       audio.addEventListener("ended", () => {
-        clearInterval(outroWatcher);
         clearTimeout(capTimer);
         // Small buffer post-ended per non troncare la coda del decoder
         setTimeout(() => {
@@ -1104,13 +1080,12 @@ class RadioEngine {
         }, 250);
       }, { once: true });
       audio.addEventListener("error", () => {
-        clearInterval(outroWatcher);
         clearTimeout(capTimer);
         done();
       }, { once: true });
       audio.addEventListener("canplaythrough", () => {
         clearTimeout(loadTimer);
-        audio.play().catch(() => { clearInterval(outroWatcher); clearTimeout(capTimer); done(); });
+        audio.play().catch(() => { clearTimeout(capTimer); done(); });
       }, { once: true });
 
       audio.src = url;

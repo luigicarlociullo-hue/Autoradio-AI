@@ -14,6 +14,8 @@ Vorrei costruire un software di gestione radiofonica completamente automatizzato
 - Auth: Emergent Google OAuth (free) for admin.
 
 ## What's implemented (2026-08 · v10 · Stability fixes)
+- **v11.4 · JINGLE INTEGRALE — Rimosso fade-out finale** (2026-02, this session):
+  - **`radioEngine.js` `playJingle()`**: **rimosso** l'`outroWatcher` che sfumava il jingle negli ultimi 1.2s. Ora il jingle suona per **intero** fino alla coda naturale del file audio; l'evento `ended` chiude tutto senza decrescendo. Fade-in di 200ms mantenuto solo all'attacco per evitare click.
 - **v11.3 · BUDGET GUARDRAIL — Stop-on-Empty-LLM prima di chiamare Suno** (2026-02, this session):
   - **`server.py`**:
     - Nuova eccezione dedicata `LLMBudgetExhaustedError` per crediti Universal Key esauriti.
