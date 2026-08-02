@@ -260,26 +260,63 @@ class RadioEngine {
   }
 
   /**
-   * TRONCA immediatamente il fade-out finale del brano musicale precedente
-   * (senza attendere il crossfade di 1s). Serve quando dobbiamo suonare un
-   * JINGLE per intero: il jingle non deve sovrapporsi alla coda del brano
-   * precedente. Nessun effetto se non c'è un fade-out pendente.
+   * FERMA la traccia musicale corrente con un fade-out breve (200ms) per
+   * evitare click, poi disconnette tutti i nodi Web Audio. Serve prima di
+   * suonare un JINGLE che deve restare "pulito" senza sovrapposizioni.
+   *
+   * Copre TRE casi:
+   *  1) brano in fase attiva (playback normale)    → fade rapido su `_currentMusicGain`
+   *  2) brano in fase fade-out finale (step 6)     → cancella e forza a zero
+   *  3) segmento parlato (currentAudio impostato)  → stop netto
+   *
+   * Idempotente: chiamabile senza rischio anche se non c'è nulla in riproduzione.
    */
   hardStopMusic() {
+    const ctx = this.audioCtx;
+    const now = ctx ? ctx.currentTime : 0;
+    const FADE_MS = 200;
+
+    // Caso 1: brano musicale attivo (gain node ancora vivo)
+    if (this._currentMusicGain) {
+      const g = this._currentMusicGain;
+      const src = this._currentMusicSrcNode;
+      const audio = this._currentMusicAudio;
+      try {
+        g.gain.cancelScheduledValues(now);
+        g.gain.setValueAtTime(g.gain.value, now);
+        g.gain.linearRampToValueAtTime(0.0001, now + FADE_MS / 1000);
+      } catch (e) {}
+      setTimeout(() => {
+        try { audio && audio.pause(); } catch (e) {}
+        try { if (audio) audio.src = ""; } catch (e) {}
+        try { src && src.disconnect(); } catch (e) {}
+        try { g && g.disconnect(); } catch (e) {}
+      }, FADE_MS + 30);
+      this._currentMusicGain = null;
+      this._currentMusicSrcNode = null;
+      this._currentMusicAudio = null;
+      this.stopRequested = true; // segnala al loop di _playMusicWithVoice di uscire
+    }
+
+    // Caso 2: fade-out finale già in corso → tronca subito
     const p = this._pendingMusicFadeOut;
-    if (!p) return;
-    p.canceled = true;
-    try {
-      if (p.musicGain && this.audioCtx) {
-        const now = this.audioCtx.currentTime;
-        p.musicGain.gain.cancelScheduledValues(now);
-        p.musicGain.gain.setValueAtTime(0.0, now);
-      }
-    } catch (e) {}
-    try { if (p.audio) { p.audio.pause(); p.audio.src = ""; } } catch (e) {}
-    try { p.srcNode && p.srcNode.disconnect(); } catch (e) {}
-    try { p.musicGain && p.musicGain.disconnect(); } catch (e) {}
-    this._pendingMusicFadeOut = null;
+    if (p) {
+      p.canceled = true;
+      try {
+        if (p.musicGain && ctx) {
+          p.musicGain.gain.cancelScheduledValues(now);
+          p.musicGain.gain.setValueAtTime(0.0, now);
+        }
+      } catch (e) {}
+      try { if (p.audio) { p.audio.pause(); p.audio.src = ""; } } catch (e) {}
+      try { p.srcNode && p.srcNode.disconnect(); } catch (e) {}
+      try { p.musicGain && p.musicGain.disconnect(); } catch (e) {}
+      this._pendingMusicFadeOut = null;
+    }
+
+    // Caso 3: eventuale voce/audio corrente (es. outro DJ) — stop netto
+    try { this.stopAudio(); } catch (e) {}
+    try { this.stopSpeech(); } catch (e) {}
   }
 
   async playAudioUrl(url, onStart) {
@@ -1005,8 +1042,10 @@ class RadioEngine {
       audio.preload = "auto";
       audio.volume = 1.0;
 
-      // Safety cap generoso: max 75s (Suno V4 può fare 20-60s, resta un buffer).
-      const capTimer = setTimeout(() => { try { audio.pause(); } catch (e) {}; done(); }, 75000);
+      // Safety cap MOLTO generoso: max 5 minuti (300s). I jingle full-length
+      // possono arrivare a 3+ minuti — non li tagliamo mai per timeout arbitrario.
+      // Se il file è davvero corrotto, l'evento `error` scatta comunque.
+      const capTimer = setTimeout(() => { try { audio.pause(); } catch (e) {}; done(); }, 300000);
       // Load timeout: se canplaythrough non arriva in 10s, skip
       const loadTimer = setTimeout(() => { console.warn("Jingle load timeout"); done(); }, 10000);
 
@@ -1015,12 +1054,12 @@ class RadioEngine {
         if (ctx) {
           srcNode = ctx.createMediaElementSource(audio);
           gainNode = ctx.createGain();
-          // Fade-in praticamente istantaneo (40ms): il jingle deve partire
-          // pulito, senza sovrapporsi al brano precedente. Il caller è
-          // responsabile di aver troncato la coda del brano prima
-          // (vedi hardStopMusic()).
+          // Fade-in di ~200ms: rampa dolce che evita click all'attacco ma
+          // resta abbastanza corta da non sembrare "sfumata". Il caller ha
+          // già invocato hardStopMusic() per liberare l'aria dal brano
+          // precedente, quindi il jingle sale su silenzio.
           gainNode.gain.value = 0.001;
-          gainNode.gain.exponentialRampToValueAtTime(1.0, ctx.currentTime + 0.04);
+          gainNode.gain.exponentialRampToValueAtTime(1.0, ctx.currentTime + 0.20);
           srcNode.connect(gainNode);
           gainNode.connect(this.outputBus || ctx.destination);
         }
@@ -1179,11 +1218,23 @@ class RadioEngine {
         console.warn("Music WebAudio graph setup failed, using element volume:", e);
       }
 
+      // Espone i nodi correnti così `hardStopMusic()` può interromperli
+      // anche durante la fase di playback attivo (non solo nel fade-out finale).
+      this._currentMusicAudio = audio;
+      this._currentMusicSrcNode = srcNode;
+      this._currentMusicGain = musicGain;
+      this.stopRequested = false;
+
       audio.addEventListener("error", () => {
         clearTimeout(safetyTimer);
         console.error("Music load error:", url);
         try { srcNode && srcNode.disconnect(); } catch (e) {}
         try { musicGain && musicGain.disconnect(); } catch (e) {}
+        if (this._currentMusicAudio === audio) {
+          this._currentMusicAudio = null;
+          this._currentMusicSrcNode = null;
+          this._currentMusicGain = null;
+        }
         done();
       }, { once: true });
 
@@ -1257,7 +1308,9 @@ class RadioEngine {
           });
 
           // 5) Crossfade 1s musica -> duck, poi outro DJ
-          if (segment.outro_speech_url || segment.outro_script) {
+          //    SALTA se il brano è stato hard-stopped (es. per far posto a un jingle):
+          //    non ha senso lanciare l'outro DJ senza musica sotto.
+          if ((segment.outro_speech_url || segment.outro_script) && !this.stopRequested) {
             await setVol(OUTRO_DUCK, CROSSFADE_MS);
             if (segment.outro_speech_url) {
               await this.playAudioUrl(segment.outro_speech_url);
@@ -1266,11 +1319,25 @@ class RadioEngine {
             }
           }
 
+          // Se hard-stopped, salta anche lo step 6 (il brano è già stato pausato/disconnesso)
+          if (this.stopRequested) {
+            this.stopRequested = false;
+            done();
+            return;
+          }
+
           // 6) CROSSFADE finale 1s: fade-out mentre il prossimo segmento parte.
           //    Traccia il fade-out pendente così che, se il prossimo elemento
           //    è un JINGLE (che deve suonare per intero senza overlap),
           //    `hardStopMusic()` possa troncarlo bruscamente senza attendere.
           if (this.currentAudio === audio) this.currentAudio = null;
+          // Rilascia i riferimenti "playback attivo": da ora il brano è in
+          // fase di fade-out finale (tracciata in _pendingMusicFadeOut).
+          if (this._currentMusicAudio === audio) {
+            this._currentMusicAudio = null;
+            this._currentMusicSrcNode = null;
+            this._currentMusicGain = null;
+          }
           const pending = { audio, srcNode, musicGain, canceled: false };
           this._pendingMusicFadeOut = pending;
           setVol(0.001, CROSSFADE_MS).then(() => {
@@ -1285,6 +1352,11 @@ class RadioEngine {
           console.error("Music playback error:", playErr);
           try { srcNode && srcNode.disconnect(); } catch (e) {}
           try { musicGain && musicGain.disconnect(); } catch (e) {}
+          if (this._currentMusicAudio === audio) {
+            this._currentMusicAudio = null;
+            this._currentMusicSrcNode = null;
+            this._currentMusicGain = null;
+          }
           done();
         }
       }, { once: true });

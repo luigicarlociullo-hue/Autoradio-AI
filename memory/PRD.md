@@ -14,6 +14,16 @@ Vorrei costruire un software di gestione radiofonica completamente automatizzato
 - Auth: Emergent Google OAuth (free) for admin.
 
 ## What's implemented (2026-08 · v10 · Stability fixes)
+- **v11.2 · JINGLE FIX ROUND 2 — Full-length + hardStop reale** (2026-02, this session):
+  - **`radioEngine.js`**:
+    - `playJingle()`: cap safety-timeout alzato da **75s → 300s** (5 min) — jingle full-length non vengono più tagliati.
+    - `playJingle()`: fade-in riportato da 40ms → **200ms** (rampa dolce anti-click).
+    - `hardStopMusic()` RISCRITTO — ora ferma davvero il brano attivo (non solo il fade-out pendente):
+      - **Caso 1 (playback attivo)**: fade rapido 200ms su `_currentMusicGain` esposto come proprietà d'istanza, poi pause+disconnect. Setta `stopRequested=true` per far uscire pulito il loop di `_playMusicWithVoice`.
+      - **Caso 2 (fade-out finale in corso)**: tronca `_pendingMusicFadeOut` come prima.
+      - **Caso 3 (voce/audio corrente)**: `stopAudio()` + `stopSpeech()`.
+    - `_playMusicWithVoice()` espone `_currentMusicAudio`, `_currentMusicSrcNode`, `_currentMusicGain` durante il playback attivo (rilasciati allo step 6 quando entra in fade-out).
+    - `_playMusicWithVoice()` step 5+6 saltano se `stopRequested` — no outro DJ orfano né doppio fade-out.
 - **v11.1 · JINGLE ZERO OVERLAP** (2026-02, this session):
   - **`radioEngine.js`**:
     - `_playMusicWithVoice()` step 6 ora traccia il fade-out finale in `_pendingMusicFadeOut`, così può essere troncato dall'esterno.
