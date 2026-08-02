@@ -1324,6 +1324,64 @@ async def admin_set_rotation_rules(
 
 
 # ----------------------- Admin: one-click sync to production -----------------------
+@api_router.post("/admin/db/purge-orphans")
+async def admin_purge_orphans(dry_run: bool = Form(True)):
+    """DELETE definitiva delle tracce senza file audio associato.
+    Un record è considerato "orfano" se:
+      - audio_url è None / stringa vuota, OPPURE
+      - status != 'ready' (ancora pending o failed dopo Suno),  OPPURE
+      - audio_url punta a un file locale che NON esiste E l'object storage
+        non lo ha (best-effort HEAD check).
+
+    Se dry_run=True (default) ritorna solo l'elenco senza cancellare.
+    Se dry_run=False cancella davvero.
+    """
+    to_delete = []
+    total = 0
+    async for t in db.tracks.find({}, {"_id": 0}):
+        total += 1
+        aurl = t.get("audio_url") or ""
+        status = t.get("status") or ""
+        orphan = False
+        reason = ""
+        if not aurl:
+            orphan = True; reason = "no_audio_url"
+        elif status not in ("ready",):
+            orphan = True; reason = f"status={status}"
+        elif aurl.startswith("/api/suno_audio/"):
+            fname = aurl.replace("/api/suno_audio/", "").split("?")[0]
+            local = SUNO_AUDIO_DIR / fname
+            if not (local.exists() and local.stat().st_size > 5000):
+                # Fallback: try object storage
+                data = await object_storage.fetch_mp3(f"suno/{fname}") if object_storage.is_enabled() else None
+                if not data:
+                    orphan = True; reason = "file_missing_local_and_bucket"
+        if orphan:
+            to_delete.append({
+                "id": t.get("id"), "title": t.get("title") or "?",
+                "reason": reason, "status": status, "audio_url": aurl,
+            })
+
+    if dry_run:
+        return {"dry_run": True, "total_tracks": total,
+                "orphans_count": len(to_delete),
+                "orphans_preview": to_delete[:20],
+                "would_delete_ids": [x["id"] for x in to_delete]}
+
+    ids = [x["id"] for x in to_delete]
+    if ids:
+        r = await db.tracks.delete_many({"id": {"$in": ids}})
+        deleted_count = r.deleted_count
+    else:
+        deleted_count = 0
+    logger.info(f"Purged {deleted_count} orphan tracks")
+    return {"dry_run": False, "total_tracks": total,
+            "orphans_count": len(to_delete),
+            "deleted_count": deleted_count,
+            "orphans": to_delete}
+
+
+
 @api_router.post("/admin/db/sync-to-production")
 async def admin_sync_to_production(target_url: str = Form("https://r-ai.it")):
     """Esporta le tracce di questo ambiente e le POSTa direttamente
