@@ -14,6 +14,14 @@ Vorrei costruire un software di gestione radiofonica completamente automatizzato
 - Auth: Emergent Google OAuth (free) for admin.
 
 ## What's implemented (2026-08 · v10 · Stability fixes)
+- **v11.1 · JINGLE ZERO OVERLAP** (2026-02, this session):
+  - **`radioEngine.js`**:
+    - `_playMusicWithVoice()` step 6 ora traccia il fade-out finale in `_pendingMusicFadeOut`, così può essere troncato dall'esterno.
+    - Nuovo metodo pubblico `hardStopMusic()`: interrompe bruscamente il fade-out del brano precedente (pausa immediata, gain a 0, disconnect nodi). Nessun effetto se non c'è fade-out pendente.
+    - `playJingle()` fade-in ridotto da 300ms → 40ms: il jingle parte pulito senza sovrapporsi.
+  - **`PublicRadio.js`**:
+    - Prima di ogni `radioEngine.playJingle(url)` viene chiamato `radioEngine.hardStopMusic()` → il jingle suona per intero, zero overlap con la coda del brano precedente.
+  - Risultato: il jingle mantiene la sua coda naturale e viene sempre riprodotto per intero prima che parta l'elemento successivo. Fade-in del brano musicale successivo (1s) rimane invariato ma non causa overlap perché il jingle è ormai terminato.
 - **v11.0 · RIORDINO STRUTTURALE — Palinsesto posizionale + player robusto** (2026-02, this session):
   - **Backend `server.py`**:
     - Sostituito `random.choices` con **palinsesto posizionale** (`station.playlist_position` 0..5):

@@ -259,6 +259,29 @@ class RadioEngine {
     this.currentMusicNodes = null;
   }
 
+  /**
+   * TRONCA immediatamente il fade-out finale del brano musicale precedente
+   * (senza attendere il crossfade di 1s). Serve quando dobbiamo suonare un
+   * JINGLE per intero: il jingle non deve sovrapporsi alla coda del brano
+   * precedente. Nessun effetto se non c'è un fade-out pendente.
+   */
+  hardStopMusic() {
+    const p = this._pendingMusicFadeOut;
+    if (!p) return;
+    p.canceled = true;
+    try {
+      if (p.musicGain && this.audioCtx) {
+        const now = this.audioCtx.currentTime;
+        p.musicGain.gain.cancelScheduledValues(now);
+        p.musicGain.gain.setValueAtTime(0.0, now);
+      }
+    } catch (e) {}
+    try { if (p.audio) { p.audio.pause(); p.audio.src = ""; } } catch (e) {}
+    try { p.srcNode && p.srcNode.disconnect(); } catch (e) {}
+    try { p.musicGain && p.musicGain.disconnect(); } catch (e) {}
+    this._pendingMusicFadeOut = null;
+  }
+
   async playAudioUrl(url, onStart) {
     return new Promise((resolve) => {
       if (!url) return resolve();
@@ -992,8 +1015,12 @@ class RadioEngine {
         if (ctx) {
           srcNode = ctx.createMediaElementSource(audio);
           gainNode = ctx.createGain();
+          // Fade-in praticamente istantaneo (40ms): il jingle deve partire
+          // pulito, senza sovrapporsi al brano precedente. Il caller è
+          // responsabile di aver troncato la coda del brano prima
+          // (vedi hardStopMusic()).
           gainNode.gain.value = 0.001;
-          gainNode.gain.exponentialRampToValueAtTime(1.0, ctx.currentTime + 0.3);
+          gainNode.gain.exponentialRampToValueAtTime(1.0, ctx.currentTime + 0.04);
           srcNode.connect(gainNode);
           gainNode.connect(this.outputBus || ctx.destination);
         }
@@ -1240,11 +1267,18 @@ class RadioEngine {
           }
 
           // 6) CROSSFADE finale 1s: fade-out mentre il prossimo segmento parte.
+          //    Traccia il fade-out pendente così che, se il prossimo elemento
+          //    è un JINGLE (che deve suonare per intero senza overlap),
+          //    `hardStopMusic()` possa troncarlo bruscamente senza attendere.
           if (this.currentAudio === audio) this.currentAudio = null;
+          const pending = { audio, srcNode, musicGain, canceled: false };
+          this._pendingMusicFadeOut = pending;
           setVol(0.001, CROSSFADE_MS).then(() => {
+            if (pending.canceled) return;
             try { audio.pause(); } catch (e) {}
             try { srcNode && srcNode.disconnect(); } catch (e) {}
             try { musicGain && musicGain.disconnect(); } catch (e) {}
+            if (this._pendingMusicFadeOut === pending) this._pendingMusicFadeOut = null;
           });
           done();
         } catch (playErr) {

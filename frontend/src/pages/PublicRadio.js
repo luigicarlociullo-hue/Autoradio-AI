@@ -309,6 +309,10 @@ export default function PublicRadio() {
                     ? endpoints.audioUrl(jingle.audio_url)
                     : jingle.audio_url;
                   console.log(`[R-A.I.] Jingle intro: ${jingle.title}`);
+                  // ZERO OVERLAP: tronca bruscamente il fade-out del brano
+                  // precedente PRIMA che parta il jingle, così il jingle
+                  // suona per intero senza sovrapporsi a nulla.
+                  try { radioEngine.hardStopMusic(); } catch (e) {}
                   await radioEngine.playJingle(url);
                 } else {
                   radioEngine.playStinger(prevKind, seg.kind).catch(() => {});
