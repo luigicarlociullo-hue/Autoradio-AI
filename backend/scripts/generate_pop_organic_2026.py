@@ -49,6 +49,9 @@ async def main():
                     "hint": f"{hint}, working title '{title}'",
                     "genre": genre, "lang": "en",
                 })
+                if r.status_code in (402, 502):
+                    log(f"[{i:02d}] BUDGET/LLM error http={r.status_code} {r.text[:200]} — STOPPING BATCH to preserve Suno credits.")
+                    break
                 if r.status_code == 200:
                     d = r.json()
                     created.append(d["id"])

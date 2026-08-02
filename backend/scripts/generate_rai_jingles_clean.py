@@ -97,6 +97,9 @@ async def main():
                         "custom_lyrics": lyrics,
                     },
                 )
+                if r.status_code in (402, 502):
+                    log(f"[{i:02d}] BUDGET/LLM error http={r.status_code} {r.text[:200]} — STOPPING BATCH to preserve Suno credits.")
+                    break
                 if r.status_code == 200:
                     d = r.json(); created.append(d["id"]); ok += 1
                     log(f"[{i:02d}/10] OK id={d['id']} hook='{hook}' title={d.get('title')!r}")

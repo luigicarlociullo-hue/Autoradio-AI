@@ -44,6 +44,9 @@ async def main():
                     f"{API}/api/tracks/generate",
                     params={"hint": hint, "genre": genre, "lang": "en", "lean": "true"},
                 )
+                if r.status_code in (402, 502):
+                    log(f"[{i:02d}] BUDGET/LLM error http={r.status_code} {r.text[:200]} — STOPPING BATCH to preserve Suno credits.")
+                    break
                 if r.status_code == 200:
                     d = r.json()
                     created.append(d["id"])

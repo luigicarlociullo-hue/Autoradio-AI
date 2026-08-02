@@ -269,6 +269,15 @@ FALLBACK_SCRIPTS = {
 }
 
 
+class LLMBudgetExhaustedError(Exception):
+    """Sollevata quando i crediti dell'Universal Key sono esauriti (o rate-limitati).
+    I chiamanti critici (batch di generazione musicale, `generate_track`) devono
+    catturare questa eccezione per FERMARSI invece di ricadere su fallback
+    hardcoded che sprecherebbe crediti Suno (lyrics duplicate/vuote)."""
+    pass
+
+
+
 async def _llm_direct_openai(system_prompt: str, user_prompt: str, model: str = "gpt-5.2") -> str:
     """Direct OpenAI-compatible call to the Emergent LLM gateway.
     Uses OPENAI_API_KEY + OPENAI_BASE_URL from env. Bypasses the Universal-Key
@@ -298,7 +307,12 @@ async def _llm_direct_openai(system_prompt: str, user_prompt: str, model: str = 
         return ""
 
 
-async def llm_generate(provider: str, model: str, system_prompt: str, user_prompt: str) -> str:
+async def llm_generate(provider: str, model: str, system_prompt: str, user_prompt: str, raise_on_budget: bool = False) -> str:
+    """Genera testo con LLM. Se `raise_on_budget=True` e i crediti Universal Key
+    sono esauriti, solleva `LLMBudgetExhaustedError` invece di ricadere sul
+    fallback silenzioso (che produrrebbe testo hardcoded/vuoto). I chiamanti
+    critici (batch di generazione musicale, `generate_track`) DEVONO passare
+    `raise_on_budget=True` per evitare di sprecare crediti Suno."""
     if not EMERGENT_LLM_KEY:
         # Direct-only path (no Universal Key configured)
         return await _llm_direct_openai(system_prompt, user_prompt)
@@ -319,8 +333,13 @@ async def llm_generate(provider: str, model: str, system_prompt: str, user_promp
         # On budget-exhausted or any other error, try the direct OpenAI-compatible
         # gateway with OPENAI_API_KEY/OPENAI_BASE_URL (falls back to fallback text).
         err = str(e)
-        if "budget" in err.lower() or "exceeded" in err.lower() or "rate" in err.lower():
-            logger.info(f"Universal Key budget exhausted — falling back to direct OpenAI-compatible gateway")
+        is_budget = "budget" in err.lower() or "exceeded" in err.lower() or "rate" in err.lower() or "insufficient" in err.lower()
+        if is_budget:
+            logger.warning(f"Universal Key budget exhausted / rate-limited: {err}")
+            if raise_on_budget:
+                # Consumer critico (batch, generate_track): stop immediato
+                raise LLMBudgetExhaustedError(err)
+            logger.info(f"→ falling back to direct OpenAI-compatible gateway")
         else:
             logger.warning(f"LLM primary path failed ({provider}/{model}): {err}")
         direct = await _llm_direct_openai(system_prompt, user_prompt)
@@ -764,15 +783,32 @@ async def generate_track(hint: Optional[str] = None, genre: Optional[str] = None
         "one energetic drop, vocals catchy, club-ready, es: '128bpm, four-on-the-floor kick, side-chained bass, plucky synth arps, big drop, female vocal hook, festival ready'). "
         "Nessun testo aggiuntivo, solo JSON valido."
     )
-    raw = await llm_generate(provider, model, "Sei un producer AI di musica dance e club music.", prompt)
+    try:
+        raw = await llm_generate(provider, model, "Sei un producer AI di musica dance e club music.", prompt, raise_on_budget=True)
+    except LLMBudgetExhaustedError as e:
+        logger.error(f"generate_track ABORT: Universal Key budget exhausted — refusing to call Suno with empty metadata. {e}")
+        raise HTTPException(
+            status_code=402,
+            detail="Universal Key budget exhausted: LLM cannot generate track metadata. Suno call skipped to avoid wasting credits. Please recharge the Universal Key."
+        )
     import json, re
-    m = re.search(r"\{.*\}", raw, re.DOTALL)
+    m = re.search(r"\{.*\}", raw or "", re.DOTALL)
     data = {}
     if m:
         try:
             data = json.loads(m.group(0))
         except Exception:
             data = {}
+    # HARD CHECK: se l'LLM non ha prodotto metadati validi (raw vuoto o JSON
+    # non parseabile / senza campi utili), NON chiamare Suno — sprecherebbe
+    # credito su una traccia con titolo/testo fallback duplicato.
+    _essentials = [data.get("title"), data.get("lyrics_excerpt") or data.get("style_tags")]
+    if not raw or not raw.strip() or not any(x and str(x).strip() for x in _essentials):
+        logger.error(f"generate_track ABORT: LLM metadata empty/invalid (raw_len={len(raw or '')}, data_keys={list(data.keys())}) — skipping Suno.")
+        raise HTTPException(
+            status_code=502,
+            detail="LLM returned empty/invalid metadata. Suno call skipped to avoid generating a duplicate/fallback track."
+        )
     fallback_titles_it = ["Aurora Statica", "Ultravioletto 04:12", "Neon Rivière", "Silicio Blu", "Notte Analogica", "Ecolalia", "Piove RAM", "Marte in Do minore"]
     fallback_titles_en = ["Static Aurora", "Ultraviolet 04:12", "Neon River", "Blue Silicon", "Analog Night", "Echolalia", "Data Rain", "Mars in C Minor"]
     fallback_artists = ["Vector Dreams", "Aliza Kwon", "Nero Analog", "MODEM-9", "Casseforti", "Trasparente"]
@@ -894,13 +930,30 @@ async def generate_track(hint: Optional[str] = None, genre: Optional[str] = None
                     "OGNI sezione con testo DIVERSO. Rime interne ed esterne. Immagini sensoriali. "
                     "Niente cliché. Rispondi SOLO col testo con i tag, niente commenti."
                 )
-            full_lyrics = await llm_generate(
-                provider, model,
-                "Sei un paroliere professionista. Scrivi solo il testo richiesto con la struttura esatta.",
-                lyrics_prompt,
-            )
-            if full_lyrics and len(full_lyrics) > (60 if lean else (400 if premium else 200)):
-                track.lyrics_excerpt = full_lyrics.strip()
+            try:
+                full_lyrics = await llm_generate(
+                    provider, model,
+                    "Sei un paroliere professionista. Scrivi solo il testo richiesto con la struttura esatta.",
+                    lyrics_prompt,
+                    raise_on_budget=True,
+                )
+            except LLMBudgetExhaustedError as e:
+                logger.error(f"generate_track ABORT (lyrics): Universal Key budget exhausted — refusing to call Suno with hardcoded fallback lyrics. {e}")
+                raise HTTPException(
+                    status_code=402,
+                    detail="Universal Key budget exhausted while generating full lyrics. Suno call skipped to avoid wasting credits on a duplicate/fallback track."
+                )
+            # HARD CHECK: testo completo troppo corto → NON chiamare Suno
+            # (userebbe il fallback hardcoded e produrrebbe una traccia
+            # duplicata dal punto di vista testuale).
+            min_len = 60 if lean else (400 if premium else 200)
+            if not full_lyrics or len(full_lyrics.strip()) < min_len:
+                logger.error(f"generate_track ABORT (lyrics): LLM returned empty/too-short lyrics (len={len(full_lyrics or '')}, min={min_len}) — skipping Suno.")
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"LLM returned empty or too-short lyrics ({len(full_lyrics or '')} chars, min {min_len}). Suno call skipped to avoid a duplicate/fallback track."
+                )
+            track.lyrics_excerpt = full_lyrics.strip()
         try:
             task_id = await suno_service.create_task(
                 prompt=prompt_text,

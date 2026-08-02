@@ -14,6 +14,12 @@ Vorrei costruire un software di gestione radiofonica completamente automatizzato
 - Auth: Emergent Google OAuth (free) for admin.
 
 ## What's implemented (2026-08 · v10 · Stability fixes)
+- **v11.3 · BUDGET GUARDRAIL — Stop-on-Empty-LLM prima di chiamare Suno** (2026-02, this session):
+  - **`server.py`**:
+    - Nuova eccezione dedicata `LLMBudgetExhaustedError` per crediti Universal Key esauriti.
+    - `llm_generate()`: nuovo parametro `raise_on_budget: bool = False`. Se `True`, invece del fallback silenzioso solleva `LLMBudgetExhaustedError` quando l'errore contiene "budget/exceeded/rate/insufficient".
+    - `generate_track()`: entrambe le chiamate LLM (metadati JSON + lyrics completi) passano `raise_on_budget=True`. Cattura l'eccezione → risponde **HTTP 402**. Doppio hard-check: (a) se raw metadata è vuoto/non-parseable **NON chiama Suno** → HTTP 502; (b) se `full_lyrics` è troppo corto → HTTP 502. Zero rischio di chiamare Suno con testo fallback duplicato.
+  - **12 script di batch** (`scripts/generate_*.py`): iniettato check `if r.status_code in (402, 502): log(...); break` PRIMA del branch `== 200`. Il ciclo si ferma al primo errore di budget/LLM vuoto, preservando i crediti Suno rimanenti.
 - **v11.2 · JINGLE FIX ROUND 2 — Full-length + hardStop reale** (2026-02, this session):
   - **`radioEngine.js`**:
     - `playJingle()`: cap safety-timeout alzato da **75s → 300s** (5 min) — jingle full-length non vengono più tagliati.
