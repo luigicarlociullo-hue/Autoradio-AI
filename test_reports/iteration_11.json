@@ -1,0 +1,48 @@
+{
+  "summary": "Tested the new 'A.I. Vs Umani' community module (backend + frontend) and PWA assets. Created /app/backend/tests/backend_test.py (23 pytest cases: submit validation, audio serving, admin list/toggle/delete, regression on /station /djs /segments /tracks /station/mode) -> 22 passed, 1 failed. Frontend Playwright: home 'Inviaci il tuo brano' link, full /submit flow (valid submit + copyright block), dashboard CommunityPanel (list/toggle/delete/audio src) -> all functional. Manifest + 3 PWA icons served 200 and valid.",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "DELETE /api/admin/community/{id} + GET /api/community_audio/{file}", "issue": "After deletion the MP3 is still publicly downloadable: the DB record and local file are removed, but GET /api/community_audio/community_{id}.mp3 falls back to Object Storage, returns 200 with the full audio AND re-materializes the file on local disk. A copyright takedown/delete is therefore ineffective. Fix: add delete_object() to object_storage.py and call it in admin_community_delete, or gate the objstore fallback on an existing DB record.", "priority": "HIGH"}
+    ],
+    "minor": [
+      {"endpoint": "GET /api/community_audio/{filename}", "issue": "Backend sets Cache-Control: public, max-age=604800 but the preview ingress rewrites it to 'no-store, no-cache, must-revalidate'. Accept-Ranges: bytes and audio/mpeg are correct. Infra-level, no code change needed - noted so it is not re-reported."},
+      {"endpoint": "community status 'on'", "issue": "No consumer: grep shows db.community_tracks is only read by /api/admin/community. Turning a track ON has zero effect on the playlist/palinsesto - activated community tracks are never broadcast. Either wire status=on into the playlist builder or relabel the button so admins are not misled."},
+      {"endpoint": "POST /api/community/submit", "issue": "No rate limiting / captcha on a fully public upload endpoint writing to local disk + object storage (abuse/disk-fill risk)."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "PublicRadio header", "issue": "'Inviaci il tuo brano' CTA uses className 'hidden sm:inline-flex' -> completely invisible below 640px. Verified at 390x844: element count 1, visible false. Mobile users (main PWA audience) have no way to reach /submit.", "selector": "[data-testid=\"submit-track-link\"]", "priority": "HIGH"},
+      {"component": "Dashboard CommunityPanel delete", "issue": "Uses native window.confirm() instead of the shadcn AlertDialog used elsewhere - inconsistent UX and unstyled browser dialog.", "selector": "[data-testid=\"community-delete-{id}\"]", "priority": "MEDIUM"},
+      {"component": "Dashboard CommunityPanel counter", "issue": "Italian pluralization: shows '1 brani caricati' instead of '1 brano caricato'.", "selector": "[data-testid=\"community-panel\"]", "priority": "LOW"},
+      {"component": "PWA", "issue": "No service worker exists (public/ has no sw file; /service-worker.js returns index.html with content-type text/html). manifest+icons are valid so iOS Add-to-Home-Screen works, but Chrome/Android will not offer the install prompt without a registered SW with a fetch handler. 'PWA installabile' is only partially met.", "selector": "n/a", "priority": "MEDIUM"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "/submit", "issues": ["Layout, contrast and copy are good; pink #ff1493 CTA on black is readable. Native file input styling is acceptable but not consistent with the rest of the design system."]},
+      {"screen": "/dashboard community panel", "issues": ["Native <audio> controls (white default player) clash with the dark theme; rest of the table styling is consistent."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/backend_test.py", "/app/test_reports/pytest/community_results.xml"],
+  "action_items": [
+    "HIGH: make DELETE of a community track actually revoke access - delete from object storage (or require a DB record before the objstore fallback in get_community_audio).",
+    "HIGH: show the 'Inviaci il tuo brano' CTA on mobile (remove 'hidden sm:' or add it to the mobile menu).",
+    "MEDIUM: wire community tracks with status='on' into the playlist, or clarify that ON is only a flag.",
+    "MEDIUM: add a service worker (+ registration) if the app must be installable on Android/Chrome.",
+    "LOW: replace window.confirm with shadcn AlertDialog; fix '1 brani caricati' pluralization."
+  ],
+  "critical_code_review_comments": [
+    "object_storage has no delete_object(); admin_community_delete only removes the local file, and get_community_audio re-downloads from the bucket -> deleted content stays public forever.",
+    "community_submit reads the whole upload into memory (await file.read()) before the size check, so a 15MB+ body is fully buffered before rejection; consider streaming/Content-Length pre-check.",
+    "Dashboard.js is 2476 lines - exceeds the 700-line guideline; CommunityPanel should be extracted into its own component file.",
+    "Public upload endpoint has no auth/rate limit while /api/admin/community* endpoints are also unauthenticated (documented beta behaviour, but community delete/toggle are destructive)."
+  ],
+  "updated_files": ["/app/backend/tests/backend_test.py"],
+  "success_rate": {"backend": "96% (22/23 pytest)", "frontend": "100% of tested flows functional; 4 UI/PWA defects reported"},
+  "seed_data_creation": "Created and then deleted TEST_* community tracks via the public submit endpoint; /api/admin/community total is back to 0 and /app/backend/static/community is empty.",
+  "should_call_test_agent_after_fix": true,
+  "should_main_agent_self_test": false,
+  "test_credentials": "None needed - /dashboard admin actions are open in beta (per /app/memory/test_credentials.md)",
+  "context_for_next_testing_agent": "Run `cd /app/backend && python -m pytest tests/backend_test.py -q` (pytest.ini already adds -n/--dist). Only test_delete_removes_record_and_file fails - it asserts that GET /api/community_audio/community_{id}.mp3 returns 404 after DELETE; it currently returns 200 from the object-storage fallback. Do NOT call music-generation endpoints (Suno/LLM credits exhausted). Frontend flows for /submit and the dashboard CommunityPanel were verified end-to-end and pass.",
+  "rca_of_the_issue": "admin_community_delete removes the mongo record and the local file, but object_storage.py exposes only put_mp3/fetch_mp3 (no delete). get_community_audio falls back to object storage on local miss and writes the bytes back to disk, so any deleted community MP3 remains publicly served at its original URL. Repro: POST /api/community/submit -> DELETE /api/admin/community/{id} -> GET /api/community_audio/community_{id}.mp3 => 200, 20010 bytes."
+}

@@ -58,6 +58,13 @@ logger = logging.getLogger(__name__)
 SUNO_AUDIO_DIR = Path("/app/backend/static/suno")
 SUNO_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
 
+# ----------------------- Community "A.I. Vs Umani" -----------------------
+# Utenti pubblici caricano loro MP3 dal form /submit. Salvati qui + persistiti
+# su Emergent Object Storage (se attivo). Sempre inseriti con status="off" —
+# l'admin li ascolta e li attiva dal pannello Community.
+COMMUNITY_AUDIO_DIR = Path("/app/backend/static/community")
+COMMUNITY_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+
 def _suno_autogen_enabled() -> bool:
     """Read SUNO_AUTOGEN_ENABLED env var (default true).
     When false, ALL automatic Suno API calls (background filler + segment
@@ -2912,6 +2919,157 @@ async def get_tts_audio(filename: str):
             return Response(content=data, media_type="audio/mpeg",
                             headers={"Cache-Control": "public, max-age=604800"})
     raise HTTPException(404, "TTS audio not found")
+
+
+# ============================================================
+# "A.I. Vs UMANI" — Upload community brani utente
+# ============================================================
+class CommunityTrack(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    author: str
+    title: str
+    audio_url: str
+    file_size: int
+    tag: str = "AI-Vs-Umani"
+    status: str = "off"          # "off" | "on"
+    copyright_ok: bool = True
+    submitted_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+
+def _validate_mp3_bytes(data: bytes) -> bool:
+    """Magic-bytes check: MP3 files start with ID3 tag (49 44 33) OR MPEG
+    audio frame sync (FF Fx). Rifiuta tutto il resto (WAV/M4A/exe rinominati)."""
+    if not data or len(data) < 128:
+        return False
+    if data[:3] == b"ID3":
+        return True
+    # MPEG frame sync: byte0=0xFF, byte1 & 0xE0 == 0xE0
+    if data[0] == 0xFF and (data[1] & 0xE0) == 0xE0:
+        return True
+    return False
+
+
+@api_router.post("/community/submit")
+async def community_submit(
+    author: str = Form(...),
+    title: str = Form(...),
+    copyright_ok: bool = Form(...),
+    file: UploadFile = File(...),
+):
+    """Upload pubblico "A.I. Vs Umani". Accetta SOLO MP3 <= 15MB.
+    Salva su disco + Object Storage (se attivo). Status default = OFF —
+    l'admin lo attiva dal pannello Community.
+    """
+    author = (author or "").strip()
+    title = (title or "").strip()
+    if not author or len(author) < 2 or len(author) > 60:
+        raise HTTPException(400, "Nome autore obbligatorio (2-60 caratteri)")
+    if not title or len(title) < 2 or len(title) > 100:
+        raise HTTPException(400, "Titolo obbligatorio (2-100 caratteri)")
+    if not copyright_ok:
+        raise HTTPException(400, "Devi confermare la dichiarazione di copyright")
+    fname_lower = (file.filename or "").lower()
+    if not fname_lower.endswith(".mp3"):
+        raise HTTPException(400, "Solo file .mp3 sono accettati")
+
+    data = await file.read()
+    size = len(data)
+    if size < 10_000:
+        raise HTTPException(400, "File troppo piccolo o vuoto")
+    if size > 15 * 1024 * 1024:  # 15 MB cap richiesto dall'utente
+        raise HTTPException(400, "File troppo grande (max 15 MB)")
+    if not _validate_mp3_bytes(data):
+        raise HTTPException(400, "Il file non risulta essere un MP3 valido (magic bytes check fallito)")
+
+    track = CommunityTrack(
+        author=author,
+        title=title,
+        audio_url="",  # will be set below
+        file_size=size,
+        copyright_ok=True,
+        status="off",
+    )
+    local_name = f"community_{track.id}.mp3"
+    local_path = COMMUNITY_AUDIO_DIR / local_name
+    local_path.write_bytes(data)
+
+    # Object storage push (best-effort)
+    try:
+        await object_storage.put_mp3(f"community/{local_name}", data)
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"community objstore upload skipped: {e}")
+
+    track.audio_url = f"/api/community_audio/{local_name}"
+    await db.community_tracks.insert_one(track.model_dump())
+    logger.info(f"Community track submitted: {track.id} by '{author}' — '{title}' ({size} bytes)")
+    return {"ok": True, "id": track.id, "message": "Brano ricevuto! Sarà valutato dall'admin."}
+
+
+@api_router.get("/community_audio/{filename}")
+async def get_community_audio(filename: str):
+    """Serve gli MP3 caricati dalla community (con range requests)."""
+    if "/" in filename or ".." in filename or not filename.endswith(".mp3"):
+        raise HTTPException(400, "Invalid filename")
+    p = COMMUNITY_AUDIO_DIR / filename
+    if p.exists():
+        return FileResponse(
+            str(p),
+            media_type="audio/mpeg",
+            headers={
+                "Cache-Control": "public, max-age=604800",
+                "Accept-Ranges": "bytes",
+            },
+        )
+    if object_storage.is_enabled():
+        data = await object_storage.fetch_mp3(f"community/{filename}")
+        if data:
+            try:
+                p.write_bytes(data)
+            except Exception:
+                pass
+            return Response(content=data, media_type="audio/mpeg",
+                            headers={"Cache-Control": "public, max-age=604800",
+                                     "Accept-Ranges": "bytes"})
+    raise HTTPException(404, "Community audio not found")
+
+
+@api_router.get("/admin/community")
+async def admin_community_list():
+    """Lista tutti i brani della community per l'admin."""
+    tracks = await db.community_tracks.find({}, {"_id": 0}).sort("submitted_at", -1).to_list(500)
+    return {"tracks": tracks, "total": len(tracks)}
+
+
+@api_router.patch("/admin/community/{track_id}/toggle")
+async def admin_community_toggle(track_id: str):
+    """Toggle ON/OFF di un brano community."""
+    t = await db.community_tracks.find_one({"id": track_id})
+    if not t:
+        raise HTTPException(404, "Brano community non trovato")
+    new_status = "on" if t.get("status") != "on" else "off"
+    await db.community_tracks.update_one({"id": track_id}, {"$set": {"status": new_status}})
+    return {"ok": True, "id": track_id, "status": new_status}
+
+
+@api_router.delete("/admin/community/{track_id}")
+async def admin_community_delete(track_id: str):
+    """Elimina brano community (record + file locale + object storage)."""
+    t = await db.community_tracks.find_one({"id": track_id})
+    if not t:
+        raise HTTPException(404, "Brano community non trovato")
+    local_name = f"community_{track_id}.mp3"
+    local_path = COMMUNITY_AUDIO_DIR / local_name
+    try:
+        if local_path.exists():
+            local_path.unlink()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Failed to delete local community file: {e}")
+    # NOTA: object_storage non espone un `delete_object` — il file resta sul
+    # bucket ma non è più raggiungibile perché il record DB è cancellato.
+    # (Se serve in futuro pulire i bucket, aggiungere `delete_object` in
+    # object_storage.py e chiamarlo qui.)
+    await db.community_tracks.delete_one({"id": track_id})
+    return {"ok": True, "deleted": track_id}
 
 
 @api_router.get("/suno_audio/{filename}")

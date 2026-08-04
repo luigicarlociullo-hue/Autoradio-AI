@@ -192,6 +192,8 @@ export default function Dashboard() {
         {/* Unified track manager — clean table with search, upload, replace */}
         <TrackManagerPanel />
 
+        {/* Community "A.I. Vs Umani" — brani caricati dagli utenti */}
+        <CommunityPanel />
         {/* Manual Mode & Line-In Mixer */}
         <ManualModePanel />
 
@@ -2304,3 +2306,170 @@ function RotationRulesPanel() {
   );
 }
 
+
+
+// ==================== CommunityPanel — "A.I. Vs Umani" ====================
+function CommunityPanel() {
+  const [tracks, setTracks] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [busyId, setBusyId] = useState(null);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const r = await endpoints.communityList();
+      setTracks(r?.tracks || []);
+    } catch (e) {
+      toast.error("Impossibile caricare i brani community");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const onToggle = async (id) => {
+    setBusyId(id);
+    try {
+      const r = await endpoints.communityToggle(id);
+      setTracks(prev => prev.map(t => t.id === id ? { ...t, status: r.status } : t));
+      toast.success(`Brano ora ${r.status.toUpperCase()}`);
+    } catch (e) {
+      toast.error("Errore toggle");
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const onDelete = async (id, title) => {
+    if (!window.confirm(`Eliminare definitivamente "${title}"?`)) return;
+    setBusyId(id);
+    try {
+      await endpoints.communityDelete(id);
+      setTracks(prev => prev.filter(t => t.id !== id));
+      toast.success("Brano eliminato");
+    } catch (e) {
+      toast.error("Errore eliminazione");
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const audioUrl = (path) => endpoints.audioUrl(path);
+  const fmtDate = (iso) => {
+    try { return new Date(iso).toLocaleString("it-IT", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }); }
+    catch { return iso; }
+  };
+
+  return (
+    <section data-testid="community-panel" className="lg:col-span-4 card-surface p-6">
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <h3 className="font-display font-black text-xl flex items-center gap-2">
+            <Users className="w-5 h-5 text-pink-400" />
+            A.I. Vs Umani — Brani Community
+          </h3>
+          <div className="text-xs text-zinc-500 mt-1 font-mono">
+            {tracks.length} brani caricati · {tracks.filter(t => t.status === "on").length} attivi
+          </div>
+        </div>
+        <button
+          data-testid="community-refresh-btn"
+          onClick={load}
+          className="btn-outline text-xs px-3 py-1.5 flex items-center gap-1"
+        >
+          <RefreshCw className="w-3.5 h-3.5" /> Aggiorna
+        </button>
+      </div>
+
+      {loading ? (
+        <div className="text-zinc-500 text-sm py-8 text-center">Caricamento…</div>
+      ) : tracks.length === 0 ? (
+        <div
+          data-testid="community-empty"
+          className="rounded-xl border border-dashed border-zinc-800 p-8 text-center text-zinc-500 text-sm"
+        >
+          Nessun brano caricato dalla community.
+          <br />
+          Il pulsante "Inviaci il tuo brano" in home apre il form di upload pubblico.
+        </div>
+      ) : (
+        <div className="overflow-x-auto -mx-6 px-6">
+          <table className="w-full text-sm" data-testid="community-tracks-table">
+            <thead>
+              <tr className="text-left text-xs uppercase tracking-widest text-zinc-500 border-b border-zinc-800">
+                <th className="py-2 pr-3">Stato</th>
+                <th className="py-2 pr-3">Titolo</th>
+                <th className="py-2 pr-3">Autore</th>
+                <th className="py-2 pr-3">Ascolto</th>
+                <th className="py-2 pr-3">Dimensione</th>
+                <th className="py-2 pr-3">Inviato</th>
+                <th className="py-2 pr-3 text-right">Azioni</th>
+              </tr>
+            </thead>
+            <tbody>
+              {tracks.map(t => (
+                <tr key={t.id} className="border-b border-zinc-900" data-testid={`community-row-${t.id}`}>
+                  <td className="py-3 pr-3">
+                    <span
+                      className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-bold tracking-widest ${
+                        t.status === "on"
+                          ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
+                          : "bg-zinc-800 text-zinc-500 border border-zinc-700"
+                      }`}
+                    >
+                      {t.status === "on" ? "ON AIR" : "OFF"}
+                    </span>
+                  </td>
+                  <td className="py-3 pr-3 font-semibold text-white max-w-[220px] truncate" title={t.title}>
+                    {t.title}
+                  </td>
+                  <td className="py-3 pr-3 text-zinc-300 max-w-[160px] truncate" title={t.author}>
+                    {t.author}
+                  </td>
+                  <td className="py-3 pr-3">
+                    <audio
+                      controls
+                      preload="none"
+                      src={audioUrl(t.audio_url)}
+                      data-testid={`community-audio-${t.id}`}
+                      style={{ height: 32, maxWidth: 260 }}
+                    />
+                  </td>
+                  <td className="py-3 pr-3 text-xs text-zinc-500 font-mono">
+                    {(t.file_size / 1024 / 1024).toFixed(2)} MB
+                  </td>
+                  <td className="py-3 pr-3 text-xs text-zinc-500 font-mono whitespace-nowrap">
+                    {fmtDate(t.submitted_at)}
+                  </td>
+                  <td className="py-3 pr-0 text-right whitespace-nowrap">
+                    <button
+                      data-testid={`community-toggle-${t.id}`}
+                      onClick={() => onToggle(t.id)}
+                      disabled={busyId === t.id}
+                      className={`text-xs px-3 py-1.5 rounded-full font-semibold mr-2 disabled:opacity-40 ${
+                        t.status === "on"
+                          ? "bg-zinc-800 text-zinc-300 border border-zinc-700 hover:bg-zinc-700"
+                          : "bg-emerald-500 text-black hover:bg-emerald-400"
+                      }`}
+                    >
+                      {t.status === "on" ? "Metti OFF" : "Metti ON"}
+                    </button>
+                    <button
+                      data-testid={`community-delete-${t.id}`}
+                      onClick={() => onDelete(t.id, t.title)}
+                      disabled={busyId === t.id}
+                      className="text-xs px-3 py-1.5 rounded-full font-semibold bg-red-500/20 text-red-300 border border-red-500/40 hover:bg-red-500/30 disabled:opacity-40 inline-flex items-center gap-1"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" /> Elimina
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+}

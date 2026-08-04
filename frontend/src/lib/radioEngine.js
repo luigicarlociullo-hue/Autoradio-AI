@@ -1353,6 +1353,65 @@ class RadioEngine {
     }
     this.currentKind = null;
   }
+
+  // ============================================================
+  //  MEDIA SESSION API — lockscreen/Bluetooth headset controls
+  // ------------------------------------------------------------
+  //  Fa apparire titolo brano, artista e artwork sulla lockscreen di
+  //  Android/iOS, sulle notifiche del sistema e sui comandi del volante
+  //  auto / cuffie Bluetooth. NON gestisce il playback in background
+  //  (Web Audio API in background è comunque fragile) ma gestisce PLAY,
+  //  PAUSE e NEXTTRACK quando l'utente li aziona da lockscreen o cuffie.
+  // ============================================================
+  /** Registra gli handler globali una sola volta. `handlers` = {play, pause, next} */
+  setupMediaSession(handlers = {}) {
+    if (typeof navigator === "undefined" || !("mediaSession" in navigator)) return;
+    this._mediaHandlers = handlers;
+    try {
+      navigator.mediaSession.setActionHandler("play", () => {
+        try { this._mediaHandlers.play && this._mediaHandlers.play(); } catch (e) {}
+      });
+      navigator.mediaSession.setActionHandler("pause", () => {
+        try { this._mediaHandlers.pause && this._mediaHandlers.pause(); } catch (e) {}
+      });
+      navigator.mediaSession.setActionHandler("nexttrack", () => {
+        try { this._mediaHandlers.next && this._mediaHandlers.next(); } catch (e) {}
+      });
+      // "previoustrack" non lo mappiamo: la radio è live, non c'è indietro
+      navigator.mediaSession.setActionHandler("previoustrack", null);
+      // Seek non applicabile a stream live
+      navigator.mediaSession.setActionHandler("seekto", null);
+      navigator.mediaSession.setActionHandler("seekforward", null);
+      navigator.mediaSession.setActionHandler("seekbackward", null);
+    } catch (e) {
+      console.warn("Media Session setup failed:", e);
+    }
+  }
+
+  /** Aggiorna metadata visualizzati su lockscreen / Bluetooth headset. */
+  updateMediaMetadata({ title, artist, artwork } = {}) {
+    if (typeof navigator === "undefined" || !("mediaSession" in navigator)) return;
+    try {
+      const artUrl = artwork || "/rai-icon-512.png";
+      navigator.mediaSession.metadata = new window.MediaMetadata({
+        title: title || "R-A.I.",
+        artist: artist || "Web Radio AI",
+        album: "R-A.I. · La radio governata dalle AI",
+        artwork: [
+          { src: "/rai-icon-192.png", sizes: "192x192", type: "image/png" },
+          { src: artUrl, sizes: "512x512", type: "image/png" },
+        ],
+      });
+    } catch (e) {
+      // silent
+    }
+  }
+
+  /** "playing" | "paused" | "none" */
+  setMediaPlaybackState(state) {
+    if (typeof navigator === "undefined" || !("mediaSession" in navigator)) return;
+    try { navigator.mediaSession.playbackState = state; } catch (e) {}
+  }
 }
 
 const engine = new RadioEngine();

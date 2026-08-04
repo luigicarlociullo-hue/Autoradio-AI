@@ -34,4 +34,12 @@ export const endpoints = {
   adRevenue: () => api.get("/ads/revenue").then(r => r.data),
   adPlays: (id) => api.get(`/ads/${id}/plays`).then(r => r.data),
   telegramStatus: () => api.get("/telegram/status").then(r => r.data),
+  // ---- Community "A.I. Vs Umani" ----
+  communitySubmit: (formData) => api.post("/community/submit", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+    timeout: 120000,
+  }).then(r => r.data),
+  communityList: () => api.get("/admin/community").then(r => r.data),
+  communityToggle: (id) => api.patch(`/admin/community/${id}/toggle`).then(r => r.data),
+  communityDelete: (id) => api.delete(`/admin/community/${id}`).then(r => r.data),
 };

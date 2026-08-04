@@ -125,6 +125,50 @@ export default function PublicRadio() {
     };
   }, []);
 
+  // ============================================================
+  //  Media Session API — comandi lockscreen/Bluetooth/cuffie
+  //  Registra play/pause/next handlers UNA volta. Gli handler
+  //  richiamano lo stesso `handlePlay` e il pulsante skip esistenti.
+  // ============================================================
+  useEffect(() => {
+    radioEngine.setupMediaSession({
+      play: () => {
+        // Se non stiamo suonando, avvia
+        if (!isPlaying) {
+          // handlePlay è definito sotto — usiamo un ref via window per evitare stale closure
+          if (window.__raiHandlePlay) window.__raiHandlePlay();
+        }
+      },
+      pause: () => {
+        if (isPlaying && window.__raiHandlePlay) window.__raiHandlePlay();
+      },
+      next: () => {
+        // Skip: interrompe il segmento corrente, il loop passa al prossimo
+        try { radioEngine.stopAll(); } catch (e) {}
+      },
+    });
+    // Cleanup non necessario: gli handler sono globali e sovrascritti su ogni re-render
+  }, [isPlaying]);
+
+  // Aggiorna metadata Media Session ogni volta che cambia segmento
+  useEffect(() => {
+    if (!current) return;
+    const isMusic = current.kind === "music";
+    const meta = current.track_meta || {};
+    const title = isMusic
+      ? (meta.title || (current.title || "").replace(/^♪\s*/, "").split(" — ")[0] || "R-A.I.")
+      : (current.title || "R-A.I.");
+    const artist = isMusic
+      ? (meta.artist || (current.title || "").split(" — ")[1] || "R-A.I.")
+      : "R-A.I. Web Radio";
+    radioEngine.updateMediaMetadata({ title, artist });
+  }, [current]);
+
+  // Aggiorna playbackState quando cambia isPlaying
+  useEffect(() => {
+    radioEngine.setMediaPlaybackState(isPlaying ? "playing" : "paused");
+  }, [isPlaying]);
+
   // Broadcast state poller: mirrors admin commands (skip/pause/resume/jingle)
   // and mode changes (auto ↔ live_external) into this listener browser.
   useEffect(() => {
@@ -426,6 +470,13 @@ export default function PublicRadio() {
     refresh();
   };
 
+  // Expose handlePlay to Media Session handlers (defined in useEffect above)
+  // so that lockscreen/Bluetooth PLAY/PAUSE buttons drive the same logic.
+  useEffect(() => {
+    window.__raiHandlePlay = handlePlay;
+    return () => { try { delete window.__raiHandlePlay; } catch (e) {} };
+  });
+
   const submitQuestion = async (e) => {
     e.preventDefault();
     if (!questionText.trim()) return;
@@ -478,6 +529,14 @@ export default function PublicRadio() {
                 <span className="font-mono text-xs uppercase tracking-widest text-pink-400">Live</span>
               </div>
             )}
+            <Link
+              to="/submit"
+              data-testid="submit-track-link"
+              className="btn-primary focusable text-sm font-semibold hidden sm:inline-flex"
+              style={{ background: "#ff1493", color: "#000" }}
+            >
+              Inviaci il tuo brano
+            </Link>
             <Link to="/pubblicita" data-testid="advertise-link" className="btn-outline focusable text-sm hidden sm:inline-flex">Sponsorizza</Link>
             <Link to="/dashboard" data-testid="admin-link" className="btn-outline focusable text-sm">Pannello Admin</Link>
           </nav>
