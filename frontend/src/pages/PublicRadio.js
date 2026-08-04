@@ -532,10 +532,11 @@ export default function PublicRadio() {
             <Link
               to="/submit"
               data-testid="submit-track-link"
-              className="btn-primary focusable text-sm font-semibold hidden sm:inline-flex"
+              className="btn-primary focusable text-xs sm:text-sm font-semibold whitespace-nowrap"
               style={{ background: "#ff1493", color: "#000" }}
             >
-              Inviaci il tuo brano
+              <span className="sm:hidden">Invia brano</span>
+              <span className="hidden sm:inline">Inviaci il tuo brano</span>
             </Link>
             <Link to="/pubblicita" data-testid="advertise-link" className="btn-outline focusable text-sm hidden sm:inline-flex">Sponsorizza</Link>
             <Link to="/dashboard" data-testid="admin-link" className="btn-outline focusable text-sm">Pannello Admin</Link>

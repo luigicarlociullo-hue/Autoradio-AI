@@ -14,6 +14,21 @@ Vorrei costruire un software di gestione radiofonica completamente automatizzato
 - Auth: Emergent Google OAuth (free) for admin.
 
 ## What's implemented (2026-08 · v10 · Stability fixes)
+- **v12.0 · "A.I. Vs UMANI" + PWA + Media Session** (2026-02, this session):
+  - **Modulo Community "A.I. Vs Umani"**:
+    - Backend: nuova collection `community_tracks` + endpoints `POST /api/community/submit` (multipart form: author, title, copyright_ok, MP3 max 15MB con magic-bytes check), `GET /api/community_audio/{filename}` (con verifica DB — revoca file dopo delete), `GET/PATCH/DELETE /api/admin/community[/{id}[/toggle]]`.
+    - Frontend: nuova pagina `/submit` (Nome autore, Titolo, file MP3, checkbox copyright obbligatoria) + pulsante fucsia "Inviaci il tuo brano" in header Home (visibile anche mobile).
+    - Admin `Dashboard.js`: nuovo `CommunityPanel` con tabella brani, HTML5 player integrato per ascolto, toggle ON/OFF, delete con conferma.
+    - Salvataggio duale su `/app/backend/static/community/` + Emergent Object Storage; DELETE revoca l'accesso via check DB.
+    - Test backend pytest: **23/23 passati** (`/app/backend/tests/backend_test.py`).
+  - **PWA installabile**:
+    - `public/manifest.json` (name, short_name R-A.I., icons 192/512/maskable, theme_color #000, display standalone, lang it-IT).
+    - Icone generate da `rai-visual-bg.png` (crop centrato quadrato + maskable con safe zone 72%).
+    - Meta tag PWA in `index.html` (apple-touch-icon, apple-mobile-web-app-capable, mobile-web-app-capable).
+  - **Media Session API**:
+    - `radioEngine.js`: metodi `setupMediaSession({play, pause, next})`, `updateMediaMetadata({title, artist})`, `setMediaPlaybackState(state)`.
+    - `PublicRadio.js`: registrazione handlers all'mount + update metadata su cambio segmento + playbackState su isPlaying → titolo/artista appaiono su lockscreen Android/iOS, pulsanti play/pause/next funzionano da cuffie/volante Bluetooth quando la tab è aperta.
+    - **NOTA**: NON garantisce playback in background su iOS Safari (limitazione strutturale Web Audio API). Motore audio esistente (crossfade, ducking, jingle full-length) mantenuto invariato per scelta esplicita utente.
 - **v11.5 · TRACK OVERLAY NEON — Singolo rigo marquee fucsia** (2026-02, this session):
   - **`PulsingBrand.js`**: sostituito il vecchio overlay title+artist a due righe con **un solo rigo marquee scorrevole**:
     - Testo unico `TITOLO · ARTISTA` (con separatore `•`) che scorre in loop continuo (22s, `raiTrackMarquee`), duplicato per un effetto seamless.

@@ -3007,9 +3007,19 @@ async def community_submit(
 
 @api_router.get("/community_audio/{filename}")
 async def get_community_audio(filename: str):
-    """Serve gli MP3 caricati dalla community (con range requests)."""
+    """Serve gli MP3 caricati dalla community (con range requests).
+    Verifica PRIMA che esista un record DB corrispondente — se il brano è
+    stato eliminato dall'admin, restituisce 404 anche se il file è ancora
+    sull'Object Storage (evita accessi a contenuti revocati)."""
     if "/" in filename or ".." in filename or not filename.endswith(".mp3"):
         raise HTTPException(400, "Invalid filename")
+    # Attendo prefisso `community_{track_id}.mp3` come impostato da submit
+    if not filename.startswith("community_"):
+        raise HTTPException(404, "Not found")
+    track_id = filename[len("community_"):-len(".mp3")]
+    exists = await db.community_tracks.count_documents({"id": track_id}, limit=1)
+    if not exists:
+        raise HTTPException(404, "Community track not found (removed or never existed)")
     p = COMMUNITY_AUDIO_DIR / filename
     if p.exists():
         return FileResponse(
