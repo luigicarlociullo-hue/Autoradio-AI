@@ -14,6 +14,17 @@ Vorrei costruire un software di gestione radiofonica completamente automatizzato
 - Auth: Emergent Google OAuth (free) for admin.
 
 ## What's implemented (2026-08 · v10 · Stability fixes)
+- **v12.3 · JINGLE "A.I. Vs UMANI" PRODUZIONE E REGIA** (2026-02, this session):
+  - ffmpeg installato (`apt install ffmpeg`) — abilita missaggio voce+musica lato server.
+  - Nuovo script one-shot `scripts/produce_aivsumani_jingles.py`:
+    - Suno API: 2 basi strumentali 15s (tech-electronic per intro, groovy-chill per outro) generate in parallelo.
+    - OpenAI TTS-1-HD via Universal Key: voce **Nova** su intro, voce **Shimmer** su outro.
+    - ffmpeg overlay: musica a 30% vol + fade-in 0.3s / fade-out 1.5s, voce loudnorm normalizzata e in primo piano, tutto tagliato a 15s, MP3 128kbps 44.1kHz stereo.
+    - Push automatico su disco locale + Emergent Object Storage.
+    - Aggiornamento automatico `station.state` con gli URL.
+  - Rotazione palinsesto attivata: `frequency=8` (blocco community A.I. Vs Umani ogni 8 canzoni AI ≈ ogni 30 min).
+  - Testo intro: *"State ascoltando A-I Versus Umani. La rubrica dove i talenti della nostra community sfidano l'intelligenza artificiale. Inviaci anche tu il tuo brano dal pulsante in Home!"*
+  - Testo outro: *"Per ora la sfida si ferma qui. A-I Versus Umani torna più tardi. Amico umano, rimani con noi su R-A-I!"*
 - **v12.2 · MASTER PLAN "A.I. Vs UMANI" V2 — Palinsesto integrato** (2026-02, this session):
   - **Segment model esteso**: nuovo `kind='community'` + campi `pre_jingle_url`, `post_jingle_url`.
   - **Backend `server.py`** — logica iniezione blocco community in `pick_next_segment`:
