@@ -14,6 +14,25 @@ Vorrei costruire un software di gestione radiofonica completamente automatizzato
 - Auth: Emergent Google OAuth (free) for admin.
 
 ## What's implemented (2026-08 · v10 · Stability fixes)
+- **v12.2 · MASTER PLAN "A.I. Vs UMANI" V2 — Palinsesto integrato** (2026-02, this session):
+  - **Segment model esteso**: nuovo `kind='community'` + campi `pre_jingle_url`, `post_jingle_url`.
+  - **Backend `server.py`** — logica iniezione blocco community in `pick_next_segment`:
+    - Nuovo contatore `songs_since_community` in `station.state`.
+    - Se `community_frequency > 0` e `songs_since_community >= community_frequency` E c'è almeno 1 community track con `status='on'`, emette un Segment `kind='community'` con: (A) `pre_jingle_url` admin, (B) `script` DJ template client-side (nessun consumo LLM), (C) `music_audio_url` del brano community, (D) `post_jingle_url` CTA admin.
+    - DJ scelto random tra Leo/Aria/Max con `voice_key` mappato (onyx/nova/echo per HD TTS).
+    - Reset contatore. Fallback: se nessun community track ON → salta al normale palinsesto.
+  - **Nuovi endpoint admin config**:
+    - `GET /api/admin/community/config` — frequency + jingle URLs + counter
+    - `PATCH /api/admin/community/config` (payload: `{frequency: 0-50}`, 0 = disabilitato; clamp permissivo)
+    - `POST /api/admin/community/config/jingle_intro` — upload MP3 (max 5MB + magic-bytes check)
+    - `POST /api/admin/community/config/jingle_outro` — idem
+    - `GET /api/community_jingle/{filename}` — serving whitelisted (solo `community_jingle_intro.mp3` e `community_jingle_outro.mp3`) con streaming immediato + Accept-Ranges.
+  - **Frontend**:
+    - `radioEngine.js`: nuovo `_playCommunityBlock(segment)` che orchestra A→B→C→D senza overlap (usa `hardStopMusic` + `playJingle` + `speak` + `_playMusicWithVoice` per il brano).
+    - Dispatcher `playSegment()` aggiornato con il nuovo branch per `kind='community'`.
+    - `Dashboard.js` — `CommunityPanel` esteso con sezione **"Palinsesto A.I. Vs Umani"**: input frequenza, contatore live, 2 slot upload jingle (intro/outro CTA) con player HTML5 di preview.
+    - `api.js`: nuovi helper `communityConfigGet/Set` e `communityUploadJingle(role, formData)`.
+  - **Test backend**: 38/39 assertions passate (97%). L'unica non-conformità è comportamento intenzionale (clamp permissivo 0-50 invece di 400). Regressione 23/23 test community pre-esistenti passata.
 - **v12.1 · OTTIMIZZAZIONE AUDIO — 4 punti anti-glitch** (2026-02, this session):
   - **(1) Streaming immediato dall'Object Storage** (`object_storage.py::stream_mp3()`): nuovo async generator che apre httpx stream verso il bucket e pusha chunk da 64KB al browser NON APPENA arrivano. Cache lazy locale in file `.part` → `os.replace` atomico al termine. Latenza tipo TTFB ~200ms invece di 3-8s attesa download completo.
   - **(2) Zero double-download** (`radioEngine.js::prewarmAudio()`): riscritto — ora fa `fetch(url).blob()` una volta sola, crea un `blob://` URL locale. Nel `_playMusicWithVoice` il tag `<audio>` usa direttamente il blob URL (zero secondi request HTTP). Blob revocato dopo l'uso o via GC timeout 6 min.
