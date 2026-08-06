@@ -144,3 +144,80 @@ async def upload_local_file(local_path: str, sub_path: str) -> Optional[str]:
     except FileNotFoundError:
         logger.warning(f"upload_local_file: {local_path} not found")
         return None
+
+
+async def stream_mp3(sub_path: str, cache_to: Optional[str] = None):
+    """Streaming immediato da Object Storage al client.
+
+    Restituisce (async_generator, content_length_str_or_None) oppure None se
+    disabilitato/errore.  I chunk vengono pushati al browser NON APPENA
+    arrivano dal bucket (nessun download completo in memoria), permettendo
+    latenza tipo TTFB ~200ms invece di 3-8s per un MP3 da qualche MB.
+
+    Se `cache_to` è fornito, i chunk vengono anche scritti in un file
+    temporaneo che al termine viene rinominato in `cache_to` (populamento
+    lazy della cache locale — tutte le richieste successive saranno servite
+    da disco con supporto Range nativo di FileResponse).
+    """
+    if not is_enabled():
+        return None
+    key = await asyncio.to_thread(_init_storage_sync)
+    full_path = f"{APP_NAME}/{sub_path.lstrip('/')}"
+    import httpx
+    client = httpx.AsyncClient(timeout=httpx.Timeout(30.0, read=120.0))
+    try:
+        req = client.build_request(
+            "GET",
+            f"{STORAGE_URL}/objects/{full_path}",
+            headers={"X-Storage-Key": key},
+        )
+        response = await client.send(req, stream=True)
+        if response.status_code != 200:
+            await response.aclose()
+            await client.aclose()
+            logger.warning(f"objstore stream: got {response.status_code} for {full_path}")
+            return None
+        content_length = response.headers.get("Content-Length")
+    except Exception as e:  # noqa: BLE001
+        try: await client.aclose()
+        except Exception: pass
+        logger.warning(f"objstore stream open failed for {full_path}: {e}")
+        return None
+
+    async def _generator():
+        import os as _os
+        tmp_path = None
+        f = None
+        if cache_to:
+            try:
+                tmp_path = cache_to + ".part"
+                f = open(tmp_path, "wb")
+            except Exception:
+                f = None
+                tmp_path = None
+        try:
+            async for chunk in response.aiter_bytes(chunk_size=64 * 1024):
+                if chunk:
+                    if f is not None:
+                        try:
+                            f.write(chunk)
+                        except Exception:
+                            try: f.close()
+                            except Exception: pass
+                            f = None
+                    yield chunk
+        finally:
+            try: await response.aclose()
+            except Exception: pass
+            try: await client.aclose()
+            except Exception: pass
+            if f is not None:
+                try:
+                    f.close()
+                    if tmp_path and cache_to:
+                        _os.replace(tmp_path, cache_to)
+                        logger.info(f"objstore cache populated: {cache_to}")
+                except Exception as e:  # noqa: BLE001
+                    logger.debug(f"cache write finalize failed: {e}")
+
+    return _generator(), content_length

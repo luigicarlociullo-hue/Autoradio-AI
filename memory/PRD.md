@@ -14,6 +14,12 @@ Vorrei costruire un software di gestione radiofonica completamente automatizzato
 - Auth: Emergent Google OAuth (free) for admin.
 
 ## What's implemented (2026-08 · v10 · Stability fixes)
+- **v12.1 · OTTIMIZZAZIONE AUDIO — 4 punti anti-glitch** (2026-02, this session):
+  - **(1) Streaming immediato dall'Object Storage** (`object_storage.py::stream_mp3()`): nuovo async generator che apre httpx stream verso il bucket e pusha chunk da 64KB al browser NON APPENA arrivano. Cache lazy locale in file `.part` → `os.replace` atomico al termine. Latenza tipo TTFB ~200ms invece di 3-8s attesa download completo.
+  - **(2) Zero double-download** (`radioEngine.js::prewarmAudio()`): riscritto — ora fa `fetch(url).blob()` una volta sola, crea un `blob://` URL locale. Nel `_playMusicWithVoice` il tag `<audio>` usa direttamente il blob URL (zero secondi request HTTP). Blob revocato dopo l'uso o via GC timeout 6 min.
+  - **(3) `Accept-Ranges: bytes`** su TUTTI gli endpoint audio (`/api/suno_audio`, `/api/tts`, `/api/community_audio`) — sia dal FileResponse locale sia dallo StreamingResponse remoto.
+  - **(4) Buffer gate 5s** (`radioEngine.js::_playMusicWithVoice()`): `audio.play()` viene chiamato SOLO quando `audio.buffered.end(0) >= 5s` di contenuto contiguo (fallback: intero file o `readyState=HAVE_ENOUGH_DATA`). Polling ogni 250ms + eventi `progress/canplay/canplaythrough/loadeddata`. Safety skip a 20s. Elimina glitch iniziali.
+  - Test backend 23/23 passati. Smoke frontend: zero errori console.
 - **v12.0 · "A.I. Vs UMANI" + PWA + Media Session** (2026-02, this session):
   - **Modulo Community "A.I. Vs Umani"**:
     - Backend: nuova collection `community_tracks` + endpoints `POST /api/community/submit` (multipart form: author, title, copyright_ok, MP3 max 15MB con magic-bytes check), `GET /api/community_audio/{filename}` (con verifica DB — revoca file dopo delete), `GET/PATCH/DELETE /api/admin/community[/{id}[/toggle]]`.

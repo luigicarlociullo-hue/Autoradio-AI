@@ -2912,12 +2912,21 @@ async def get_tts_audio(filename: str):
                 "Accept-Ranges": "bytes",
             },
         )
-    # Local miss → try object storage (fresh production container after Deploy).
+    # Local miss → STREAM immediato dall'Object Storage con cache lazy locale.
     if object_storage.is_enabled():
-        data = await object_storage.fetch_mp3(f"tts/{filename}")
-        if data:
-            return Response(content=data, media_type="audio/mpeg",
-                            headers={"Cache-Control": "public, max-age=604800"})
+        # Determina dove salvare la cache locale (best-effort)
+        cache_dir = elevenlabs_service.tts_dir()
+        cache_to = str(cache_dir / filename) if cache_dir else None
+        streamed = await object_storage.stream_mp3(f"tts/{filename}", cache_to=cache_to)
+        if streamed:
+            gen, content_length = streamed
+            headers = {
+                "Cache-Control": "public, max-age=604800",
+                "Accept-Ranges": "bytes",
+            }
+            if content_length:
+                headers["Content-Length"] = content_length
+            return StreamingResponse(gen, media_type="audio/mpeg", headers=headers)
     raise HTTPException(404, "TTS audio not found")
 
 
@@ -3031,15 +3040,16 @@ async def get_community_audio(filename: str):
             },
         )
     if object_storage.is_enabled():
-        data = await object_storage.fetch_mp3(f"community/{filename}")
-        if data:
-            try:
-                p.write_bytes(data)
-            except Exception:
-                pass
-            return Response(content=data, media_type="audio/mpeg",
-                            headers={"Cache-Control": "public, max-age=604800",
-                                     "Accept-Ranges": "bytes"})
+        streamed = await object_storage.stream_mp3(f"community/{filename}", cache_to=str(p))
+        if streamed:
+            gen, content_length = streamed
+            headers = {
+                "Cache-Control": "public, max-age=604800",
+                "Accept-Ranges": "bytes",
+            }
+            if content_length:
+                headers["Content-Length"] = content_length
+            return StreamingResponse(gen, media_type="audio/mpeg", headers=headers)
     raise HTTPException(404, "Community audio not found")
 
 
@@ -3084,7 +3094,9 @@ async def admin_community_delete(track_id: str):
 
 @api_router.get("/suno_audio/{filename}")
 async def get_suno_audio(filename: str):
-    """Serve locally-cached Suno mp3s. Files live under SUNO_AUDIO_DIR."""
+    """Serve Suno MP3s. Local cache priority; on miss stream direttamente dal
+    bucket con populamento lazy della cache — nessun download completo prima
+    di rispondere (latenza tipo TTFB ~200ms invece di 3-8s)."""
     # Defensive: reject path traversal / weird filenames.
     if "/" in filename or ".." in filename or not filename.endswith(".mp3"):
         raise HTTPException(400, "Invalid filename")
@@ -3098,17 +3110,19 @@ async def get_suno_audio(filename: str):
                 "Accept-Ranges": "bytes",
             },
         )
-    # Local miss → try object storage (production container without local cache).
+    # Local miss → STREAM direttamente dall'Object Storage senza aspettare
+    # il download completo. La cache locale viene popolata in background.
     if object_storage.is_enabled():
-        data = await object_storage.fetch_mp3(f"suno/{filename}")
-        if data:
-            # Best-effort populate local cache so subsequent requests are fast.
-            try:
-                p.write_bytes(data)
-            except Exception:
-                pass
-            return Response(content=data, media_type="audio/mpeg",
-                            headers={"Cache-Control": "public, max-age=604800"})
+        streamed = await object_storage.stream_mp3(f"suno/{filename}", cache_to=str(p))
+        if streamed:
+            gen, content_length = streamed
+            headers = {
+                "Cache-Control": "public, max-age=604800",
+                "Accept-Ranges": "bytes",
+            }
+            if content_length:
+                headers["Content-Length"] = content_length
+            return StreamingResponse(gen, media_type="audio/mpeg", headers=headers)
     raise HTTPException(404, "Suno audio not found")
 
 

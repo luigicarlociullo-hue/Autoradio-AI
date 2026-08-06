@@ -1103,23 +1103,56 @@ class RadioEngine {
   }
 
   /**
-   * Prewarm generico di un URL audio: crea un Audio element hidden e forza
-   * il download del contenuto. Il browser mette in cache HTTP → quando poi
-   * lo useremo davvero, canplaythrough e' istantaneo.
+   * Prewarm generico di un URL audio: scarica il file via `fetch()` e lo
+   * converte in un Blob URL locale. Quando poi verrà riprodotto in
+   * `_playMusicWithVoice`, useremo direttamente il blob URL come src → il
+   * browser NON fa un secondo download HTTP (era il "double download"
+   * segnalato dall'utente). Il blob resta in memoria e viene revocato
+   * dopo l'uso oppure dopo un TTL di 6 minuti (safety GC).
    */
   prewarmAudio(url) {
-    if (!url || this._prewarmedUrls?.has(url)) return;
-    if (!this._prewarmedUrls) this._prewarmedUrls = new Set();
-    this._prewarmedUrls.add(url);
-    try {
-      const a = new Audio();
-      a.crossOrigin = "anonymous";
-      a.preload = "auto";
-      a.muted = true;
-      a.src = url;
-      // Il browser fetcha il file. Non lo suoniamo. Lo lasciamo GC.
-      setTimeout(() => { try { a.src = ""; } catch (e) {} }, 30000);
-    } catch (e) {}
+    if (!url) return;
+    if (!this._prewarmedBlobs) this._prewarmedBlobs = new Map(); // url → blobUrl
+    if (this._prewarmedBlobs.has(url)) return;
+    // Segna come "in corso" per evitare doppie fetch parallele
+    this._prewarmedBlobs.set(url, null);
+    fetch(url, { credentials: "omit", cache: "force-cache" })
+      .then(r => (r.ok ? r.blob() : null))
+      .then(blob => {
+        if (!blob) {
+          this._prewarmedBlobs.delete(url);
+          return;
+        }
+        const blobUrl = URL.createObjectURL(blob);
+        this._prewarmedBlobs.set(url, blobUrl);
+        // Safety GC: revoca il blob dopo 6 minuti se non usato
+        setTimeout(() => {
+          if (this._prewarmedBlobs?.get(url) === blobUrl) {
+            try { URL.revokeObjectURL(blobUrl); } catch (e) {}
+            this._prewarmedBlobs.delete(url);
+          }
+        }, 6 * 60 * 1000);
+      })
+      .catch(() => { this._prewarmedBlobs.delete(url); });
+  }
+
+  /**
+   * Se l'URL è stato prewarmato con successo restituisce il blob URL locale
+   * (nessun download HTTP), altrimenti restituisce l'URL originale.
+   * Marca il blob URL come "consumato" — verrà revocato quando l'audio è
+   * terminato (chiamare `_releasePrewarm(originalUrl)`).
+   */
+  _consumePrewarm(url) {
+    const blobUrl = this._prewarmedBlobs?.get(url);
+    return blobUrl || url;
+  }
+
+  _releasePrewarm(url) {
+    const blobUrl = this._prewarmedBlobs?.get(url);
+    if (blobUrl) {
+      try { URL.revokeObjectURL(blobUrl); } catch (e) {}
+      this._prewarmedBlobs.delete(url);
+    }
   }
 
   /**
@@ -1153,9 +1186,10 @@ class RadioEngine {
   }
 
   async _playMusicWithVoice(segment) {
-    // Riscrittura ROBUSTA: attende `canplaythrough` prima di suonare, safety
-    // timeout di 15s in caso di problemi di rete, skip pulito su errore.
-    // Ducking gestito via Web Audio GainNode per il visualizer.
+    // Riscrittura ROBUSTA: attende almeno 5s di buffer reale prima di
+    // suonare (nessun glitch iniziale), safety timeout di 20s in caso di
+    // problemi di rete, skip pulito su errore. Ducking gestito via Web
+    // Audio GainNode per il visualizer.
     return new Promise(async (resolve) => {
       let resolved = false;
       const done = () => { if (!resolved) { resolved = true; resolve(); } };
@@ -1163,20 +1197,26 @@ class RadioEngine {
       const url = segment.music_audio_url;
       if (!url) { done(); return; }
 
-      // Elemento audio nuovo — niente cache preload per evitare errori di
-      // createMediaElementSource già-usato.
+      // ZERO DOUBLE DOWNLOAD: se il brano è stato prewarmato via `fetch()`,
+      // il blob è già in memoria del browser — usiamo il blob URL locale
+      // come src, così il tag <audio> NON fa un secondo request HTTP.
+      // Se non c'è prewarm (o è ancora in corso), usiamo l'URL originale.
+      const playbackSrc = this._consumePrewarm(url);
+      const usedBlob = playbackSrc !== url;
+
       const audio = new Audio();
       audio.crossOrigin = "anonymous";
       audio.preload = "auto";
       audio.volume = 1.0;
       this.currentAudio = audio;
 
-      // Safety timeout: se `canplaythrough` non arriva in 15s, skip il brano.
+      // Safety timeout: se non riusciamo a partire in 20s, skip il brano.
       const safetyTimer = setTimeout(() => {
         console.warn("Music safety timeout — skipping:", url);
         try { audio.pause(); audio.src = ""; } catch (e) {}
+        if (usedBlob) this._releasePrewarm(url);
         done();
-      }, 15000);
+      }, 20000);
 
       // Grafo Web Audio: audio → musicGain → outputBus (analyser + master)
       let musicGain = null;
@@ -1202,6 +1242,7 @@ class RadioEngine {
 
       audio.addEventListener("error", () => {
         clearTimeout(safetyTimer);
+        if (bufferGateTimer) clearInterval(bufferGateTimer);
         console.error("Music load error:", url);
         try { srcNode && srcNode.disconnect(); } catch (e) {}
         try { musicGain && musicGain.disconnect(); } catch (e) {}
@@ -1210,10 +1251,38 @@ class RadioEngine {
           this._currentMusicSrcNode = null;
           this._currentMusicGain = null;
         }
+        if (usedBlob) this._releasePrewarm(url);
         done();
       }, { once: true });
 
-      audio.addEventListener("canplaythrough", async () => {
+      // === BUFFER GATE: attendo almeno 5s di audio bufferizzato reale prima
+      // di partire con `audio.play()`. Elimina i glitch iniziali (audio che
+      // parte e stoppa dopo 200ms per rifornirsi). Se il brano è più corto
+      // di 5s (raro) oppure il buffer riempie tutto il file, partiamo comunque.
+      const MIN_BUFFER_S = 5;
+      let started = false;
+      let bufferGateTimer = null;
+      const tryStart = async () => {
+        if (started) return;
+        // Verifica quanti secondi contigui abbiamo dal punto 0
+        let ready = false;
+        try {
+          if (audio.buffered && audio.buffered.length > 0) {
+            const bufEnd = audio.buffered.end(0);
+            const bufStart = audio.buffered.start(0);
+            const dur = isFinite(audio.duration) ? audio.duration : Infinity;
+            const targetS = Math.min(MIN_BUFFER_S, Math.max(1, dur * 0.5));
+            if (bufStart <= 0.1 && (bufEnd - bufStart) >= targetS) ready = true;
+            // Caso file corto: se abbiamo bufferizzato TUTTO il file, parti
+            if (isFinite(dur) && (bufEnd - bufStart) >= dur - 0.5) ready = true;
+          }
+        } catch (e) {}
+        // Fallback: canplaythrough garantisce che il browser stima riproducibilità
+        // continua fino alla fine — accettalo come "buffer sufficiente"
+        if (!ready && audio.readyState >= 4 /* HAVE_ENOUGH_DATA */) ready = true;
+        if (!ready) return;
+        started = true;
+        if (bufferGateTimer) { clearInterval(bufferGateTimer); bufferGateTimer = null; }
         clearTimeout(safetyTimer);
         try {
           await audio.play();
@@ -1321,6 +1390,8 @@ class RadioEngine {
             try { srcNode && srcNode.disconnect(); } catch (e) {}
             try { musicGain && musicGain.disconnect(); } catch (e) {}
             if (this._pendingMusicFadeOut === pending) this._pendingMusicFadeOut = null;
+            // Rilascia il blob URL dopo che il brano è completamente finito
+            if (usedBlob) this._releasePrewarm(url);
           });
           done();
         } catch (playErr) {
@@ -1332,12 +1403,24 @@ class RadioEngine {
             this._currentMusicSrcNode = null;
             this._currentMusicGain = null;
           }
+          if (usedBlob) this._releasePrewarm(url);
           done();
         }
-      }, { once: true });
+      };  // end of tryStart
 
-      // Kick off the load
-      audio.src = url;
+      // Ogni volta che il browser scarica nuovi byte controlla se abbiamo
+      // superato il threshold di 5s per partire.
+      audio.addEventListener("progress", tryStart);
+      audio.addEventListener("canplay", tryStart);
+      audio.addEventListener("canplaythrough", tryStart);
+      audio.addEventListener("loadeddata", tryStart);
+      // Fallback polling ogni 250ms — su alcuni browser gli eventi
+      // buffered/progress non arrivano finché il player non è visibile.
+      bufferGateTimer = setInterval(tryStart, 250);
+
+      // Kick off the load. Se `usedBlob` è true, il src è un blob:// locale
+      // (nessun secondo download HTTP grazie al prewarm via fetch()).
+      audio.src = playbackSrc;
       try { audio.load(); } catch (e) {}
     });
   }

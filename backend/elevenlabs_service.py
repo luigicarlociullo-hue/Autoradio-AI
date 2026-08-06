@@ -148,6 +148,13 @@ def tts_path(filename: str) -> Path | None:
     return p
 
 
+def tts_dir() -> Path:
+    """Directory dove vengono conservati i file TTS mp3 (cache locale)."""
+    return TTS_DIR
+
+
+
+
 def cleanup_old(max_files: int = 200):
     files = sorted(TTS_DIR.glob("*.mp3"), key=lambda p: p.stat().st_mtime, reverse=True)
     for p in files[max_files:]:
