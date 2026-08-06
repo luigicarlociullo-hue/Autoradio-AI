@@ -1,0 +1,33 @@
+{
+  "summary": "Backend-only testing of the new 'A.I. Vs Umani' community config feature (frequency + intro/outro jingles) and the community block injection into pick_next_segment. New suite /app/backend/tests/test_community_config.py: 15/16 passed. Regression of the 23 pre-existing community tests (/app/backend/tests/backend_test.py): 23/23 passed. Community segment injection verified end-to-end (submit -> toggle ON -> freq=1 -> POST /api/segments/generate) with all required fields (kind=community, pre/post_jingle_url, script with 'A-I contro Umani' + artist/title, music_audio_url of the community track, dj_name in [Leo,Aria,Max], voice_key mapped, track_meta.is_community=true, llm_provider=community, songs_since_community reset to 0). Fallback path with no ON track also verified (returns non-community segment, no 500). No music generation (Suno/LLM) endpoints were called beyond POST /api/segments/generate which served existing library tracks.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "PATCH /api/admin/community/config", "issue": "Spec mismatch: frequency=51 is silently clamped to 50 and returns 200 {frequency:50} instead of the expected 400. Same for negative values (clamped to 0). Non-integer strings and missing frequency correctly return 400. Decide: either return 400 for out-of-range (per spec) or document clamping in the UI."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_community_config.py",
+    "/app/test_reports/pytest/community_config.xml",
+    "/app/test_reports/pytest/community_regression.xml"
+  ],
+  "action_items": [
+    "Decide/fix out-of-range frequency behaviour in PATCH /api/admin/community/config (400 vs clamp) and align the Dashboard input validation/message.",
+    "Re-upload real intro/outro jingles: testing left dummy silent MP3s at /app/backend/static/community/community_jingle_intro.mp3 and community_jingle_outro.mp3 and station.state URLs point to them."
+  ],
+  "critical_code_review_comments": [
+    "server.py is ~3476 lines — split into routers (community, palinsesto, admin) for maintainability.",
+    "Community/jingle endpoints have no auth at all (admin panel 'open in beta') — anyone can change frequency or overwrite station jingles; add a shared-secret/admin guard before launch.",
+    "PATCH /api/admin/community/config takes a raw dict instead of a Pydantic model; use a model with Field(ge=0, le=50) so FastAPI returns 422/400 consistently.",
+    "Community segment always picks the newest ON track (sort submitted_at desc) — the same track will replay every cycle; consider rotating by last_played_at."
+  ],
+  "updated_files": ["/app/backend/tests/test_community_config.py"],
+  "success_rate": {"backend": "97% (38/39 assertions-suites passed; 1 spec mismatch)", "frontend": "not tested (backend-only request)"},
+  "seed_data_creation": "Temporary community track TEST_Artista / TEST_Brano created and deleted during the injection test (DB now has 0 community tracks). community_frequency restored to 0.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "None required (admin endpoints unauthenticated)",
+  "context_for_next_testing_agent": "New suite: /app/backend/tests/test_community_config.py (config GET/PATCH, jingle upload validation incl. >5MB and magic-bytes, /api/community_jingle whitelist + Accept-Ranges, community block injection). Run with `cd /app/backend && python -m pytest tests/test_community_config.py tests/backend_test.py`. The injection test leaves frequency=0 afterwards. Frontend CommunityPanel config UI (data-testid=community-config-panel etc.) has NOT been tested yet.",
+  "rca_of_the_issue": "PATCH handler uses `freq = max(0, min(50, int(freq)))`, which clamps out-of-range values instead of rejecting them; only a ValueError from int() produces the 400."
+}

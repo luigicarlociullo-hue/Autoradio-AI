@@ -2313,12 +2313,22 @@ function CommunityPanel() {
   const [tracks, setTracks] = useState([]);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState(null);
+  // Config: frequenza + jingle intro/outro
+  const [cfg, setCfg] = useState({ frequency: 0, intro_jingle_url: null, outro_jingle_url: null, songs_since_community: 0 });
+  const [cfgFreq, setCfgFreq] = useState("");
+  const [cfgSaving, setCfgSaving] = useState(false);
+  const [jingleUploading, setJingleUploading] = useState({ intro: false, outro: false });
 
   const load = async () => {
     setLoading(true);
     try {
-      const r = await endpoints.communityList();
+      const [r, c] = await Promise.all([
+        endpoints.communityList(),
+        endpoints.communityConfigGet(),
+      ]);
       setTracks(r?.tracks || []);
+      setCfg(c || {});
+      setCfgFreq(String(c?.frequency ?? 0));
     } catch (e) {
       toast.error("Impossibile caricare i brani community");
     } finally {
@@ -2327,6 +2337,45 @@ function CommunityPanel() {
   };
 
   useEffect(() => { load(); }, []);
+
+  const saveFreq = async () => {
+    const n = parseInt(cfgFreq, 10);
+    if (isNaN(n) || n < 0 || n > 50) {
+      toast.error("Inserisci un numero tra 0 e 50 (0 = disabilita)");
+      return;
+    }
+    setCfgSaving(true);
+    try {
+      await endpoints.communityConfigSet({ frequency: n });
+      setCfg(prev => ({ ...prev, frequency: n }));
+      toast.success(n === 0 ? "Iniezione community DISABILITATA" : `Ogni ${n} canzoni AI → 1 brano community`);
+    } catch (e) {
+      toast.error("Errore salvataggio frequenza");
+    } finally {
+      setCfgSaving(false);
+    }
+  };
+
+  const uploadJingle = async (role, file) => {
+    if (!file) return;
+    if (!file.name.toLowerCase().endsWith(".mp3")) {
+      toast.error("Solo file .mp3");
+      return;
+    }
+    setJingleUploading(prev => ({ ...prev, [role]: true }));
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const res = await endpoints.communityUploadJingle(role, fd);
+      setCfg(prev => ({ ...prev, [`${role}_jingle_url`]: res.url }));
+      toast.success(`Jingle ${role === "intro" ? "apertura" : "CTA finale"} caricato`);
+    } catch (e) {
+      const msg = e?.response?.data?.detail || "Upload fallito";
+      toast.error(msg);
+    } finally {
+      setJingleUploading(prev => ({ ...prev, [role]: false }));
+    }
+  };
 
   const onToggle = async (id) => {
     setBusyId(id);
@@ -2384,7 +2433,89 @@ function CommunityPanel() {
 
       {loading ? (
         <div className="text-zinc-500 text-sm py-8 text-center">Caricamento…</div>
-      ) : tracks.length === 0 ? (
+      ) : (
+        <>
+          {/* ====== Config palinsesto community ====== */}
+          <div
+            data-testid="community-config-panel"
+            className="mb-6 rounded-xl border border-pink-500/30 bg-pink-500/5 p-4"
+          >
+            <div className="text-xs uppercase tracking-widest text-pink-400 font-mono mb-3 font-bold">
+              Palinsesto A.I. Vs Umani
+            </div>
+
+            {/* Frequenza */}
+            <div className="flex flex-col sm:flex-row sm:items-end gap-3 mb-4">
+              <div className="flex-1">
+                <label className="block text-xs text-zinc-400 mb-1">
+                  Ogni quante canzoni AI far partire un brano community
+                  <span className="text-zinc-600"> (0 = disabilita)</span>
+                </label>
+                <input
+                  data-testid="community-freq-input"
+                  type="number"
+                  min={0}
+                  max={50}
+                  value={cfgFreq}
+                  onChange={(e) => setCfgFreq(e.target.value)}
+                  className="w-32 rounded-lg bg-zinc-900 border border-zinc-800 focus:border-pink-500 outline-none px-3 py-2 text-white"
+                />
+              </div>
+              <button
+                data-testid="community-freq-save"
+                onClick={saveFreq}
+                disabled={cfgSaving}
+                className="bg-pink-500 hover:bg-pink-400 disabled:opacity-40 text-black font-bold px-4 py-2 rounded-lg text-sm"
+              >
+                {cfgSaving ? "Salvo…" : "Applica"}
+              </button>
+              <div className="text-xs text-zinc-500 font-mono">
+                Stato: {cfg.frequency > 0
+                  ? `attivo (contatore ${cfg.songs_since_community}/${cfg.frequency})`
+                  : "disabilitato"}
+              </div>
+            </div>
+
+            {/* Upload jingles */}
+            <div className="grid sm:grid-cols-2 gap-3">
+              {["intro", "outro"].map(role => (
+                <div key={role} className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-3">
+                  <div className="text-xs font-mono uppercase tracking-widest text-zinc-400 mb-2">
+                    Jingle {role === "intro" ? "APERTURA" : "CTA FINALE"}
+                  </div>
+                  {cfg[`${role}_jingle_url`] ? (
+                    <div className="mb-2 flex items-center gap-2">
+                      <audio
+                        controls
+                        preload="none"
+                        src={endpoints.audioUrl(cfg[`${role}_jingle_url`])}
+                        data-testid={`community-jingle-${role}-audio`}
+                        style={{ height: 28, maxWidth: "100%" }}
+                      />
+                    </div>
+                  ) : (
+                    <div className="text-xs text-zinc-500 italic mb-2">
+                      Nessun jingle caricato — il blocco community suonerà senza jingle {role === "intro" ? "iniziale" : "finale"}.
+                    </div>
+                  )}
+                  <input
+                    data-testid={`community-jingle-${role}-input`}
+                    type="file"
+                    accept=".mp3,audio/mpeg"
+                    onChange={(e) => uploadJingle(role, e.target.files?.[0])}
+                    disabled={jingleUploading[role]}
+                    className="w-full text-xs text-zinc-300 file:mr-3 file:py-1 file:px-3 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-pink-500 file:text-black hover:file:bg-pink-400 cursor-pointer disabled:opacity-40"
+                  />
+                  {jingleUploading[role] && (
+                    <div className="text-xs text-pink-400 mt-1">Upload in corso…</div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* ====== Tabella brani community (esistente) ====== */}
+      {tracks.length === 0 ? (
         <div
           data-testid="community-empty"
           className="rounded-xl border border-dashed border-zinc-800 p-8 text-center text-zinc-500 text-sm"
@@ -2469,6 +2600,8 @@ function CommunityPanel() {
             </tbody>
           </table>
         </div>
+      )}
+        </>
       )}
     </section>
   );

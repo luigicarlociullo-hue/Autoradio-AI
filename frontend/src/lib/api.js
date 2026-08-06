@@ -42,4 +42,10 @@ export const endpoints = {
   communityList: () => api.get("/admin/community").then(r => r.data),
   communityToggle: (id) => api.patch(`/admin/community/${id}/toggle`).then(r => r.data),
   communityDelete: (id) => api.delete(`/admin/community/${id}`).then(r => r.data),
+  communityConfigGet: () => api.get("/admin/community/config").then(r => r.data),
+  communityConfigSet: (payload) => api.patch("/admin/community/config", payload).then(r => r.data),
+  communityUploadJingle: (role, formData) => api.post(
+    `/admin/community/config/jingle_${role}`, formData,
+    { headers: { "Content-Type": "multipart/form-data" }, timeout: 60000 }
+  ).then(r => r.data),
 };

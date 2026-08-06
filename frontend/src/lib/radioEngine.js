@@ -447,6 +447,10 @@ class RadioEngine {
     this._activeBedStoppers = [];
 
     this.currentKind = segment.kind;
+    // "A.I. Vs Umani" community block: intro jingle → DJ line → community track → outro jingle
+    if (segment.kind === "community" && segment.music_audio_url) {
+      return this._playCommunityBlock(segment);
+    }
     // Music segment con audio reale
     if (segment.kind === "music" && segment.music_audio_url) {
       return this._playMusicWithVoice(segment);
@@ -454,6 +458,59 @@ class RadioEngine {
     // Tutti i segmenti PARLATI (talk, joke, weather, history, interview, motivation,
     // news, ad_spot, time_signal, jingle, horoscope, ...): SOLO VOCE, zero sottofondo.
     return this._playVoiceOnly(segment);
+  }
+
+  /**
+   * Blocco "A.I. Vs Umani" — sequenza fissa:
+   *   A) Jingle di apertura (se admin l'ha caricato)
+   *   B) Presentazione DJ (SpeechSynthesis client-side, zero costo)
+   *   C) BRANO della community (con fade-in a full volume)
+   *   D) Jingle finale CTA "Sei un artista? Inviaci il tuo brano..."
+   * Ogni step aspetta la fine del precedente (nessun overlap richiesto dall'utente).
+   */
+  async _playCommunityBlock(segment) {
+    // A) INTRO JINGLE
+    if (segment.pre_jingle_url) {
+      try { this.hardStopMusic(); } catch (e) {}
+      try {
+        const url = segment.pre_jingle_url.startsWith("/api/")
+          ? this._absoluteAudioUrl(segment.pre_jingle_url)
+          : segment.pre_jingle_url;
+        await this.playJingle(url);
+      } catch (e) { console.warn("[community] intro jingle failed:", e); }
+    }
+    // B) DJ presentation via speech (client-side, free)
+    if (segment.speech_audio_url) {
+      try { await this.playAudioUrl(segment.speech_audio_url); } catch (e) {}
+    } else if (segment.script) {
+      try { await this.speak(segment.script, segment.voice_key || "nova", { rate: 1.02 }); } catch (e) {}
+    }
+    // C) COMMUNITY TRACK — usa la pipeline musicale piena (buffer gate, fade-in,
+    //    fade-out finale) MA senza intro/outro DJ (già fatto sopra).
+    const musicSeg = {
+      music_audio_url: segment.music_audio_url,
+      track_meta: segment.track_meta || {},
+      // niente speech_audio_url / script / outro → _playMusicWithVoice
+      // salta lo step DJ e va dritto al brano.
+    };
+    await this._playMusicWithVoice(musicSeg);
+    // D) OUTRO JINGLE (CTA)
+    if (segment.post_jingle_url) {
+      try { this.hardStopMusic(); } catch (e) {}
+      try {
+        const url = segment.post_jingle_url.startsWith("/api/")
+          ? this._absoluteAudioUrl(segment.post_jingle_url)
+          : segment.post_jingle_url;
+        await this.playJingle(url);
+      } catch (e) { console.warn("[community] outro jingle failed:", e); }
+    }
+  }
+
+  /** Restituisce l'URL assoluto per un audio path relativo. */
+  _absoluteAudioUrl(path) {
+    if (!path || !path.startsWith("/api/")) return path;
+    const base = (typeof process !== "undefined" && process.env && process.env.REACT_APP_BACKEND_URL) || "";
+    return base ? `${base}${path}` : path;
   }
 
   /**

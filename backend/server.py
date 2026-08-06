@@ -171,7 +171,7 @@ class Track(BaseModel):
 
 class Segment(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    kind: Literal["intro", "music", "talk", "news", "answer", "outro", "weather", "horoscope", "history", "interview", "motivation", "joke", "jingle", "time_signal", "ad_spot"]
+    kind: Literal["intro", "music", "talk", "news", "answer", "outro", "weather", "horoscope", "history", "interview", "motivation", "joke", "jingle", "time_signal", "ad_spot", "community"]
     dj_id: Optional[str] = None
     dj_name: Optional[str] = None
     voice_key: Optional[str] = None
@@ -186,6 +186,9 @@ class Segment(BaseModel):
     outro_speech_url: Optional[str] = None
     music_audio_url: Optional[str] = None
     background_loop: Optional[str] = None  # instrumental bed under spoken segments
+    # "A.I. Vs Umani" community block: jingle intro + DJ line + community track + jingle CTA outro
+    pre_jingle_url: Optional[str] = None
+    post_jingle_url: Optional[str] = None
     hd_status: Literal["pending", "rendering", "ready", "failed"] = "pending"
     partner_dj_name: Optional[str] = None  # for interview segments
     created_at: str = Field(default_factory=now_iso)
@@ -1965,6 +1968,10 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
         d_every = int(state_doc.get("dj_talk_every_n_songs") or 4)
         songs_since_jingle = int(state_doc.get("songs_since_jingle") or 0)
         songs_since_dj_talk = int(state_doc.get("songs_since_dj_talk") or 0)
+        # "A.I. Vs Umani" — iniezione periodica di un brano community.
+        # 0 = disabilitato. N > 0 = ogni N canzoni AI ne parte una community.
+        community_freq = int(state_doc.get("community_frequency") or 0)
+        songs_since_community = int(state_doc.get("songs_since_community") or 0)
         # Legacy: keep playlist_position rolling for stats/back-compat only.
         pos = int(state_doc.get("playlist_position", 0)) % 8
 
@@ -2010,7 +2017,7 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
         commercial_slots = ["ad_spot", "weather"]
 
         # ---- Rotation slot decision based on configurable rules ----
-        # Priority order: time signal (once per hour) → jingle → dj_talk → music.
+        # Priority order: time signal (once per hour) → COMMUNITY block → jingle → dj_talk → music.
         if last_time_hour != current_hour_key:
             kind = "time_signal"
             await db.station.update_one(
@@ -2018,6 +2025,66 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
                 {"$set": {"last_time_signal_hour": current_hour_key}},
                 upsert=True,
             )
+        elif community_freq > 0 and songs_since_community >= community_freq:
+            # === Community block "A.I. Vs Umani" ===
+            # Cerca un brano community ON. Se non c'è, salta al normale palinsesto.
+            comm = await db.community_tracks.find_one(
+                {"status": "on"},
+                {"_id": 0},
+                sort=[("submitted_at", -1)],
+            )
+            if comm:
+                intro_url = state_doc.get("community_intro_jingle_url") or None
+                outro_url = state_doc.get("community_outro_jingle_url") or None
+                # Scegli DJ (Leo / Aria / Max) a rotazione per varietà.
+                dj_pool = ["Leo", "Aria", "Max"]
+                dj_name = random.choice(dj_pool)
+                # Voice key: mappa nome DJ → voice preset OpenAI TTS
+                voice_map = {"Leo": "onyx", "Aria": "nova", "Max": "echo"}
+                voice_key = voice_map.get(dj_name, "nova")
+                artist = comm.get("author") or "Artista"
+                title = comm.get("title") or "Brano senza titolo"
+                # Script che il DJ dice PRIMA del brano — client-side speech
+                # synthesis (nessun consumo crediti). Il template è ricco per
+                # spingere la CTA "Inviaci il tuo brano".
+                dj_script = (
+                    f"E ora un momento speciale su R-A-I: la sfida A-I contro Umani! "
+                    f"Sto per farvi ascoltare {title}, di {artist}, "
+                    f"un artista in carne e ossa che si mette in gioco contro le nostre intelligenze artificiali. "
+                    f"Ascoltate, e giudicate voi."
+                )
+                segment = Segment(
+                    kind="community",
+                    dj_name=dj_name,
+                    voice_key=voice_key,
+                    title=f"♥ {title} — {artist} (community)",
+                    script=dj_script,
+                    music_audio_url=comm.get("audio_url"),
+                    pre_jingle_url=intro_url,
+                    post_jingle_url=outro_url,
+                    duration_sec=210,  # stima 3:30, ma ended event chiude comunque
+                    track_meta={
+                        "is_community": True,
+                        "artist": artist,
+                        "title": title,
+                        "id": comm.get("id"),
+                    },
+                    llm_provider="community",
+                )
+                await db.segments.insert_one(segment.model_dump())
+                await db.station.update_one(
+                    {"_id": "state"},
+                    {"$set": {"songs_since_community": 0}},
+                    upsert=True,
+                )
+                return segment
+            # Nessun brano community ON → resetta contatore per non insistere
+            await db.station.update_one(
+                {"_id": "state"},
+                {"$set": {"songs_since_community": 0}},
+                upsert=True,
+            )
+            kind = "music"
         elif songs_since_jingle >= j_every:
             jingle = await db.tracks.find_one(
                 {"is_jingle": True, "status": "ready", "audio_url": {"$ne": None},
@@ -2060,15 +2127,17 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
             kind = "music"
 
         # Update per-slot counters for the music case (so future calls
-        # trigger jingle/talk at the right cadence).
+        # trigger jingle/talk/community at the right cadence).
         if kind == "music":
             songs_since_jingle += 1
             songs_since_dj_talk += 1
+            songs_since_community += 1
             await db.station.update_one(
                 {"_id": "state"},
                 {"$set": {
                     "songs_since_jingle": songs_since_jingle,
                     "songs_since_dj_talk": songs_since_dj_talk,
+                    "songs_since_community": songs_since_community,
                 }},
                 upsert=True,
             )
@@ -3090,6 +3159,103 @@ async def admin_community_delete(track_id: str):
     # object_storage.py e chiamarlo qui.)
     await db.community_tracks.delete_one({"id": track_id})
     return {"ok": True, "deleted": track_id}
+
+
+# ============================================================
+# Config "A.I. Vs Umani": frequenza + jingles (intro + outro CTA)
+# ============================================================
+@api_router.get("/admin/community/config")
+async def admin_community_config_get():
+    st = await db.station.find_one({"_id": "state"}) or {}
+    return {
+        "frequency": int(st.get("community_frequency") or 0),  # 0 = disabilitato
+        "intro_jingle_url": st.get("community_intro_jingle_url") or None,
+        "outro_jingle_url": st.get("community_outro_jingle_url") or None,
+        "songs_since_community": int(st.get("songs_since_community") or 0),
+    }
+
+
+@api_router.patch("/admin/community/config")
+async def admin_community_config_set(payload: dict):
+    """Aggiorna la frequenza community. 0 = disabilita l'iniezione nel palinsesto."""
+    freq = payload.get("frequency")
+    if freq is None:
+        raise HTTPException(400, "frequency mancante")
+    try:
+        freq = max(0, min(50, int(freq)))
+    except Exception:
+        raise HTTPException(400, "frequency deve essere un intero 0-50")
+    await db.station.update_one(
+        {"_id": "state"},
+        {"$set": {"community_frequency": freq}},
+        upsert=True,
+    )
+    return {"ok": True, "frequency": freq}
+
+
+async def _save_community_jingle(role: str, file: UploadFile) -> str:
+    """Salva un jingle di ruolo 'intro' o 'outro' su disco + object storage,
+    aggiorna il record station.state con l'URL. Ritorna l'URL pubblico."""
+    if role not in ("intro", "outro"):
+        raise HTTPException(400, "role deve essere 'intro' o 'outro'")
+    fname_lower = (file.filename or "").lower()
+    if not fname_lower.endswith(".mp3"):
+        raise HTTPException(400, "Solo file .mp3 sono accettati")
+    data = await file.read()
+    if len(data) < 5_000:
+        raise HTTPException(400, "File troppo piccolo")
+    if len(data) > 5 * 1024 * 1024:
+        raise HTTPException(400, "Jingle troppo grande (max 5 MB)")
+    if not _validate_mp3_bytes(data):
+        raise HTTPException(400, "Il file non risulta essere un MP3 valido")
+    local_name = f"community_jingle_{role}.mp3"
+    local_path = COMMUNITY_AUDIO_DIR / local_name
+    local_path.write_bytes(data)
+    try:
+        await object_storage.put_mp3(f"community/{local_name}", data)
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"community jingle objstore upload skipped: {e}")
+    url = f"/api/community_jingle/{local_name}"
+    field = f"community_{role}_jingle_url"
+    await db.station.update_one({"_id": "state"}, {"$set": {field: url}}, upsert=True)
+    logger.info(f"Community jingle {role} saved: {url}")
+    return url
+
+
+@api_router.post("/admin/community/config/jingle_intro")
+async def admin_community_upload_intro_jingle(file: UploadFile = File(...)):
+    url = await _save_community_jingle("intro", file)
+    return {"ok": True, "url": url, "role": "intro"}
+
+
+@api_router.post("/admin/community/config/jingle_outro")
+async def admin_community_upload_outro_jingle(file: UploadFile = File(...)):
+    url = await _save_community_jingle("outro", file)
+    return {"ok": True, "url": url, "role": "outro"}
+
+
+@api_router.get("/community_jingle/{filename}")
+async def get_community_jingle_public(filename: str):
+    """Endpoint speciale per servire i jingle community — bypass del check DB
+    di /community_audio/ (che è per i brani utente). I jingle sono hardcoded
+    per nome (community_jingle_intro.mp3, community_jingle_outro.mp3)."""
+    if filename not in ("community_jingle_intro.mp3", "community_jingle_outro.mp3"):
+        raise HTTPException(404, "Not found")
+    p = COMMUNITY_AUDIO_DIR / filename
+    if p.exists():
+        return FileResponse(
+            str(p), media_type="audio/mpeg",
+            headers={"Cache-Control": "public, max-age=604800", "Accept-Ranges": "bytes"},
+        )
+    if object_storage.is_enabled():
+        streamed = await object_storage.stream_mp3(f"community/{filename}", cache_to=str(p))
+        if streamed:
+            gen, content_length = streamed
+            headers = {"Cache-Control": "public, max-age=604800", "Accept-Ranges": "bytes"}
+            if content_length:
+                headers["Content-Length"] = content_length
+            return StreamingResponse(gen, media_type="audio/mpeg", headers=headers)
+    raise HTTPException(404, "Community jingle not found")
 
 
 @api_router.get("/suno_audio/{filename}")
