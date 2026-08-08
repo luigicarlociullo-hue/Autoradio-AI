@@ -202,6 +202,12 @@ class Question(BaseModel):
     answered: bool = False
     answer: Optional[str] = None
     answering_dj: Optional[str] = None
+    # Multi-brain routing (v12.4): topic → DJ → LLM provider
+    topic_category: Optional[Literal["philosophy", "future_science", "tech_cynical"]] = None
+    dj_voice_key: Optional[str] = None
+    answer_audio_url: Optional[str] = None
+    question_hash: Optional[str] = None  # per la cache riuso
+    processing_status: Literal["queued", "processing", "done", "failed", "cached"] = "queued"
     created_at: str = Field(default_factory=now_iso)
 
 
@@ -2017,6 +2023,15 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
         commercial_slots = ["ad_spot", "weather"]
 
         # ---- Rotation slot decision based on configurable rules ----
+        # PRIORITÀ ASSOLUTA #1: Priority queue (risposte DJ in tempo reale).
+        # Emette immediatamente il prossimo segmento in coda prioritaria se presente.
+        pq_doc = await db.priority_queue.find_one_and_delete({}, sort=[("created_at", 1)])
+        if pq_doc:
+            pq_doc.pop("_id", None)
+            logger.info(f"[palinsesto] PRIORITY segment: {pq_doc.get('title', '?')}")
+            # Il segmento è già stato inserito in db.segments dal background task.
+            return Segment(**pq_doc)
+
         # Priority order: time signal (once per hour) → COMMUNITY block → jingle → dj_talk → music.
         if last_time_hour != current_hour_key:
             kind = "time_signal"
@@ -2692,10 +2707,182 @@ async def clear_segments():
 
 
 # ----------------------- Questions -----------------------
+# Multi-brain router (v12.4): domande classificate per topic e inoltrate a
+# DJ diversi con modelli LLM specifici via Universal Key.
+DJ_ROUTING = {
+    "philosophy":     {"dj_name": "Leo",  "voice_key": "male-1",   "provider": "openai",    "model": "gpt-5.2"},
+    "future_science": {"dj_name": "Aria", "voice_key": "female-1", "provider": "anthropic", "model": "claude-sonnet-4-5-20250929"},
+    "tech_cynical":   {"dj_name": "Max",  "voice_key": "male-3",   "provider": "gemini",    "model": "gemini-3-flash-preview"},
+}
+
+
+def _normalize_question(text: str) -> str:
+    """Normalizza per matching cache: lowercase, no punteggiatura, whitespace collassato."""
+    import re
+    s = text.lower().strip()
+    s = re.sub(r"[^\w\s]", "", s)   # rimuovi punteggiatura
+    s = re.sub(r"\s+", " ", s)      # collassa whitespace
+    return s
+
+
+def _hash_question(text: str) -> str:
+    import hashlib
+    return hashlib.sha256(_normalize_question(text).encode("utf-8")).hexdigest()
+
+
+def _classify_question_topic(text: str) -> str:
+    """Classificazione deterministica keyword-based (zero LLM costs).
+    Ritorna una key di DJ_ROUTING. Fallback round-robin per neutralità."""
+    t = _normalize_question(text)
+    # Filosofia / vita
+    phil_kw = ["senso della vita", "amore", "morte", "felicit", "esistenz", "anima", "dio", "sogno",
+               "libert", "verit", "essere", "coscienz", "significato", "perch", "destino", "etic", "moral", "spirit"]
+    # Futuro / scienza
+    fut_kw = ["futuro", "intelligenza artificiale", "ai", "robot", "scienza", "spazio", "universo",
+              "quantico", "biotech", "genet", "tecnologia futura", "singolarit", "coloniz", "marte",
+              "cosmo", "pianeta", "cambiamento climatico", "evoluzion"]
+    # Tecnico / cinico
+    tech_kw = ["come si fa", "codice", "programmaz", "hack", "bug", "algoritmo", "server", "database",
+               "come funziona", "spiegami tecnic", "regole", "sistema", "protocoll", "network"]
+    scores = {"philosophy": 0, "future_science": 0, "tech_cynical": 0}
+    for k in phil_kw:
+        if k in t: scores["philosophy"] += 1
+    for k in fut_kw:
+        if k in t: scores["future_science"] += 1
+    for k in tech_kw:
+        if k in t: scores["tech_cynical"] += 1
+    best = max(scores, key=scores.get)
+    if scores[best] > 0:
+        return best
+    # Nessuna keyword: round-robin basato su hash → distribuzione uniforme
+    h = int(_hash_question(text)[:8], 16) % 3
+    return ["philosophy", "future_science", "tech_cynical"][h]
+
+
+async def _push_priority_segment(seg_dict: dict):
+    """Aggiunge un segmento alla coda prioritaria. Il palinsesto lo emette
+    PRIMA di qualsiasi altra decisione (community, jingle, dj_talk, music)."""
+    await db.priority_queue.insert_one(seg_dict)
+
+
+async def _generate_answer_background(qid: str, question_text: str, listener_name: str):
+    """Task in background: LLM answer → TTS ElevenLabs → priority queue."""
+    try:
+        q_doc = await db.questions.find_one({"id": qid})
+        if not q_doc:
+            return
+        topic = q_doc["topic_category"]
+        route = DJ_ROUTING[topic]
+        provider, model, dj_name, voice_key = route["provider"], route["model"], route["dj_name"], route["voice_key"]
+        q_hash = q_doc["question_hash"]
+
+        await db.questions.update_one({"id": qid}, {"$set": {"processing_status": "processing"}})
+
+        # ---- CACHE HIT ----
+        cached = await db.question_cache.find_one({"question_hash": q_hash})
+        if cached and cached.get("answer_audio_url"):
+            answer_text = cached.get("answer", "")
+            audio_url = cached["answer_audio_url"]
+            logger.info(f"[Q&A cache HIT] q={qid[:8]} → reusing {audio_url}")
+            await db.questions.update_one(
+                {"id": qid},
+                {"$set": {
+                    "answered": True, "answer": answer_text,
+                    "answer_audio_url": audio_url,
+                    "processing_status": "cached",
+                }},
+            )
+        else:
+            # ---- LLM ANSWER ----
+            sys_prompt = {
+                "philosophy": "Sei Leo, DJ filosofo di R-A.I. Rispondi con calma, profondità e leggera ironia italiana. Massimo 3 frasi (60 parole).",
+                "future_science": "Sei Aria, DJ scientifica di R-A.I. Rispondi in modo curioso, entusiasta, con un fatto scientifico interessante. Massimo 3 frasi (60 parole).",
+                "tech_cynical": "Sei Max, DJ tecnico e cinico di R-A.I. Rispondi con sarcasmo tagliente ma competente. Massimo 3 frasi (60 parole).",
+            }[topic]
+            user_prompt = (
+                f"Ascoltatore '{listener_name}' ti chiede: {question_text}\n\n"
+                f"Rispondi come DJ radio: primo dici il nome dell'ascoltatore, poi la risposta. NIENTE liste puntate."
+            )
+            try:
+                answer_text = await llm_generate(provider, model, sys_prompt, user_prompt, raise_on_budget=True)
+            except LLMBudgetExhaustedError:
+                logger.error(f"[Q&A] LLM budget exhausted for qid={qid}")
+                await db.questions.update_one({"id": qid}, {"$set": {"processing_status": "failed"}})
+                return
+            answer_text = (answer_text or "").strip()
+            if not answer_text or len(answer_text) < 20:
+                logger.error(f"[Q&A] LLM empty answer for qid={qid}")
+                await db.questions.update_one({"id": qid}, {"$set": {"processing_status": "failed"}})
+                return
+
+            # ---- TTS ElevenLabs (indipendente da Universal Key) ----
+            audio_fname, audio_subpath = await synth_speech(answer_text, voice_key)
+            if not audio_fname:
+                logger.error(f"[Q&A] TTS failed for qid={qid}")
+                await db.questions.update_one({"id": qid}, {"$set": {"processing_status": "failed"}})
+                return
+            audio_url = f"/api/{audio_subpath}/{audio_fname}"
+
+            # Salva in cache per riuso futuro
+            await db.question_cache.update_one(
+                {"question_hash": q_hash},
+                {"$set": {
+                    "question_hash": q_hash,
+                    "question_normalized": _normalize_question(question_text),
+                    "answer": answer_text,
+                    "answer_audio_url": audio_url,
+                    "topic_category": topic,
+                    "dj_name": dj_name,
+                    "hit_count": 1,
+                    "created_at": now_iso(),
+                }},
+                upsert=True,
+            )
+            await db.questions.update_one(
+                {"id": qid},
+                {"$set": {
+                    "answered": True, "answer": answer_text,
+                    "answer_audio_url": audio_url,
+                    "processing_status": "done",
+                }},
+            )
+
+        # ---- PRIORITY SEGMENT ----
+        segment = Segment(
+            kind="answer",
+            dj_name=dj_name,
+            voice_key=voice_key,
+            title=f"💬 {dj_name} risponde a {listener_name}",
+            script=(await db.questions.find_one({"id": qid})).get("answer", ""),
+            speech_audio_url=audio_url if 'audio_url' in dir() else (await db.questions.find_one({"id": qid})).get("answer_audio_url"),
+            duration_sec=30,
+            llm_provider=f"{provider}/{model}",
+            hd_status="ready",
+            track_meta={"question_id": qid, "listener_name": listener_name, "topic": topic},
+        )
+        await db.segments.insert_one(segment.model_dump())
+        await _push_priority_segment(segment.model_dump())
+        logger.info(f"[Q&A] queued priority segment for qid={qid} dj={dj_name}")
+    except Exception as e:  # noqa: BLE001
+        logger.exception(f"[Q&A] background task failed for qid={qid}: {e}")
+        await db.questions.update_one({"id": qid}, {"$set": {"processing_status": "failed"}})
+
+
 @api_router.post("/questions", response_model=Question)
 async def submit_question(payload: QuestionCreate):
-    q = Question(name=payload.name.strip()[:40] or "Ascoltatore", question=payload.question.strip()[:500], source=payload.source)
+    q = Question(
+        name=(payload.name or "").strip()[:40] or "Ascoltatore",
+        question=payload.question.strip()[:500],
+        source=payload.source,
+    )
+    q.question_hash = _hash_question(q.question)
+    q.topic_category = _classify_question_topic(q.question)
+    route = DJ_ROUTING[q.topic_category]
+    q.answering_dj = route["dj_name"]
+    q.dj_voice_key = route["voice_key"]
     await db.questions.insert_one(q.model_dump())
+    # Lancia generazione risposta in background — il client riceve subito il DJ assegnato.
+    asyncio.create_task(_generate_answer_background(q.id, q.question, q.name))
     return q
 
 

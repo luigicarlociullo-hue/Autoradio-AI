@@ -482,8 +482,10 @@ export default function PublicRadio() {
     if (!questionText.trim()) return;
     setBusy(true);
     try {
-      await endpoints.submitQuestion({ name: questionName || "Ascoltatore", question: questionText, source: "web" });
-      toast.success("Domanda inviata! I DJ AI risponderanno presto in diretta.");
+      const res = await endpoints.submitQuestion({ name: questionName || "Ascoltatore", question: questionText, source: "web" });
+      const dj = res?.answering_dj || "Un DJ";
+      // Toast "Effetto Sorpresa" — annuncia il DJ che sta preparando la risposta
+      toast.success(`${dj} sta ascoltando... la risposta tra pochi istanti!`, { duration: 5000 });
       setQuestionText("");
     } catch { toast.error("Invio fallito"); }
     setBusy(false);
@@ -543,6 +545,49 @@ export default function PublicRadio() {
           </nav>
         </div>
       </header>
+
+      {/* SLIM Ask-DJ bar — subito sotto l'header, minimale ed elegante.
+          Multi-brain routing: Leo (GPT-5.2) · Aria (Claude Sonnet) · Max (Gemini Flash).
+          Il DJ risponde in voce entro pochi secondi come segmento PRIORITARIO. */}
+      <section
+        data-testid="ask-dj-slim-bar"
+        className="max-w-7xl mx-auto px-6 pt-4 relative z-10"
+      >
+        <form
+          onSubmit={submitQuestion}
+          className="flex flex-col sm:flex-row items-stretch gap-2 rounded-2xl border border-pink-500/30 bg-black/40 backdrop-blur-sm px-3 py-2"
+          data-testid="ask-dj-slim-form"
+        >
+          <div className="flex items-center gap-2 text-pink-400 text-xs font-mono uppercase tracking-widest px-2 whitespace-nowrap">
+            <Sparkles className="w-3.5 h-3.5" />
+            Chiedi ai DJ AI
+          </div>
+          <input
+            data-testid="ask-dj-slim-name"
+            value={questionName}
+            onChange={(e) => setQuestionName(e.target.value)}
+            placeholder="Nome (opz.)"
+            className="w-full sm:w-32 bg-transparent border-0 border-b border-white/10 sm:border-b-0 sm:border-l sm:border-white/10 focus:border-pink-500 outline-none px-3 py-2 text-sm font-mono text-zinc-200 placeholder:text-zinc-600"
+          />
+          <input
+            data-testid="ask-dj-slim-input"
+            value={questionText}
+            onChange={(e) => setQuestionText(e.target.value)}
+            placeholder="Fai una domanda al volo… (filosofia, futuro, tecnica)"
+            className="flex-1 bg-transparent border-0 border-b border-white/10 sm:border-b-0 sm:border-l sm:border-white/10 focus:border-pink-500 outline-none px-3 py-2 text-sm text-white placeholder:text-zinc-500"
+            required
+          />
+          <button
+            type="submit"
+            disabled={busy || !questionText.trim()}
+            data-testid="ask-dj-slim-send"
+            className="inline-flex items-center gap-1.5 rounded-full font-bold text-xs uppercase tracking-widest px-4 py-2 disabled:opacity-40 whitespace-nowrap"
+            style={{ background: "#ff1493", color: "#000" }}
+          >
+            <Send className="w-3.5 h-3.5" /> {busy ? "Invio…" : "Chiedi"}
+          </button>
+        </form>
+      </section>
 
       {/* Hero / Player */}
       <section className="max-w-7xl mx-auto px-6 pt-16 pb-10 relative z-10">

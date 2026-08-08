@@ -14,6 +14,23 @@ Vorrei costruire un software di gestione radiofonica completamente automatizzato
 - Auth: Emergent Google OAuth (free) for admin.
 
 ## What's implemented (2026-08 · v10 · Stability fixes)
+- **v12.4 · INTERAZIONE "WOW" — Multi-brain DJ Q&A + priority queue + cache** (2026-02, this session):
+  - **UI slim in cima Home** (`PublicRadio.js`): nuovo `ask-dj-slim-bar` con "Chiedi ai DJ AI" (nome opz + input + pulsante fucsia). Minimale, ~50px altezza, subito sotto header.
+  - **Multi-brain routing deterministico** (`_classify_question_topic()` in server.py): keyword-based zero-cost per topic:
+    - `philosophy` → **Leo** (voice `male-1`) → **openai/gpt-5.2**
+    - `future_science` → **Aria** (voice `female-1`) → **anthropic/claude-sonnet-4-5**
+    - `tech_cynical` → **Max** (voice `male-3`) → **gemini/gemini-3-flash-preview**
+    - Fallback round-robin via hash della domanda (nessuna keyword match).
+  - **Flusso `POST /api/questions` riscritto**:
+    1. Classifica topic → DJ → salva su DB con `answering_dj` + `dj_voice_key`
+    2. Ritorna al client subito con `{id, answering_dj, topic_category, ...}` (< 100ms)
+    3. Spawna task background (`_generate_answer_background`) che fa: LLM answer (con `raise_on_budget=True`) → TTS ElevenLabs (indipendente da Universal Key, via chiave `xi-api-key` diretta) → segmento kind="answer" → **priority queue**.
+  - **Priority queue** (`db.priority_queue` collection): letta come priorità **#1** in `pick_next_segment` (prima di time_signal, community, jingle, dj_talk, music). Ogni domanda risposta interrompe il flusso normale e va in onda.
+  - **Cache riuso** (`db.question_cache`): hash SHA256 della domanda normalizzata (lowercase + no punctuation + whitespace collassato). Cache HIT → riusa `answer_audio_url` esistente, status="cached", zero LLM+TTS. Testato: 2 utenti stessa domanda → identico audio.
+  - **Toast "effetto sorpresa"** (`submitQuestion` in PublicRadio.js): dopo submit mostra "{Leo|Aria|Max} sta ascoltando... la risposta tra pochi istanti!" (5s).
+  - **ElevenLabs indipendente confermato**: `elevenlabs_service._synth_elevenlabs` chiama `https://api.elevenlabs.io/v1/text-to-speech/{voice_id}` con `xi-api-key: ELEVENLABS_API_KEY` diretto — nessun passaggio dall'Universal Key. Modello HD `eleven_multilingual_v2` (non low-latency).
+  - **Extended Question model**: `topic_category`, `dj_voice_key`, `answer_audio_url`, `question_hash`, `processing_status: queued|processing|done|cached|failed`.
+  - Test end-to-end verificato: 5 domande → 5 DJ routing corretti → 5 segmenti in priority queue → cache hit sulla domanda ripetuta.
 - **v12.3 · JINGLE "A.I. Vs UMANI" PRODUZIONE E REGIA** (2026-02, this session):
   - ffmpeg installato (`apt install ffmpeg`) — abilita missaggio voce+musica lato server.
   - Nuovo script one-shot `scripts/produce_aivsumani_jingles.py`:
