@@ -14,6 +14,16 @@ Vorrei costruire un software di gestione radiofonica completamente automatizzato
 - Auth: Emergent Google OAuth (free) for admin.
 
 ## What's implemented (2026-08 · v10 · Stability fixes)
+- **v12.5 · RESTYLING STAFF DJ — Solo Leo/Aria/Max con avatar Nano Banana** (2026-02, this session):
+  - **DB scremato**: purge di 19 DJ vecchi; `DEFAULT_DJS` riscritto a soli 3 (Leo, Aria, Max) con provider LLM allineati al multi-brain router: `Leo→openai/gpt-5.2`, `Aria→anthropic/claude-sonnet-4-5`, `Max→gemini/gemini-3-flash-preview`.
+  - **`ensure_seeded()` riscritto** con **purge attivo** dei DJ non nel roster ufficiale su ogni avvio → impossibile reintrodurre DJ vecchi via cache/deploy.
+  - **Avatar fotorealistici generati** con Gemini Nano Banana (`gemini-3.1-flash-image-preview` via EMERGENT_LLM_KEY):
+    - `/dj-avatars/leo.png` (822KB) — Uomo saggio 50 anni, cabina radio con vinili + schermi olografici
+    - `/dj-avatars/aria.png` (875KB) — Donna con capelli di luce nella nebulosa cosmica
+    - `/dj-avatars/max.png` (922KB) — Ragazzo cinico con cuffie + giacca di pelle, hardware futuristico
+  - **Descrizioni magnetiche** allineate ai temi del multi-brain (Leo filosofo, Aria futuro/scienza, Max cinico tecnico).
+  - **Sezione "Chi siamo"** in `PublicRadio.js` ridisegnata: card grandi 1:1 con avatar aspect-square, glow accent-color per DJ, titolo "Tre voci. Tre cervelli. Nessun umano in cabina."
+  - Script one-shot riutilizzabile: `/app/backend/scripts/restyle_dj_staff.py` — se in futuro l'utente vuole rigenerare gli avatar, basta rieseguirlo.
 - **v12.4 · INTERAZIONE "WOW" — Multi-brain DJ Q&A + priority queue + cache** (2026-02, this session):
   - **UI slim in cima Home** (`PublicRadio.js`): nuovo `ask-dj-slim-bar` con "Chiedi ai DJ AI" (nome opz + input + pulsante fucsia). Minimale, ~50px altezza, subito sotto header.
   - **Multi-brain routing deterministico** (`_classify_question_topic()` in server.py): keyword-based zero-cost per topic:

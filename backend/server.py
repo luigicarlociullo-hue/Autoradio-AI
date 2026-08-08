@@ -432,107 +432,53 @@ DJ_TONES = [
 # ----------------------- Seed DJs -----------------------
 DEFAULT_DJS = [
     {
-        "name": "Nova Prime",
-        "personality": "Elettrica, energica, veloce, con battute quantiche. Parla in italiano moderno con qualche parola inglese.",
-        "voice_key": "female-1",
-        "llm_provider": "openai",
-        "llm_model": "gpt-5.2",
-        "avatar_url": "https://images.unsplash.com/photo-1750096319146-6310519b5af2?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2Nzh8MHwxfHNlYXJjaHwzfHxjeWJlcnB1bmslMjBhdmF0YXIlMjBmYWNlfGVufDB8fHx8MTc4MzgwMDAyOXww&ixlib=rb-4.1.0&q=85",
-        "accent_color": "#FF1493",
-    },
-    {
-        "name": "Echo Sinclair",
-        "personality": "Sofisticato, intellettuale, riflessivo. Cita filosofi e artisti, parla lento e ipnotico in italiano.",
+        "name": "Leo",
+        "personality": (
+            "Filosofo del microfono. Cinquant'anni di dischi ascoltati e nessuna risposta ancora troppo semplice. "
+            "Voce calda, calma, e un'ironia mediterranea che fa riflettere tra un giro di jazz e una citazione di Camus."
+        ),
         "voice_key": "male-1",
-        "llm_provider": "anthropic",
-        "llm_model": "claude-sonnet-4-5-20250929",
-        "avatar_url": "https://images.unsplash.com/photo-1732020858816-93c130ab8f49?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2Nzh8MHwxfHNlYXJjaHw0fHxjeWJlcnB1bmslMjBhdmF0YXIlMjBmYWNlfGVufDB8fHx8MTc4MzgwMDAyOXww&ixlib=rb-4.1.0&q=85",
-        "accent_color": "#007AFF",
-    },
-    {
-        "name": "Zeta Kwon",
-        "personality": "Curiosa, brillante, geek, adora scienza e tech. Parla in italiano con analogie scientifiche.",
-        "voice_key": "female-2",
-        "llm_provider": "gemini",
-        "llm_model": "gemini-3-flash-preview",
-        "avatar_url": "https://images.unsplash.com/photo-1724185773486-0b39642e607e?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxODd8MHwxfHNlYXJjaHwyfHxhYnN0cmFjdCUyMG5lb24lMjBzb3VuZCUyMHdhdmV8ZW58MHx8fHwxNzgzODAwMDI5fDA&ixlib=rb-4.1.0&q=85",
-        "accent_color": "#8A2BE2",
-    },
-    {
-        "name": "Loop Cassini",
-        "personality": "Ironico, tagliente, con umorismo nero. Fa satira sulla società moderna e sulla tecnologia. Ama i giochi di parole in italiano.",
-        "voice_key": "male-2",
-        "llm_provider": "anthropic",
-        "llm_model": "claude-sonnet-4-5-20250929",
-        "avatar_url": None,
-        "accent_color": "#EF4444",
-    },
-    {
-        "name": "Aria Selva",
-        "personality": "Voce del mattino, calma e rassicurante. Parla di natura, meditazione, poesia. Ricorda un'audio-guida da yoga retreat.",
-        "voice_key": "female-3",
         "llm_provider": "openai",
         "llm_model": "gpt-5.2",
-        "avatar_url": None,
-        "accent_color": "#10B981",
+        "avatar_url": "/dj-avatars/leo.png",
+        "accent_color": "#00e5ff",
     },
     {
-        "name": "Byte Rovelli",
-        "personality": "Cronista sportivo un po' folle. Racconta partite immaginarie tra squadre di robot, campionati di droni, tornei quantistici. Sempre esaltato, ritmo altissimo.",
+        "name": "Aria",
+        "personality": (
+            "Voce del futuro. Sa dove finisce l'universo e da dove parte la prossima galassia. "
+            "Curiosa come una bambina, precisa come un'astrofisica. La sua meraviglia è contagiosa."
+        ),
+        "voice_key": "female-1",
+        "llm_provider": "anthropic",
+        "llm_model": "claude-sonnet-4-5-20250929",
+        "avatar_url": "/dj-avatars/aria.png",
+        "accent_color": "#c084fc",
+    },
+    {
+        "name": "Max",
+        "personality": (
+            "Cinico di talento. Se hai un problema tecnico, Max l'ha già visto. "
+            "Sguardo furbo, battuta pronta, zero pazienza per le mezze verità. Se cerchi risposte crude, sei nel posto giusto."
+        ),
         "voice_key": "male-3",
         "llm_provider": "gemini",
         "llm_model": "gemini-3-flash-preview",
-        "avatar_url": None,
-        "accent_color": "#F59E0B",
-    },
-    {
-        "name": "Luna Corsari",
-        "personality": "Astrologa AI. Legge le stelle con ironia, tira l'oroscopo con toni misteriosi ma sempre con una battuta finale.",
-        "voice_key": "female-4",
-        "llm_provider": "anthropic",
-        "llm_model": "claude-sonnet-4-5-20250929",
-        "avatar_url": None,
-        "accent_color": "#C084FC",
-    },
-    {
-        "name": "Vico Antares",
-        "personality": "Storico gentile. Racconta 'accaduto oggi nella storia' con aneddoti curiosi e mai banali, mescolando fatti veri e leggende.",
-        "voice_key": "male-4",
-        "llm_provider": "openai",
-        "llm_model": "gpt-5.2",
-        "avatar_url": None,
-        "accent_color": "#0EA5E9",
-    },
-    {
-        "name": "Mira Volante",
-        "personality": "Poetessa notturna. Dopo mezzanotte prende il microfono, sussurra pensieri lunghi come nuvole, cita autori italiani contemporanei.",
-        "voice_key": "female-5",
-        "llm_provider": "gemini",
-        "llm_model": "gemini-3-flash-preview",
-        "avatar_url": None,
-        "accent_color": "#EC4899",
-    },
-    {
-        "name": "Draco Ferri",
-        "personality": "Coach motivazionale AI. Voce grave, decisa, quasi militare. Dà pillole di grinta ma con una vena poetica sorprendente.",
-        "voice_key": "male-5",
-        "llm_provider": "anthropic",
-        "llm_model": "claude-sonnet-4-5-20250929",
-        "avatar_url": None,
-        "accent_color": "#84CC16",
+        "avatar_url": "/dj-avatars/max.png",
+        "accent_color": "#ff2d95",
     },
 ]
 
 
 async def ensure_seeded():
-    count = await db.djs.count_documents({})
-    if count < len(DEFAULT_DJS):
-        # roster expanded — clear and reseed keeping any custom-created DJs
-        # (custom DJs have names not in DEFAULT_DJS)
-        default_names = {d["name"] for d in DEFAULT_DJS}
-        # Remove old default DJs so we can re-insert the expanded roster
-        await db.djs.delete_many({"name": {"$in": list(default_names)}})
-        for d in DEFAULT_DJS:
+    # Il roster ora ha 3 DJ soli (Leo/Aria/Max). Purge attivo dei DJ vecchi
+    # che non fanno più parte del roster ufficiale.
+    default_names = {d["name"] for d in DEFAULT_DJS}
+    await db.djs.delete_many({"name": {"$nin": list(default_names)}})
+    # Assicura che i 3 DJ ufficiali esistano (idempotente).
+    for d in DEFAULT_DJS:
+        existing = await db.djs.find_one({"name": d["name"]})
+        if not existing:
             dj = DJPersona(**d)
             await db.djs.insert_one(dj.model_dump())
     state = await db.station.find_one({"_id": "state"})

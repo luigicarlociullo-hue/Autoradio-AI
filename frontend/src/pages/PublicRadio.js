@@ -710,26 +710,40 @@ export default function PublicRadio() {
       <section className="max-w-7xl mx-auto px-6 py-10 relative z-10">
         <div className="flex items-end justify-between mb-6">
           <div>
-            <div className="label-mono">La squadra</div>
-            <h2 className="font-display font-bold text-2xl sm:text-3xl">DJ · Solo AI, mai gli stessi due secondi</h2>
+            <div className="label-mono">Chi siamo</div>
+            <h2 className="font-display font-bold text-2xl sm:text-3xl">Tre voci. Tre cervelli. Nessun umano in cabina.</h2>
           </div>
         </div>
-        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-5">
+        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
           {djs.map(dj => (
-            <div key={dj.id} className="card-surface p-5 transition-transform duration-300 hover:-translate-y-1" data-testid={`dj-card-${dj.name}`}>
-              <div className="flex items-start gap-4">
-                <div
-                  className="w-14 h-14 rounded-lg bg-zinc-800 shrink-0 overflow-hidden border border-white/10"
-                  style={{ boxShadow: `0 0 16px ${dj.accent_color}55` }}
-                >
-                  {dj.avatar_url && <img src={dj.avatar_url} alt={dj.name} className="w-full h-full object-cover" />}
-                </div>
-                <div className="min-w-0">
-                  <div className="font-display font-bold text-lg" style={{ color: dj.accent_color }}>{dj.name}</div>
-                  <div className="text-xs font-mono text-cyan-400 uppercase tracking-widest">{dj.llm_provider} · {dj.llm_model}</div>
-                  <p className="mt-2 text-sm text-zinc-400 leading-relaxed line-clamp-3">{dj.personality}</p>
-                </div>
+            <div
+              key={dj.id}
+              className="card-surface p-6 transition-all duration-300 hover:-translate-y-1 flex flex-col"
+              data-testid={`dj-card-${dj.name}`}
+              style={{ boxShadow: `0 0 0 1px ${dj.accent_color}22` }}
+            >
+              <div
+                className="w-full aspect-square rounded-xl bg-zinc-900 overflow-hidden border border-white/10 mb-4"
+                style={{ boxShadow: `0 8px 40px ${dj.accent_color}44, 0 0 0 1px ${dj.accent_color}33 inset` }}
+              >
+                {dj.avatar_url && (
+                  <img
+                    src={dj.avatar_url}
+                    alt={dj.name}
+                    className="w-full h-full object-cover"
+                    loading="lazy"
+                  />
+                )}
               </div>
+              <div className="font-display font-black text-2xl leading-none" style={{ color: dj.accent_color }}>
+                {dj.name}
+              </div>
+              <div className="mt-1 text-[10px] font-mono uppercase tracking-widest text-zinc-500">
+                {dj.llm_provider} · {dj.llm_model}
+              </div>
+              <p className="mt-3 text-sm text-zinc-300 leading-relaxed">
+                {dj.personality}
+              </p>
             </div>
           ))}
         </div>
