@@ -14,6 +14,21 @@ Vorrei costruire un software di gestione radiofonica completamente automatizzato
 - Auth: Emergent Google OAuth (free) for admin.
 
 ## What's implemented (2026-08 · v10 · Stability fixes)
+- **v12.6 · REGIA AUDIO — Mixer live + Crossfade + Beds + Kill-switch ElevenLabs** (2026-02, this session):
+  - **Backend `server.py`** — nuovo blocco endpoints:
+    - `GET /api/station/mix` (pubblico, no-cache) → volume 4 canali + crossfade + `active_bed_url`
+    - `PATCH /api/admin/mix` (clamp 0-100 su volumi, 0-5000 su crossfade_ms)
+    - `POST /api/admin/beds/upload` (MP3 ≤10MB + magic-bytes), `GET /api/admin/beds`, `PATCH /admin/beds/{id}/activate`, `PATCH /admin/beds/deactivate`, `DELETE /admin/beds/{id}`
+    - `GET /api/beds/{filename}` con streaming Object Storage + Accept-Ranges
+  - **Frontend `radioEngine.js`** riscritto sul mix bus:
+    - 3 nuovi bus Web Audio (`musicBus`, `voiceBus`, `bedBus`) inseriti tra source e outputBus.
+    - Music track → musicBus. Voice/speech/jingle/stinger → voiceBus. Procedural + admin bed → bedBus. Master → outputBus (2.4× × master/100).
+    - `_startMixPoller()` fetch `/api/station/mix` ogni 2s con rampa 100ms lineare anti-click. Nessun reload richiesto — l'admin muove uno slider, entro 2s l'audio si adatta.
+    - `CROSSFADE_MS` dinamico dal poller (`this._crossfadeMs`, default 1000).
+    - `_playSpeechWithBed` priorità: (1) `segment.background_loop` esplicito → (2) `_activeBedUrl` dal poller → (3) fallback procedurale.
+  - **Frontend Dashboard `RegiaAudioPanel`**: 4 slider vol + slider crossfade con debounce 250ms sul PATCH, upload Loop MP3 con nome, lista bed con player HTML5 e pulsanti Attiva/Elimina.
+  - **Kill-switch ElevenLabs** (ordine utente prima di questa task): `TTS_DISABLE_ELEVENLABS=true` nel `.env` blocca ogni chiamata a ElevenLabs; fallback automatico su OpenAI TTS-1-HD via Universal Key. Riattivabile impostando `TTS_DISABLE_ELEVENLABS=false`.
+  - Nome progetto: già "R-A.I." ovunque. DJ nel DB: già solo Leo/Aria/Max — i copioni LLM li usano automaticamente.
 - **v12.5 · RESTYLING STAFF DJ — Solo Leo/Aria/Max con avatar Nano Banana** (2026-02, this session):
   - **DB scremato**: purge di 19 DJ vecchi; `DEFAULT_DJS` riscritto a soli 3 (Leo, Aria, Max) con provider LLM allineati al multi-brain router: `Leo→openai/gpt-5.2`, `Aria→anthropic/claude-sonnet-4-5`, `Max→gemini/gemini-3-flash-preview`.
   - **`ensure_seeded()` riscritto** con **purge attivo** dei DJ non nel roster ufficiale su ogni avvio → impossibile reintrodurre DJ vecchi via cache/deploy.

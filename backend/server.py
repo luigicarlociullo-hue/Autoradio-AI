@@ -1944,7 +1944,7 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
                     {"$set": {"last_played_at": datetime.now(timezone.utc).isoformat()}},
                 )
                 segment = Segment(
-                    kind="music",
+                    kind="jingle",
                     title=f"♪ {jingle.get('title','Jingle')} — {jingle.get('artist','R-A.I.')}",
                     dj_name="R-A.I.", script="",
                     music_audio_url=jingle["audio_url"],
@@ -2066,7 +2066,7 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
                     upsert=True,
                 )
                 segment = Segment(
-                    kind="music",
+                    kind="jingle",
                     title=f"♪ {jingle.get('title','Jingle')} — {jingle.get('artist','R-A.I.')}",
                     dj_name="R-A.I.", script="",
                     music_audio_url=jingle["audio_url"],
@@ -3389,6 +3389,157 @@ async def get_community_jingle_public(filename: str):
                 headers["Content-Length"] = content_length
             return StreamingResponse(gen, media_type="audio/mpeg", headers=headers)
     raise HTTPException(404, "Community jingle not found")
+
+
+# ============================================================
+# REGIA AUDIO — Mixer + Crossfade + Beds (sottofondi loop)
+# ============================================================
+BEDS_DIR = Path("/app/backend/static/beds")
+BEDS_DIR.mkdir(parents=True, exist_ok=True)
+
+DEFAULT_MIX = {
+    "music_vol": 100,      # 0-100 (%)
+    "voice_vol": 100,
+    "bed_vol": 40,
+    "master_vol": 100,
+    "crossfade_ms": 1000,  # 0-5000
+}
+
+
+@api_router.get("/station/mix")
+async def get_station_mix():
+    """Endpoint pubblico letto ~2s dal radioEngine per applicare i volumi
+    in tempo reale. Cache-Control: no-store per garantire freschezza."""
+    st = await db.station.find_one({"_id": "state"}) or {}
+    mix = {k: st.get(f"mix_{k}", v) if k != "crossfade_ms" else st.get("crossfade_ms", v)
+           for k, v in DEFAULT_MIX.items()}
+    active_bed_url = st.get("active_bed_url") or None
+    return {**mix, "active_bed_url": active_bed_url}
+
+
+@api_router.patch("/admin/mix")
+async def set_station_mix(payload: dict):
+    """Aggiorna i volumi del mixer + crossfade. Payload accetta solo i campi
+    validi; ignora il resto. Ogni valore è clampato al range [0, 100] tranne
+    crossfade_ms che è [0, 5000]."""
+    updates = {}
+    for k in ("music_vol", "voice_vol", "bed_vol", "master_vol"):
+        if k in payload:
+            try:
+                v = max(0, min(100, int(payload[k])))
+                updates[f"mix_{k}"] = v
+            except Exception:
+                raise HTTPException(400, f"{k} deve essere int 0-100")
+    if "crossfade_ms" in payload:
+        try:
+            v = max(0, min(5000, int(payload["crossfade_ms"])))
+            updates["crossfade_ms"] = v
+        except Exception:
+            raise HTTPException(400, "crossfade_ms deve essere int 0-5000")
+    if not updates:
+        raise HTTPException(400, "Nessun campo valido nel payload")
+    await db.station.update_one({"_id": "state"}, {"$set": updates}, upsert=True)
+    return {"ok": True, "updated": list(updates.keys())}
+
+
+@api_router.post("/admin/beds/upload")
+async def upload_bed(file: UploadFile = File(...), name: str = Form("")):
+    """Upload di un loop musicale (sottofondo). MP3 <= 10MB."""
+    if not (file.filename or "").lower().endswith(".mp3"):
+        raise HTTPException(400, "Solo file .mp3")
+    data = await file.read()
+    if len(data) < 5000:
+        raise HTTPException(400, "File troppo piccolo")
+    if len(data) > 10 * 1024 * 1024:
+        raise HTTPException(400, "Bed troppo grande (max 10 MB)")
+    if not _validate_mp3_bytes(data):
+        raise HTTPException(400, "File non riconosciuto come MP3")
+    bed_id = str(uuid.uuid4())
+    local_name = f"bed_{bed_id}.mp3"
+    (BEDS_DIR / local_name).write_bytes(data)
+    display_name = (name or file.filename or "Bed").strip()[:60]
+    doc = {
+        "id": bed_id,
+        "name": display_name,
+        "audio_url": f"/api/beds/{local_name}",
+        "file_size": len(data),
+        "uploaded_at": now_iso(),
+    }
+    await db.beds.insert_one(doc)
+    try:
+        await object_storage.put_mp3(f"beds/{local_name}", data)
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"bed objstore push skipped: {e}")
+    doc.pop("_id", None)
+    return {"ok": True, "bed": doc}
+
+
+@api_router.get("/admin/beds")
+async def list_beds():
+    beds = await db.beds.find({}, {"_id": 0}).sort("uploaded_at", -1).to_list(100)
+    st = await db.station.find_one({"_id": "state"}) or {}
+    return {"beds": beds, "active_bed_url": st.get("active_bed_url")}
+
+
+@api_router.patch("/admin/beds/{bed_id}/activate")
+async def activate_bed(bed_id: str):
+    bed = await db.beds.find_one({"id": bed_id})
+    if not bed:
+        raise HTTPException(404, "Bed non trovato")
+    await db.station.update_one(
+        {"_id": "state"},
+        {"$set": {"active_bed_url": bed["audio_url"]}},
+        upsert=True,
+    )
+    return {"ok": True, "active_bed_url": bed["audio_url"]}
+
+
+@api_router.delete("/admin/beds/{bed_id}")
+async def delete_bed(bed_id: str):
+    bed = await db.beds.find_one({"id": bed_id})
+    if not bed:
+        raise HTTPException(404, "Bed non trovato")
+    local_name = f"bed_{bed_id}.mp3"
+    try:
+        p = BEDS_DIR / local_name
+        if p.exists():
+            p.unlink()
+    except Exception:
+        pass
+    await db.beds.delete_one({"id": bed_id})
+    # Se stavamo usando questo bed come active, svuota il puntatore
+    await db.station.update_one(
+        {"_id": "state", "active_bed_url": bed["audio_url"]},
+        {"$unset": {"active_bed_url": ""}},
+    )
+    return {"ok": True, "deleted": bed_id}
+
+
+@api_router.patch("/admin/beds/deactivate")
+async def deactivate_bed():
+    await db.station.update_one({"_id": "state"}, {"$unset": {"active_bed_url": ""}}, upsert=True)
+    return {"ok": True}
+
+
+@api_router.get("/beds/{filename}")
+async def get_bed(filename: str):
+    if "/" in filename or ".." in filename or not filename.endswith(".mp3"):
+        raise HTTPException(400, "Invalid filename")
+    p = BEDS_DIR / filename
+    if p.exists():
+        return FileResponse(
+            str(p), media_type="audio/mpeg",
+            headers={"Cache-Control": "public, max-age=604800", "Accept-Ranges": "bytes"},
+        )
+    if object_storage.is_enabled():
+        streamed = await object_storage.stream_mp3(f"beds/{filename}", cache_to=str(p))
+        if streamed:
+            gen, content_length = streamed
+            headers = {"Cache-Control": "public, max-age=604800", "Accept-Ranges": "bytes"}
+            if content_length:
+                headers["Content-Length"] = content_length
+            return StreamingResponse(gen, media_type="audio/mpeg", headers=headers)
+    raise HTTPException(404, "Bed audio not found")
 
 
 @api_router.get("/suno_audio/{filename}")

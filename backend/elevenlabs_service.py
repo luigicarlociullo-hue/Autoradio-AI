@@ -81,6 +81,12 @@ async def _synth_openai(text: str, voice_key: str) -> bytes | None:
 
 async def _synth_elevenlabs(text: str, voice_key: str) -> bytes | None:
     """ElevenLabs primario (eleven_multilingual_v2). Ritorna bytes mp3 o None."""
+    # KILL SWITCH: se `TTS_DISABLE_ELEVENLABS=true` in .env, blocca IMMEDIATAMENTE
+    # ogni chiamata all'API ElevenLabs. Il fallback OpenAI TTS-1-HD subentra
+    # automaticamente in `synth_speech()`. Ordine utente 2026-08-08.
+    if os.environ.get("TTS_DISABLE_ELEVENLABS", "").strip().lower() in ("1", "true", "yes"):
+        logger.info("[TTS] ElevenLabs disabled by kill-switch (TTS_DISABLE_ELEVENLABS=true)")
+        return None
     if not ELEVENLABS_API_KEY:
         return None
     voice_id = VOICE_KEY_TO_ELEVEN.get(voice_key, DEFAULT_ELEVEN_ID)

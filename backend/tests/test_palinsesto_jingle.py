@@ -3,12 +3,12 @@
 Pattern expected (positions modulo 8):
   0 -> music
   1 -> music
-  2 -> music with track_meta.is_jingle == True
+  2 -> jingle (kind == "jingle", track_meta.is_jingle == True)
   3 -> rubrica parlata (talk/history/interview/joke/motivation/horoscope/news)
   4 -> time_signal | ad_spot | weather
   5 -> music
   6 -> music
-  7 -> music with track_meta.is_jingle == True
+  7 -> jingle (kind == "jingle", track_meta.is_jingle == True)
 """
 import os
 import subprocess
@@ -101,8 +101,8 @@ class TestPalinsestoCycle:
                 if is_jingle:
                     failures.append(f"pos {i}: expected regular track, got jingle")
             elif i in (2, 7):
-                if kind != "music":
-                    failures.append(f"pos {i}: expected music(jingle), got {kind}")
+                if kind != "jingle":
+                    failures.append(f"pos {i}: expected jingle, got {kind}")
                 elif not is_jingle:
                     failures.append(f"pos {i}: expected track_meta.is_jingle=True, got {seg.get('title')}")
             elif i == 3:
@@ -124,7 +124,7 @@ class TestPalinsestoCycle:
         seg = r.json()
         if seg.get("llm_provider") == "ad-campaign":
             pytest.skip("ad hijack, rerun")
-        assert seg["kind"] == "music"
+        assert seg["kind"] == "jingle"
         assert (seg.get("track_meta") or {}).get("is_jingle") is True, seg.get("title")
         url = seg.get("music_audio_url")
         assert url, "jingle segment missing music_audio_url"

@@ -48,4 +48,14 @@ export const endpoints = {
     `/admin/community/config/jingle_${role}`, formData,
     { headers: { "Content-Type": "multipart/form-data" }, timeout: 60000 }
   ).then(r => r.data),
+  // ---- Regia Audio ----
+  mixGet: () => api.get("/station/mix").then(r => r.data),
+  mixSet: (payload) => api.patch("/admin/mix", payload).then(r => r.data),
+  bedsList: () => api.get("/admin/beds").then(r => r.data),
+  bedUpload: (formData) => api.post("/admin/beds/upload", formData, {
+    headers: { "Content-Type": "multipart/form-data" }, timeout: 60000,
+  }).then(r => r.data),
+  bedActivate: (id) => api.patch(`/admin/beds/${id}/activate`).then(r => r.data),
+  bedDeactivate: () => api.patch("/admin/beds/deactivate").then(r => r.data),
+  bedDelete: (id) => api.delete(`/admin/beds/${id}`).then(r => r.data),
 };

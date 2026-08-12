@@ -22,11 +22,21 @@ class RadioEngine {
     if (this.audioCtx?.state === "suspended") this.audioCtx.resume();
     // Ensure a shared analyser + output bus
     if (this.audioCtx && !this.outputBus) {
-      // Output chain: source → outputBus (master gain 2.4) → compressor → analyser → destination
+      // Output chain: source → mix bus (music/voice/bed) → outputBus (master) → compressor → analyser → destination
       // Web Audio permette gain > 1.0 (a differenza di HTMLAudio.volume che è capped a 1.0),
       // così il volume finale è realmente più alto anche a max volume dispositivo.
       this.outputBus = this.audioCtx.createGain();
       this.outputBus.gain.value = 2.4;
+      // === REGIA AUDIO: 3 bus di mix tra source e master ===
+      // I loro gain sono aggiornati in tempo reale dal poller `_startMixPoller()`
+      // leggendo /api/station/mix — così l'admin può alzare/abbassare i canali
+      // direttamente dal Dashboard senza reload.
+      this.musicBus = this.audioCtx.createGain(); this.musicBus.gain.value = 1.0;
+      this.voiceBus = this.audioCtx.createGain(); this.voiceBus.gain.value = 1.0;
+      this.bedBus   = this.audioCtx.createGain(); this.bedBus.gain.value   = 1.0;
+      this.musicBus.connect(this.outputBus);
+      this.voiceBus.connect(this.outputBus);
+      this.bedBus.connect(this.outputBus);
       // Compressor per evitare clipping quando il gain sale
       this.compressor = this.audioCtx.createDynamicsCompressor();
       this.compressor.threshold.value = -14;
@@ -40,8 +50,53 @@ class RadioEngine {
       this.outputBus.connect(this.compressor);
       this.compressor.connect(this.analyser);
       this.analyser.connect(this.audioCtx.destination);
+      // Avvia il poller del mixer una sola volta
+      this._startMixPoller();
     }
     return this.audioCtx;
+  }
+
+  /** Poll dei valori del mixer ogni 2s per applicarli ai bus in tempo reale. */
+  _startMixPoller() {
+    if (this._mixPollerStarted) return;
+    this._mixPollerStarted = true;
+    // Default: crossfade 1000ms; se il backend risponde con altro, sovrascrive.
+    this._crossfadeMs = 1000;
+    this._activeBedUrl = null;
+    const base = (typeof process !== "undefined" && process.env && process.env.REACT_APP_BACKEND_URL) || "";
+    const url = `${base}/api/station/mix`;
+    const pull = async () => {
+      try {
+        const r = await fetch(url, { cache: "no-store" });
+        if (!r.ok) return;
+        const m = await r.json();
+        const ctx = this.audioCtx;
+        if (!ctx) return;
+        // Convert 0-100 → 0.0-1.0 con rampa lieve per evitare click
+        const now = ctx.currentTime;
+        const set = (node, val) => {
+          if (!node) return;
+          const target = Math.max(0, Math.min(1, (val ?? 100) / 100));
+          try {
+            node.gain.cancelScheduledValues(now);
+            node.gain.linearRampToValueAtTime(target, now + 0.1);
+          } catch (e) {}
+        };
+        set(this.musicBus, m.music_vol);
+        set(this.voiceBus, m.voice_vol);
+        set(this.bedBus, m.bed_vol);
+        // Master: manteniamo il boost 2.4 ma lo scaliamo con master_vol.
+        const master = Math.max(0, Math.min(1, (m.master_vol ?? 100) / 100)) * 2.4;
+        try {
+          this.outputBus.gain.cancelScheduledValues(now);
+          this.outputBus.gain.linearRampToValueAtTime(master, now + 0.1);
+        } catch (e) {}
+        if (typeof m.crossfade_ms === "number") this._crossfadeMs = m.crossfade_ms;
+        this._activeBedUrl = m.active_bed_url || null;
+      } catch (e) {}
+    };
+    pull();
+    this._mixPollerInterval = setInterval(pull, 2000);
   }
 
   getAnalyser() {
@@ -70,7 +125,7 @@ class RadioEngine {
       master.gain.setValueAtTime(0.0001, ctx.currentTime);
       // Fade-in molto lento (2s) per essere invisibile
       master.gain.exponentialRampToValueAtTime(0.045, ctx.currentTime + 2.0);
-      master.connect(this.outputBus || ctx.destination);
+      master.connect(this.bedBus || ctx.destination);
 
       // Drone armonico: 3 oscillatori a bassa frequenza in accordo Fm7 lontano
       const freqs = [55, 82.5, 123.5]; // A1, E2, B2 — armonia rilassata
@@ -342,7 +397,7 @@ class RadioEngine {
             const voiceGain = ctx.createGain();
             voiceGain.gain.value = 1.0;
             src.connect(voiceGain);
-            voiceGain.connect(this.outputBus);
+            voiceGain.connect(this.voiceBus || ctx.destination);
             a._srcNode = src;
             a._voiceGain = voiceGain;
           } catch (e) {
@@ -386,7 +441,7 @@ class RadioEngine {
         const voiceGain = ctx.createGain();
         voiceGain.gain.value = 0.0;   // muted finché non lo consumiamo
         src.connect(voiceGain);
-        voiceGain.connect(this.outputBus);
+        voiceGain.connect(this.voiceBus || ctx.destination);
         a._srcNode = src;
         a._voiceGain = voiceGain;
       } catch (e) { /* già connesso o non supportato */ }
@@ -451,12 +506,18 @@ class RadioEngine {
     if (segment.kind === "community" && segment.music_audio_url) {
       return this._playCommunityBlock(segment);
     }
+    // Jingle brandizzato schedulato dal backend (cadenza jingle_every_n_songs):
+    // deve suonare per intero, SENZA il crossfade/ducking DJ di _playMusicWithVoice
+    // (che tronca gli ultimi ~8s per fare spazio all'outro del DJ).
+    if (segment.kind === "jingle" && segment.music_audio_url) {
+      return this.playJingle(segment.music_audio_url);
+    }
     // Music segment con audio reale
     if (segment.kind === "music" && segment.music_audio_url) {
       return this._playMusicWithVoice(segment);
     }
     // Tutti i segmenti PARLATI (talk, joke, weather, history, interview, motivation,
-    // news, ad_spot, time_signal, jingle, horoscope, ...): SOLO VOCE, zero sottofondo.
+    // news, ad_spot, time_signal, horoscope, ...): SOLO VOCE, zero sottofondo.
     return this._playVoiceOnly(segment);
   }
 
@@ -519,6 +580,11 @@ class RadioEngine {
    * Skip pulito se tutto fallisce → il palinsesto continua senza silenzi lunghi.
    */
   async _playVoiceOnly(segment) {
+    // Pre-warma subito l'audio del prossimo segmento: i segmenti parlati
+    // (talk, time_signal, jingle successivo, ecc.) sono spesso brevi, quindi
+    // non c'è un "quasi alla fine" da aspettare — meglio partire da subito
+    // per evitare silenzi quando questo segmento termina.
+    try { this._preWarmHook && this._preWarmHook(); } catch (e) {}
     if (segment.speech_audio_url) {
       const ctx = this.ensureAudioCtx();
       return new Promise((resolve) => {
@@ -545,7 +611,7 @@ class RadioEngine {
         try {
           if (ctx) {
             srcNode = ctx.createMediaElementSource(audio);
-            srcNode.connect(this.outputBus || ctx.destination);
+            srcNode.connect(this.voiceBus || ctx.destination);
           }
         } catch (e) {}
 
@@ -903,7 +969,7 @@ class RadioEngine {
       gainNode.gain.setValueAtTime(0.001, ctx.currentTime);
       gainNode.gain.exponentialRampToValueAtTime(Math.max(0.01, volume), ctx.currentTime + 0.8);
       src.connect(gainNode);
-      gainNode.connect(this.outputBus || ctx.destination);
+      gainNode.connect(this.voiceBus || ctx.destination);
       audio.play().catch(() => {});
     } catch (e) {
       // createMediaElementSource già usato o errore CORS — silent fallback
@@ -923,11 +989,17 @@ class RadioEngine {
   }
 
   async _playSpeechWithBed(segment) {
-    // Rubriche parlate → bed = traccia Suno reale in loop (già in libreria locale,
-    // ZERO costi). Se manca `background_loop` fallback su bed procedurale.
+    // Rubriche parlate → bed. Priorità:
+    //   1) segment.background_loop esplicito
+    //   2) `_activeBedUrl` impostato dall'admin dal pannello Regia Audio
+    //   3) fallback procedurale (Web Audio sintesi)
     let stopBed;
-    if (segment.background_loop) {
-      stopBed = this._playLoopedBed(segment.background_loop, 0.22);
+    const adminBedUrl = this._activeBedUrl || null;
+    const bedUrl = segment.background_loop || adminBedUrl;
+    if (bedUrl) {
+      // Assoluto se path relativo
+      const absUrl = bedUrl.startsWith("/api/") ? this._absoluteAudioUrl(bedUrl) : bedUrl;
+      stopBed = this._playLoopedBed(absUrl, 0.22);
     } else {
       stopBed = this._startProceduralAdBed(segment.kind);
     }
@@ -1054,7 +1126,7 @@ class RadioEngine {
       gainNode = ctx.createGain();
       gainNode.gain.value = 0.0;
       srcNode.connect(gainNode);
-      gainNode.connect(this.outputBus);
+      gainNode.connect(this.voiceBus || ctx.destination);
       // Fade in to target over 0.4s
       const now = ctx.currentTime;
       gainNode.gain.linearRampToValueAtTime(targetVolume, now + 0.4);
@@ -1090,6 +1162,10 @@ class RadioEngine {
    */
   async playJingle(url) {
     if (!url) return;
+    // Pre-warma subito l'audio del prossimo segmento: i jingle sono spesso
+    // brevi, quindi non c'è tempo di aspettare un "quasi alla fine" come
+    // per la musica — meglio partire subito appena questo inizia.
+    try { this._preWarmHook && this._preWarmHook(); } catch (e) {}
     return new Promise((resolve) => {
       let resolved = false;
       const done = () => { if (!resolved) { resolved = true; resolve(); } };
@@ -1118,7 +1194,7 @@ class RadioEngine {
           gainNode.gain.value = 0.001;
           gainNode.gain.exponentialRampToValueAtTime(1.0, ctx.currentTime + 0.20);
           srcNode.connect(gainNode);
-          gainNode.connect(this.outputBus || ctx.destination);
+          gainNode.connect(this.voiceBus || ctx.destination);
         }
       } catch (e) {}
 
@@ -1284,7 +1360,7 @@ class RadioEngine {
           musicGain = ctx.createGain();
           musicGain.gain.value = 0.0001;
           srcNode.connect(musicGain);
-          musicGain.connect(this.outputBus || ctx.destination);
+          musicGain.connect(this.musicBus || ctx.destination);
         }
       } catch (e) {
         console.warn("Music WebAudio graph setup failed, using element volume:", e);
@@ -1347,7 +1423,7 @@ class RadioEngine {
           const INTRO_DUCK = 0.18;   // musica sotto la voce -> parole chiare
           const FULL = 1.0;
           const OUTRO_DUCK = 0.20;
-          const CROSSFADE_MS = 1000;  // crossfade DJ<->music = 1 secondo esatto
+          const CROSSFADE_MS = (typeof this._crossfadeMs === "number") ? this._crossfadeMs : 1000;  // regia audio: 0-5000ms
 
           const setVol = async (target, ms) => {
             if (musicGain) return this._fadeGain(musicGain, musicGain.gain.value, target, ms);
@@ -1427,30 +1503,28 @@ class RadioEngine {
             return;
           }
 
-          // 6) CROSSFADE finale 1s: fade-out mentre il prossimo segmento parte.
-          //    Traccia il fade-out pendente così che, se il prossimo elemento
-          //    è un JINGLE (che deve suonare per intero senza overlap),
-          //    `hardStopMusic()` possa troncarlo bruscamente senza attendere.
+          // 6) Attende la fine NATURALE del brano (evento nativo 'ended') prima
+          //    di risolvere. Il prossimo segmento (canzone, jingle o voce) può
+          //    partire SOLO dopo che QUESTO audio ha davvero finito di suonare —
+          //    mai su un timer o una durata stimata — per evitare che due
+          //    sorgenti audio suonino sovrapposte.
           if (this.currentAudio === audio) this.currentAudio = null;
-          // Rilascia i riferimenti "playback attivo": da ora il brano è in
-          // fase di fade-out finale (tracciata in _pendingMusicFadeOut).
-          if (this._currentMusicAudio === audio) {
-            this._currentMusicAudio = null;
-            this._currentMusicSrcNode = null;
-            this._currentMusicGain = null;
-          }
-          const pending = { audio, srcNode, musicGain, canceled: false };
-          this._pendingMusicFadeOut = pending;
-          setVol(0.001, CROSSFADE_MS).then(() => {
-            if (pending.canceled) return;
-            try { audio.pause(); } catch (e) {}
+          const finishAndCleanup = () => {
             try { srcNode && srcNode.disconnect(); } catch (e) {}
             try { musicGain && musicGain.disconnect(); } catch (e) {}
-            if (this._pendingMusicFadeOut === pending) this._pendingMusicFadeOut = null;
-            // Rilascia il blob URL dopo che il brano è completamente finito
+            if (this._currentMusicAudio === audio) {
+              this._currentMusicAudio = null;
+              this._currentMusicSrcNode = null;
+              this._currentMusicGain = null;
+            }
             if (usedBlob) this._releasePrewarm(url);
-          });
-          done();
+            done();
+          };
+          if (audio.ended) {
+            finishAndCleanup();
+          } else {
+            audio.addEventListener("ended", finishAndCleanup, { once: true });
+          }
         } catch (playErr) {
           console.error("Music playback error:", playErr);
           try { srcNode && srcNode.disconnect(); } catch (e) {}

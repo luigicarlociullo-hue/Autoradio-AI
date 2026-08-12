@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { Radio, Power, Trash2, Sparkles, Zap, Music2, Newspaper, MessageCircle, LogOut, LogIn, Send, User, ChevronRight, Cpu, Users, RefreshCw, Megaphone, Euro, ExternalLink, Download, Archive, Sliders, Mic, PauseCircle, PlayCircle, Upload, Package, Replace } from "lucide-react";
+import { Radio, Power, Trash2, Sparkles, Zap, Music2, Newspaper, MessageCircle, LogOut, LogIn, Send, User, ChevronRight, Cpu, Users, RefreshCw, Megaphone, Euro, ExternalLink, Download, Archive, Sliders, Mic, PauseCircle, PlayCircle, Upload, Package, Replace, Volume2 } from "lucide-react";
 import { lineInMixer } from "@/lib/lineInMixer";
 import { endpoints, api } from "@/lib/api";
 import BrandName from "@/components/BrandName";
@@ -191,6 +191,9 @@ export default function Dashboard() {
 
         {/* Unified track manager — clean table with search, upload, replace */}
         <TrackManagerPanel />
+
+        {/* Regia Audio: mixer real-time + crossfade + sottofondi */}
+        <RegiaAudioPanel />
 
         {/* Community "A.I. Vs Umani" — brani caricati dagli utenti */}
         <CommunityPanel />
@@ -2606,3 +2609,207 @@ function CommunityPanel() {
     </section>
   );
 }
+
+// ==================== RegiaAudioPanel — Mixer + Crossfade + Beds ====================
+function RegiaAudioPanel() {
+  const [mix, setMix] = useState({ music_vol: 100, voice_vol: 100, bed_vol: 40, master_vol: 100, crossfade_ms: 1000 });
+  const [beds, setBeds] = useState([]);
+  const [activeBedUrl, setActiveBedUrl] = useState(null);
+  const [bedName, setBedName] = useState("");
+  const [uploading, setUploading] = useState(false);
+  const debouncedRef = useRef(null);
+
+  const load = async () => {
+    try {
+      const [m, b] = await Promise.all([endpoints.mixGet(), endpoints.bedsList()]);
+      setMix({
+        music_vol: m.music_vol ?? 100,
+        voice_vol: m.voice_vol ?? 100,
+        bed_vol: m.bed_vol ?? 40,
+        master_vol: m.master_vol ?? 100,
+        crossfade_ms: m.crossfade_ms ?? 1000,
+      });
+      setBeds(b.beds || []);
+      setActiveBedUrl(b.active_bed_url || null);
+    } catch (e) {
+      toast.error("Impossibile caricare regia audio");
+    }
+  };
+  useEffect(() => { load(); }, []);
+
+  const changeMix = (key, val) => {
+    setMix(prev => ({ ...prev, [key]: val }));
+    // Debounce 250ms per non spammare la PATCH
+    if (debouncedRef.current) clearTimeout(debouncedRef.current);
+    debouncedRef.current = setTimeout(() => {
+      endpoints.mixSet({ [key]: val }).catch(() => toast.error("Errore mixer"));
+    }, 250);
+  };
+
+  const upload = async (e) => {
+    e.preventDefault();
+    const file = e.target.elements.file.files[0];
+    if (!file) return;
+    if (!file.name.toLowerCase().endsWith(".mp3")) return toast.error("Solo .mp3");
+    setUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      if (bedName.trim()) fd.append("name", bedName.trim());
+      const r = await endpoints.bedUpload(fd);
+      setBeds(prev => [r.bed, ...prev]);
+      setBedName("");
+      e.target.reset();
+      toast.success("Bed caricato");
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Upload fallito");
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const activate = async (id, url) => {
+    try {
+      await endpoints.bedActivate(id);
+      setActiveBedUrl(url);
+      toast.success("Bed attivato — parte in loop sotto la voce DJ");
+    } catch (e) { toast.error("Errore attivazione"); }
+  };
+  const deactivate = async () => {
+    try { await endpoints.bedDeactivate(); setActiveBedUrl(null); toast.success("Bed spento"); } catch (e) {}
+  };
+  const remove = async (id, name) => {
+    if (!window.confirm(`Eliminare "${name}"?`)) return;
+    try {
+      await endpoints.bedDelete(id);
+      setBeds(prev => prev.filter(b => b.id !== id));
+    } catch (e) { toast.error("Errore delete"); }
+  };
+
+  const Slider = ({ label, k, unit = "%", min = 0, max = 100, step = 1 }) => (
+    <div data-testid={`mix-slider-${k}`}>
+      <div className="flex items-baseline justify-between mb-1">
+        <label className="text-xs uppercase tracking-widest text-zinc-400 font-mono">{label}</label>
+        <span className="text-sm font-mono font-bold text-pink-400">{mix[k]}{unit}</span>
+      </div>
+      <input
+        type="range" min={min} max={max} step={step}
+        value={mix[k]}
+        onChange={(e) => changeMix(k, parseInt(e.target.value, 10))}
+        className="w-full accent-pink-500 cursor-pointer"
+        data-testid={`mix-input-${k}`}
+      />
+    </div>
+  );
+
+  return (
+    <section data-testid="regia-audio-panel" className="lg:col-span-4 card-surface p-6">
+      <div className="mb-5">
+        <h3 className="font-display font-black text-xl flex items-center gap-2">
+          <Volume2 className="w-5 h-5 text-pink-400" /> Regia Audio
+        </h3>
+        <div className="text-xs text-zinc-500 mt-1 font-mono">
+          Mixer in tempo reale (aggiornamento <span className="text-pink-400">~2s</span>) · Crossfade dinamico · Sottofondi loop
+        </div>
+      </div>
+
+      {/* Mixer 4 canali + crossfade */}
+      <div className="grid sm:grid-cols-2 lg:grid-cols-5 gap-5 mb-6 rounded-xl border border-pink-500/20 bg-pink-500/5 p-4">
+        <Slider label="Musica" k="music_vol" />
+        <Slider label="Voce DJ" k="voice_vol" />
+        <Slider label="Sottofondo" k="bed_vol" />
+        <Slider label="Master" k="master_vol" />
+        <div data-testid="mix-slider-crossfade">
+          <div className="flex items-baseline justify-between mb-1">
+            <label className="text-xs uppercase tracking-widest text-zinc-400 font-mono">Crossfade</label>
+            <span className="text-sm font-mono font-bold text-cyan-400">{(mix.crossfade_ms / 1000).toFixed(1)}s</span>
+          </div>
+          <input
+            type="range" min={0} max={5000} step={100}
+            value={mix.crossfade_ms}
+            onChange={(e) => changeMix("crossfade_ms", parseInt(e.target.value, 10))}
+            className="w-full accent-cyan-500 cursor-pointer"
+            data-testid="mix-input-crossfade"
+          />
+        </div>
+      </div>
+
+      {/* Upload bed + lista */}
+      <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-4">
+        <div className="flex flex-wrap items-end gap-3 mb-4">
+          <form onSubmit={upload} className="flex flex-wrap items-end gap-2 flex-1" data-testid="bed-upload-form">
+            <input
+              type="text" value={bedName} onChange={(e) => setBedName(e.target.value)}
+              placeholder="Nome del loop (opz.)"
+              maxLength={60}
+              className="w-40 rounded-lg bg-zinc-950 border border-zinc-800 px-3 py-2 text-sm text-white placeholder:text-zinc-600"
+              data-testid="bed-name-input"
+            />
+            <input
+              name="file" type="file" accept=".mp3,audio/mpeg"
+              className="text-xs text-zinc-300 file:mr-2 file:py-1 file:px-3 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-pink-500 file:text-black hover:file:bg-pink-400 cursor-pointer"
+              data-testid="bed-file-input"
+            />
+            <button
+              type="submit" disabled={uploading}
+              className="btn-primary text-xs px-4 py-2 disabled:opacity-40"
+              data-testid="bed-upload-btn"
+            >
+              {uploading ? "Carico…" : "Upload Loop"}
+            </button>
+          </form>
+          {activeBedUrl && (
+            <button onClick={deactivate} className="text-xs text-zinc-400 hover:text-pink-400 underline" data-testid="bed-deactivate-btn">
+              Spegni sottofondo
+            </button>
+          )}
+        </div>
+
+        {beds.length === 0 ? (
+          <div className="text-xs text-zinc-500 italic text-center py-4">Nessun bed caricato. Carica un MP3 loop (max 10MB) per usarlo come sottofondo automatico sotto la voce DJ.</div>
+        ) : (
+          <div className="space-y-2" data-testid="beds-list">
+            {beds.map(bed => {
+              const isActive = activeBedUrl === bed.audio_url;
+              return (
+                <div
+                  key={bed.id}
+                  className={`flex items-center gap-3 rounded-lg border p-2 ${
+                    isActive ? "border-pink-500/60 bg-pink-500/5" : "border-zinc-800 bg-zinc-950/50"
+                  }`}
+                  data-testid={`bed-row-${bed.id}`}
+                >
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-semibold text-white truncate flex items-center gap-2">
+                      {bed.name}
+                      {isActive && <span className="text-[10px] font-mono uppercase tracking-widest bg-pink-500 text-black px-2 py-0.5 rounded-full">ATTIVO</span>}
+                    </div>
+                    <div className="text-[10px] text-zinc-500 font-mono">{(bed.file_size / 1024 / 1024).toFixed(2)} MB</div>
+                  </div>
+                  <audio controls preload="none" src={endpoints.audioUrl(bed.audio_url)} style={{ height: 28, maxWidth: 220 }} />
+                  {!isActive && (
+                    <button
+                      onClick={() => activate(bed.id, bed.audio_url)}
+                      className="text-xs bg-emerald-500 hover:bg-emerald-400 text-black font-semibold px-3 py-1.5 rounded-full whitespace-nowrap"
+                      data-testid={`bed-activate-${bed.id}`}
+                    >
+                      Attiva
+                    </button>
+                  )}
+                  <button
+                    onClick={() => remove(bed.id, bed.name)}
+                    className="text-xs bg-red-500/20 text-red-300 border border-red-500/40 hover:bg-red-500/30 px-3 py-1.5 rounded-full inline-flex items-center gap-1"
+                    data-testid={`bed-delete-${bed.id}`}
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
