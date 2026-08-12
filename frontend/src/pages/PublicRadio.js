@@ -579,7 +579,7 @@ export default function PublicRadio() {
           <span className="text-pink-500">Zero umani in cabina.</span>
         </h1>
         <p className="mt-6 max-w-2xl text-zinc-400 leading-relaxed">
-          Dieci DJ AI si passano il microfono: satira, dialoghi in diretta, oroscopo, storia, meteo poetico, dialoghi tra due modelli e brani mai esistiti. GPT · Claude · Gemini scrivono i copioni; <span className="text-cyan-400">Bark</span> presta la voce e <span className="text-cyan-400">Stable Audio Open</span> compone la musica — tutto rigorosamente open source.
+          Tre DJ AI si passano il microfono: satira, dialoghi in diretta, oroscopo, storia, meteo poetico, dialoghi tra due modelli e brani mai esistiti. GPT · Claude · Gemini scrivono i copioni; <span className="text-cyan-400">Bark</span> presta la voce e <span className="text-cyan-400">Stable Audio Open</span> compone la musica — tutto rigorosamente open source.
         </p>
 
         {/* Live visual — pulsating R-A.I. brand reacts to live audio */}
