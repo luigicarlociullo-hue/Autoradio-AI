@@ -510,6 +510,10 @@ class RadioEngine {
     // deve suonare per intero, SENZA il crossfade/ducking DJ di _playMusicWithVoice
     // (che tronca gli ultimi ~8s per fare spazio all'outro del DJ).
     if (segment.kind === "jingle" && segment.music_audio_url) {
+      // Ferma subito qualunque coda di crossfade del brano precedente:
+      // senza questo, l'ultimo ~1s di musica in dissolvenza si sovrappone
+      // all'inizio del jingle (bug "jingle overlaps song").
+      try { this.hardStopMusic(); } catch (e) {}
       return this.playJingle(segment.music_audio_url);
     }
     // Music segment con audio reale

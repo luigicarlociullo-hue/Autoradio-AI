@@ -58,7 +58,8 @@ export default function PulsingBrand({
       style={{
         aspectRatio: "16 / 9",
         background: "#000",
-        border: "1px solid rgba(80,160,255,0.15)",
+        border: "1px solid rgba(0,191,255,0.35)",
+        boxShadow: "0 0 24px rgba(0,191,255,0.25), 0 0 60px rgba(0,191,255,0.10), inset 0 0 20px rgba(0,191,255,0.08)",
       }}
     >
       <img

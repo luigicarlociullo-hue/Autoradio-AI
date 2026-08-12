@@ -14,6 +14,31 @@ Vorrei costruire un software di gestione radiofonica completamente automatizzato
 - Auth: Emergent Google OAuth (free) for admin.
 
 ## What's implemented (2026-08 · v10 · Stability fixes)
+- **v12.9 · CONSOLE DI CONTROLLO AI — Restyling ispirato a plancia radio hi-tech** (2026-02, this session):
+  - **Palette rifatta** (`index.css`): dominante **blu elettrico** (`#00BFFF` / `#00E5FF`) su nero profondo (`#02040A`), **arancione** (`#FF6B1A`) **riservato esclusivamente** agli avvisi ON AIR / alert. Rimosso il vecchio rosa/magenta/violetto dallo scheletro (retro-compat via alias `--neon-*`).
+  - **Nuovi utility CSS**: `.console-panel` (cornice modulo con scanlines interne + module-tag), `.on-air-badge` (arancione pulsante), `.standby-badge` (blu), `.led-screen` (display CRT con scanlines + fosforo), `.glow-blue`/`.glow-orange`/`.text-glow-*`, `.vu-meter`, `.corner-accent` (4 angoli hi-tech), `.btn-alert` (arancione), `.rai-bg-grid` (griglia tecnica), `.rai-bg-scan`.
+  - **Font aggiunti**: `Share Tech Mono`, `VT323` per label console + LED CRT.
+  - **Header trasformato**: antenna icon con glow, "AI CONTROL ROOM" label, badge **ON AIR arancione pulsante** quando trasmette (con dot nero interno), **STANDBY blu** quando off, bottone "Regia" con icona Cpu.
+  - **Hero**: logo "R-A.I." glow blu diviso (`R` cyan + `-A.I.` white), sottotitolo minimal con mic-icon, VU meter decorativo, chip "LIVE SIGNAL".
+  - **Now Playing panel**: `.console-panel` con `module-tag` "MOD · A · NOW PLAYING", corner accents, KindBadge palette blu-cyan (uso arancione solo per NEWS), 3 mini-display LCD con numeri zero-padded (069/1663/003) in `Share Tech Mono` cyan glow.
+  - **4 moduli Home** (`HomeCards`): ognuno è `.console-panel` con `module-tag` "MOD · B/C/D/E · ...", icona hi-tech grande in box con glow (`CircuitBoard` per Manifesto, `Disc3` rotante per Daily Track, `Users` arancione per Human vs AI, `MessageCircle` per Chat LED). Testo ridotto ai bullet essenziali con `▸` cyan.
+  - **Chat LED**: display CRT con scanlines + fosforo. Utenti in cyan (`>[USER]`), DJ in ambra (`<[DJ]`), sys line verde. Font `VT323`, uppercase, cursor lampeggiante quando vuoto ("IN ATTESA DI SEGNALE_").
+  - **DJ roster**: card `.console-panel` con `module-tag CH·XXX` per canale, avatar con scanlines overlay + glow accent_color, VU meter decorativo, tag `Cpu` per LLM provider.
+  - **Timeline**: entries come `.console-panel` con chip Mic + Cpu + KindBadge (blu family). Dialog scuro con border blu-glow.
+  - **Sfondo animato**: orbi ora **blu/cyan/deep-blue** (era pink/purple/cyan), griglia tecnica sottile + scanlines globali.
+  - **Bottone donate**: mantenuto orange gradient (coerente con palette alert). Modale come `.console-panel` con module-tag arancione.
+  - **PulsingBrand**: bordo aggiornato a blu console (era `rgba(80,160,255,0.15)`).
+  - Nessuna modifica alla logica audio, alle API o al radioEngine. Solo palette/layout/typografia.
+- **v12.8 · HOME RESTYLING — 4 card + Chat LED + Disco del giorno** (2026-02, this session):
+  - **Backend**: `Track.is_daily` nuovo field, `GET /api/tracks/daily` (ultimo track con is_daily=true), `GET /api/questions/recent?limit=N` (feed pubblico per Chat LED).
+  - **Home ristrutturata** (`PublicRadio.js`):
+    - Rimosso: barra slim "Chiedi ai DJ AI", pulsante "Inviaci il tuo brano" dall'header.
+    - Visual PulsingBrand rimpicciolito a `max-w-2xl` centrato.
+    - 4 card informative in grid 2×2 sotto il player:
+      1. **L'ESPERIMENTO** — testo manifesto integrale
+      2. **IL DISCO DEL GIORNO** — mostra track più recente con is_daily=true + player HTML5, placeholder se assente
+      3. **HUMAN VS AI** — con pulsante "Inviaci il tuo brano" (link `/submit`) integrato
+      4. **CHAT LED** — display retro-futurista verde fosforo, feed live delle domande (verde) + risposte DJ (rosa) con auto-scroll, poller 6s, input inline che triggera il multi-brain Q&A esistente
 - **v12.7 · UX SMART — Pausa istantanea + Admin new-tab + Timeline Dialog + TTS toggle** (2026-02, this session):
   - **Pausa istantanea**: `radioEngine.stopAll()` ora chiama `hardStopMusic()` come primo step → taglio netto del brano corrente senza attendere il fade-out di 1s. Zero latenza percepita al click di Pausa/Stop.
   - **Admin in nuova tab**: `Link` sostituito con `<a href="/dashboard" target="_blank" rel="noopener noreferrer">` → cliccare "Pannello Admin" apre la Dashboard in una nuova scheda; la radio continua a suonare nella tab principale.

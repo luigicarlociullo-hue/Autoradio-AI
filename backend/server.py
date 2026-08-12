@@ -162,6 +162,7 @@ class Track(BaseModel):
     image_url: Optional[str] = None       # optional cover art URL (Suno)
     source: Literal["suno", "stable_audio", "procedural", "admin_upload"] = "procedural"
     is_anthem: bool = False               # official R-A.I. anthem — played periodically as jingle
+    is_daily: bool = False                # "Disco del giorno" — rotazione mattutina
     is_jingle: bool = False               # short R-A.I. station jingle — played between segments
     on_air: bool = True                   # admin toggle: if False, excluded from rotation
     suno_task_id: Optional[str] = None
@@ -713,6 +714,23 @@ async def admin_broadcast_command(cmd_type: str = Form(...)):
 async def list_tracks(limit: int = 500):
     docs = await db.tracks.find({}, {"_id": 0}).sort("created_at", -1).to_list(limit)
     return docs
+
+
+@api_router.get("/tracks/daily")
+async def get_daily_track():
+    """Disco del giorno — track più recente con is_daily=true."""
+    t = await db.tracks.find_one({"is_daily": True}, {"_id": 0}, sort=[("created_at", -1)])
+    return {"track": t}
+
+
+@api_router.get("/questions/recent")
+async def questions_recent(limit: int = 20):
+    """Feed pubblico per Chat LED — ultime domande + risposte."""
+    qs = await db.questions.find(
+        {}, {"_id": 0, "id": 1, "name": 1, "question": 1, "answer": 1,
+             "answering_dj": 1, "processing_status": 1, "created_at": 1}
+    ).sort("created_at", -1).to_list(max(1, min(50, int(limit))))
+    return {"messages": list(reversed(qs))}
 
 
 @api_router.post("/tracks/generate", response_model=Track)
