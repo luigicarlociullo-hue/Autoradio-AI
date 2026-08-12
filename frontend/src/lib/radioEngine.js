@@ -1397,22 +1397,28 @@ class RadioEngine {
       let bufferGateTimer = null;
       const tryStart = async () => {
         if (started) return;
-        // Verifica quanti secondi contigui abbiamo dal punto 0
+        // === FIX A+D · zero silenzio ===
+        // Se il src è un blob:// URL (pre-scaricato via fetch().blob()) i
+        // dati sono GIÀ tutti in RAM: possiamo partire non appena il decoder
+        // ha inizializzato (HAVE_CURRENT_DATA ≥ 2). Il buffer gate 5s
+        // servirebbe solo a proteggerci da network jitter, ma qui non c'è
+        // network. → ready istantaneo.
         let ready = false;
-        try {
-          if (audio.buffered && audio.buffered.length > 0) {
-            const bufEnd = audio.buffered.end(0);
-            const bufStart = audio.buffered.start(0);
-            const dur = isFinite(audio.duration) ? audio.duration : Infinity;
-            const targetS = Math.min(MIN_BUFFER_S, Math.max(1, dur * 0.5));
-            if (bufStart <= 0.1 && (bufEnd - bufStart) >= targetS) ready = true;
-            // Caso file corto: se abbiamo bufferizzato TUTTO il file, parti
-            if (isFinite(dur) && (bufEnd - bufStart) >= dur - 0.5) ready = true;
-          }
-        } catch (e) {}
-        // Fallback: canplaythrough garantisce che il browser stima riproducibilità
-        // continua fino alla fine — accettalo come "buffer sufficiente"
-        if (!ready && audio.readyState >= 4 /* HAVE_ENOUGH_DATA */) ready = true;
+        if (usedBlob && audio.readyState >= 2 /* HAVE_CURRENT_DATA */) {
+          ready = true;
+        } else {
+          try {
+            if (audio.buffered && audio.buffered.length > 0) {
+              const bufEnd = audio.buffered.end(0);
+              const bufStart = audio.buffered.start(0);
+              const dur = isFinite(audio.duration) ? audio.duration : Infinity;
+              const targetS = Math.min(MIN_BUFFER_S, Math.max(1, dur * 0.5));
+              if (bufStart <= 0.1 && (bufEnd - bufStart) >= targetS) ready = true;
+              if (isFinite(dur) && (bufEnd - bufStart) >= dur - 0.5) ready = true;
+            }
+          } catch (e) {}
+          if (!ready && audio.readyState >= 4 /* HAVE_ENOUGH_DATA */) ready = true;
+        }
         if (!ready) return;
         started = true;
         if (bufferGateTimer) { clearInterval(bufferGateTimer); bufferGateTimer = null; }
@@ -1474,9 +1480,17 @@ class RadioEngine {
               if (!audio || audio.paused || audio.ended || this.stopRequested) {
                 clearInterval(iv); r(); return;
               }
-              const remaining = (audio.duration || 60) - (audio.currentTime || 0);
-              // Pre-warm 5s prima della fine (task explicit request)
-              if (!nextPreWarmed && remaining <= 5 && this._preWarmHook) {
+              const dur = (audio.duration || 60);
+              const remaining = dur - (audio.currentTime || 0);
+              // === FIX A · zero silenzio ===
+              // Pre-warm ANTICIPATO: appena il brano supera il 40% del tempo
+              // (o 20s dalla partenza) chiamiamo il hook, che a sua volta:
+              //   1) fetch del prossimo segmento in parallelo (endpoint API)
+              //   2) prewarm blob:// del prossimo audio (RAM ready)
+              // Così quando il brano corrente termina il crossfade, il B è
+              // GIÀ completamente in memoria e parte in <20ms.
+              if (!nextPreWarmed && this._preWarmHook &&
+                  ((audio.currentTime || 0) >= Math.min(20, dur * 0.4))) {
                 nextPreWarmed = true;
                 try { this._preWarmHook(); } catch (e) {}
               }
@@ -1503,28 +1517,28 @@ class RadioEngine {
             return;
           }
 
-          // 6) Attende la fine NATURALE del brano (evento nativo 'ended') prima
-          //    di risolvere. Il prossimo segmento (canzone, jingle o voce) può
-          //    partire SOLO dopo che QUESTO audio ha davvero finito di suonare —
-          //    mai su un timer o una durata stimata — per evitare che due
-          //    sorgenti audio suonino sovrapposte.
+          // 6) === FIX C · Crossfade OVERLAP ===
+          //    Il brano corrente esce con un fade-out di CROSSFADE_MS.
+          //    `done()` viene chiamato SUBITO (non-awaited): il loop può già
+          //    lanciare il prossimo segmento, che entrerà sovrapposto per
+          //    ~1s coprendo la coda del vecchio (che sfuma). Zero silenzio.
           if (this.currentAudio === audio) this.currentAudio = null;
-          const finishAndCleanup = () => {
+          if (this._currentMusicAudio === audio) {
+            this._currentMusicAudio = null;
+            this._currentMusicSrcNode = null;
+            this._currentMusicGain = null;
+          }
+          const pending = { audio, srcNode, musicGain, canceled: false };
+          this._pendingMusicFadeOut = pending;
+          setVol(0.001, CROSSFADE_MS).then(() => {
+            if (pending.canceled) return;
+            try { audio.pause(); } catch (e) {}
             try { srcNode && srcNode.disconnect(); } catch (e) {}
             try { musicGain && musicGain.disconnect(); } catch (e) {}
-            if (this._currentMusicAudio === audio) {
-              this._currentMusicAudio = null;
-              this._currentMusicSrcNode = null;
-              this._currentMusicGain = null;
-            }
+            if (this._pendingMusicFadeOut === pending) this._pendingMusicFadeOut = null;
             if (usedBlob) this._releasePrewarm(url);
-            done();
-          };
-          if (audio.ended) {
-            finishAndCleanup();
-          } else {
-            audio.addEventListener("ended", finishAndCleanup, { once: true });
-          }
+          });
+          done();
         } catch (playErr) {
           console.error("Music playback error:", playErr);
           try { srcNode && srcNode.disconnect(); } catch (e) {}

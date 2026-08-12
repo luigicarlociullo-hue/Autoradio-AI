@@ -353,15 +353,29 @@ export default function PublicRadio() {
         }
 
         console.log(`[R-A.I.] Playing segment kind=${seg.kind} title="${seg.title}" queue=${queue.length}`);
-        // Registra un hook che scatta 5s prima della fine del brano corrente:
-        // pre-warma il file audio del prossimo segmento (task explicit request).
+        // === FIX A · Prefetch parallelo del prossimo segmento ===
+        // Scatta al 40% del brano corrente (o dopo 20s). Fa DUE cose in parallelo:
+        //   1) Se la coda è vuota, fetch del prossimo segmento (getNextSegment)
+        //      così quando il corrente finisce non c'è round-trip API di 100-500ms
+        //   2) Prewarm blob:// degli asset audio del prossimo segmento
+        //      così tutti i byte sono in RAM prima che il brano corrente crossfade
         try {
-          radioEngine.setPreWarmHook(() => {
+          radioEngine.setPreWarmHook(async () => {
+            // Step 1: se coda vuota, spara subito il fetch (parallelo al playback)
+            if (queue.length === 0) {
+              try {
+                const seg2 = await fetchSegmentSafe();
+                if (seg2) queue.push(seg2);
+              } catch (e) {}
+            }
+            // Step 2: prewarm blob URLs del prossimo (già fatto o appena fatto)
             const next = queue[0];
             if (next) {
               if (next.music_audio_url) radioEngine.prewarmAudio(next.music_audio_url);
               if (next.speech_audio_url) radioEngine.prewarmAudio(next.speech_audio_url);
               if (next.outro_speech_url) radioEngine.prewarmAudio(next.outro_speech_url);
+              if (next.pre_jingle_url) radioEngine.prewarmAudio(next.pre_jingle_url);
+              if (next.post_jingle_url) radioEngine.prewarmAudio(next.post_jingle_url);
             }
           });
         } catch (e) {}
