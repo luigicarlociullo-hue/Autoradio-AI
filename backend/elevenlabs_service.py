@@ -81,12 +81,25 @@ async def _synth_openai(text: str, voice_key: str) -> bytes | None:
 
 async def _synth_elevenlabs(text: str, voice_key: str) -> bytes | None:
     """ElevenLabs primario (eleven_multilingual_v2). Ritorna bytes mp3 o None."""
-    # KILL SWITCH: se `TTS_DISABLE_ELEVENLABS=true` in .env, blocca IMMEDIATAMENTE
-    # ogni chiamata all'API ElevenLabs. Il fallback OpenAI TTS-1-HD subentra
-    # automaticamente in `synth_speech()`. Ordine utente 2026-08-08.
+    # KILL SWITCH (env, permanente): TTS_DISABLE_ELEVENLABS=true blocca sempre.
     if os.environ.get("TTS_DISABLE_ELEVENLABS", "").strip().lower() in ("1", "true", "yes"):
-        logger.info("[TTS] ElevenLabs disabled by kill-switch (TTS_DISABLE_ELEVENLABS=true)")
+        logger.info("[TTS] ElevenLabs disabled by env kill-switch")
         return None
+    # SOFT SWITCH (runtime, dal Dashboard): station.state.tts_provider == "openai"
+    # → l'admin ha scelto di forzare OpenAI TTS-1-HD dal toggle in Regia Audio.
+    try:
+        from motor.motor_asyncio import AsyncIOMotorClient
+        _mongo_url = os.environ.get("MONGO_URL")
+        _db_name = os.environ.get("DB_NAME")
+        if _mongo_url and _db_name:
+            _client = AsyncIOMotorClient(_mongo_url)
+            _st = await _client[_db_name].station.find_one({"_id": "state"}, {"tts_provider": 1})
+            _client.close()
+            if _st and (_st.get("tts_provider") or "").lower() == "openai":
+                logger.info("[TTS] ElevenLabs disabled by admin toggle (station.state.tts_provider=openai)")
+                return None
+    except Exception:
+        pass
     if not ELEVENLABS_API_KEY:
         return None
     voice_id = VOICE_KEY_TO_ELEVEN.get(voice_key, DEFAULT_ELEVEN_ID)

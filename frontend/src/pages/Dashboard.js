@@ -2617,11 +2617,17 @@ function RegiaAudioPanel() {
   const [activeBedUrl, setActiveBedUrl] = useState(null);
   const [bedName, setBedName] = useState("");
   const [uploading, setUploading] = useState(false);
+  const [ttsProvider, setTtsProvider] = useState("elevenlabs");
+  const [ttsSaving, setTtsSaving] = useState(false);
   const debouncedRef = useRef(null);
 
   const load = async () => {
     try {
-      const [m, b] = await Promise.all([endpoints.mixGet(), endpoints.bedsList()]);
+      const [m, b, t] = await Promise.all([
+        endpoints.mixGet(),
+        endpoints.bedsList(),
+        endpoints.ttsProviderGet(),
+      ]);
       setMix({
         music_vol: m.music_vol ?? 100,
         voice_vol: m.voice_vol ?? 100,
@@ -2631,11 +2637,26 @@ function RegiaAudioPanel() {
       });
       setBeds(b.beds || []);
       setActiveBedUrl(b.active_bed_url || null);
+      setTtsProvider(t.provider || "elevenlabs");
     } catch (e) {
       toast.error("Impossibile caricare regia audio");
     }
   };
   useEffect(() => { load(); }, []);
+
+  const toggleProvider = async () => {
+    const next = ttsProvider === "elevenlabs" ? "openai" : "elevenlabs";
+    setTtsSaving(true);
+    try {
+      await endpoints.ttsProviderSet(next);
+      setTtsProvider(next);
+      toast.success(`Sorgente voce ora: ${next === "elevenlabs" ? "ElevenLabs (HD premium)" : "OpenAI TTS-1-HD"}`);
+    } catch (e) {
+      toast.error("Errore switch TTS");
+    } finally {
+      setTtsSaving(false);
+    }
+  };
 
   const changeMix = (key, val) => {
     setMix(prev => ({ ...prev, [key]: val }));
@@ -2704,12 +2725,31 @@ function RegiaAudioPanel() {
 
   return (
     <section data-testid="regia-audio-panel" className="lg:col-span-4 card-surface p-6">
-      <div className="mb-5">
-        <h3 className="font-display font-black text-xl flex items-center gap-2">
-          <Volume2 className="w-5 h-5 text-pink-400" /> Regia Audio
-        </h3>
-        <div className="text-xs text-zinc-500 mt-1 font-mono">
-          Mixer in tempo reale (aggiornamento <span className="text-pink-400">~2s</span>) · Crossfade dinamico · Sottofondi loop
+      <div className="mb-5 flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <h3 className="font-display font-black text-xl flex items-center gap-2">
+            <Volume2 className="w-5 h-5 text-pink-400" /> Regia Audio
+          </h3>
+          <div className="text-xs text-zinc-500 mt-1 font-mono">
+            Mixer in tempo reale (aggiornamento <span className="text-pink-400">~2s</span>) · Crossfade dinamico · Sottofondi loop
+          </div>
+        </div>
+        {/* Switch sorgente voce (ElevenLabs ↔ OpenAI TTS-1-HD) */}
+        <div className="flex items-center gap-3 rounded-xl bg-black/30 border border-white/10 px-4 py-2" data-testid="tts-provider-toggle">
+          <div className="text-xs font-mono uppercase tracking-widest text-zinc-400">Sorgente voce</div>
+          <button
+            onClick={toggleProvider}
+            disabled={ttsSaving}
+            data-testid="tts-provider-button"
+            className={`relative flex items-center gap-2 text-xs font-bold px-3 py-1.5 rounded-full transition ${
+              ttsProvider === "elevenlabs"
+                ? "bg-pink-500 text-black hover:bg-pink-400"
+                : "bg-cyan-500 text-black hover:bg-cyan-400"
+            } ${ttsSaving ? "opacity-50" : ""}`}
+          >
+            {ttsProvider === "elevenlabs" ? "ElevenLabs (HD)" : "OpenAI TTS-1-HD"}
+          </button>
+          <span className="text-[10px] text-zinc-500 font-mono">click per switch</span>
         </div>
       </div>
 

@@ -1557,6 +1557,12 @@ class RadioEngine {
   }
 
   stopAll() {
+    // Pausa ISTANTANEA (ordine utente 2026-08-12):
+    // hardStopMusic() ferma bruscamente il brano musicale in playback attivo
+    // (agendo su `_currentMusicGain`, `_currentMusicAudio`) + eventuale fade-out
+    // pendente + voce/speech. stopSpeech/stopAudio sono ridondanti ma le
+    // teniamo per belt-and-braces.
+    try { this.hardStopMusic(); } catch (e) {}
     this.stopSpeech();
     this.stopMusic();
     this.stopAudio();

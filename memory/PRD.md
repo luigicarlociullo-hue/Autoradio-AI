@@ -14,6 +14,15 @@ Vorrei costruire un software di gestione radiofonica completamente automatizzato
 - Auth: Emergent Google OAuth (free) for admin.
 
 ## What's implemented (2026-08 · v10 · Stability fixes)
+- **v12.7 · UX SMART — Pausa istantanea + Admin new-tab + Timeline Dialog + TTS toggle** (2026-02, this session):
+  - **Pausa istantanea**: `radioEngine.stopAll()` ora chiama `hardStopMusic()` come primo step → taglio netto del brano corrente senza attendere il fade-out di 1s. Zero latenza percepita al click di Pausa/Stop.
+  - **Admin in nuova tab**: `Link` sostituito con `<a href="/dashboard" target="_blank" rel="noopener noreferrer">` → cliccare "Pannello Admin" apre la Dashboard in una nuova scheda; la radio continua a suonare nella tab principale.
+  - **Timeline con Dialog**: sezione "Cosa è appena successo in radio" — ogni segmento è ora un `<Dialog>` shadcn/ui. Click → modale con avatar DJ (glow con `accent_color`), nome DJ, kind + LLM provider, e testo integrale del copione (`s.script`) in area scrollabile.
+  - **Toggle sorgente voce**:
+    - Backend: nuovi endpoint `GET/PATCH /api/admin/tts/provider` con payload `{provider: 'elevenlabs'|'openai'}` → salvato in `station.state.tts_provider`.
+    - `elevenlabs_service._synth_elevenlabs()` consulta il DB a ogni chiamata: se `tts_provider='openai'` ritorna `None` → fallback automatico su OpenAI TTS-1-HD.
+    - Kill-switch env `TTS_DISABLE_ELEVENLABS` rimosso dal `.env` (soft switch admin lo sostituisce; l'env var resta come override permanente se serve).
+    - UI: pulsante nel pannello Regia Audio (in alto a destra) che alterna colore (fucsia = ElevenLabs HD, ciano = OpenAI TTS-1-HD).
 - **v12.6 · REGIA AUDIO — Mixer live + Crossfade + Beds + Kill-switch ElevenLabs** (2026-02, this session):
   - **Backend `server.py`** — nuovo blocco endpoints:
     - `GET /api/station/mix` (pubblico, no-cache) → volume 4 canali + crossfade + `active_bed_url`

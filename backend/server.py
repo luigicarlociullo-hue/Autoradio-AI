@@ -3417,6 +3417,23 @@ async def get_station_mix():
     return {**mix, "active_bed_url": active_bed_url}
 
 
+@api_router.get("/admin/tts/provider")
+async def get_tts_provider():
+    st = await db.station.find_one({"_id": "state"}) or {}
+    return {"provider": (st.get("tts_provider") or "elevenlabs").lower()}
+
+
+@api_router.patch("/admin/tts/provider")
+async def set_tts_provider(payload: dict):
+    """Toggle runtime della sorgente voce (default: elevenlabs).
+    Accetta {'provider': 'elevenlabs'|'openai'}."""
+    prov = (payload.get("provider") or "").lower().strip()
+    if prov not in ("elevenlabs", "openai"):
+        raise HTTPException(400, "provider deve essere 'elevenlabs' o 'openai'")
+    await db.station.update_one({"_id": "state"}, {"$set": {"tts_provider": prov}}, upsert=True)
+    return {"ok": True, "provider": prov}
+
+
 @api_router.patch("/admin/mix")
 async def set_station_mix(payload: dict):
     """Aggiorna i volumi del mixer + crossfade. Payload accetta solo i campi

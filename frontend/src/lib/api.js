@@ -58,4 +58,6 @@ export const endpoints = {
   bedActivate: (id) => api.patch(`/admin/beds/${id}/activate`).then(r => r.data),
   bedDeactivate: () => api.patch("/admin/beds/deactivate").then(r => r.data),
   bedDelete: (id) => api.delete(`/admin/beds/${id}`).then(r => r.data),
+  ttsProviderGet: () => api.get("/admin/tts/provider").then(r => r.data),
+  ttsProviderSet: (provider) => api.patch("/admin/tts/provider", { provider }).then(r => r.data),
 };

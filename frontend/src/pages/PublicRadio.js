@@ -6,6 +6,7 @@ import radioEngine from "@/lib/radioEngine";
 import { toast } from "sonner";
 import PulsingBrand from "@/components/PulsingBrand";
 import RadioErrorBoundary from "@/components/RadioErrorBoundary";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogTrigger } from "@/components/ui/dialog";
 import BrandName from "@/components/BrandName";
 
 const HERO_BG = "https://images.unsplash.com/photo-1724185773486-0b39642e607e?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxODd8MHwxfHNlYXJjaHwyfHxhYnN0cmFjdCUyMG5lb24lMjBzb3VuZCUyMHdhdmV8ZW58MHx8fHwxNzgzODAwMDI5fDA&ixlib=rb-4.1.0&q=85";
@@ -522,7 +523,13 @@ export default function PublicRadio() {
               <span className="hidden sm:inline">Inviaci il tuo brano</span>
             </Link>
             <Link to="/pubblicita" data-testid="advertise-link" className="btn-outline focusable text-sm hidden sm:inline-flex">Sponsorizza</Link>
-            <Link to="/dashboard" data-testid="admin-link" className="btn-outline focusable text-sm">Pannello Admin</Link>
+            <a
+              href="/dashboard"
+              target="_blank"
+              rel="noopener noreferrer"
+              data-testid="admin-link"
+              className="btn-outline focusable text-sm"
+            >Pannello Admin</a>
           </nav>
         </div>
       </header>
@@ -743,17 +750,53 @@ export default function PublicRadio() {
             )}
             {segments.slice(-12).reverse().map((s, idx) => {
               const rowKey = s?.id ? `seg-${s.id}` : `seg-idx-${idx}`;
+              const dj = djs.find(d => d.name === s.dj_name);
               return (
-                <div key={rowKey} className="card-surface p-4 flex items-start gap-4" data-testid={`timeline-segment-${s.id || idx}`}>
-                  <KindBadge kind={s.kind} />
-                  <div className="min-w-0 flex-1">
-                    <div className="font-display font-semibold truncate">{s.title}</div>
-                    <div className="text-xs font-mono text-zinc-500 mt-1">
-                      {s.dj_name} · {s.llm_provider}
+                <Dialog key={rowKey}>
+                  <DialogTrigger asChild>
+                    <button
+                      className="card-surface p-4 flex items-start gap-4 w-full text-left hover:border-pink-500/40 transition"
+                      data-testid={`timeline-segment-${s.id || idx}`}
+                    >
+                      <KindBadge kind={s.kind} />
+                      <div className="min-w-0 flex-1">
+                        <div className="font-display font-semibold truncate">{s.title}</div>
+                        <div className="text-xs font-mono text-zinc-500 mt-1">
+                          {s.dj_name} · {s.llm_provider}
+                        </div>
+                        {s.script && <p className="text-sm text-zinc-400 mt-2 line-clamp-2">{s.script}</p>}
+                      </div>
+                    </button>
+                  </DialogTrigger>
+                  <DialogContent className="max-w-2xl bg-zinc-950 border-pink-500/30 text-white" data-testid={`timeline-dialog-${s.id || idx}`}>
+                    <DialogHeader>
+                      <div className="flex items-center gap-4">
+                        {dj?.avatar_url && (
+                          <img
+                            src={dj.avatar_url}
+                            alt={dj.name}
+                            className="w-16 h-16 rounded-xl object-cover border border-white/10"
+                            style={{ boxShadow: `0 0 24px ${dj.accent_color || "#ff1493"}66` }}
+                          />
+                        )}
+                        <div>
+                          <DialogTitle className="text-2xl font-display font-black" style={{ color: dj?.accent_color || "#ff1493" }}>
+                            {s.dj_name || "DJ"}
+                          </DialogTitle>
+                          <DialogDescription className="text-xs font-mono uppercase tracking-widest text-zinc-500 mt-1">
+                            {s.kind} · {s.llm_provider}
+                          </DialogDescription>
+                        </div>
+                      </div>
+                    </DialogHeader>
+                    <div className="mt-2">
+                      <div className="text-sm font-semibold text-zinc-300 mb-2">{s.title}</div>
+                      <div className="max-h-[50vh] overflow-y-auto rounded-lg bg-black/40 border border-white/5 p-4 text-sm text-zinc-300 leading-relaxed whitespace-pre-wrap">
+                        {s.script || <span className="italic text-zinc-500">Nessun copione testuale disponibile per questo segmento.</span>}
+                      </div>
                     </div>
-                    {s.script && <p className="text-sm text-zinc-400 mt-2 line-clamp-2">{s.script}</p>}
-                  </div>
-                </div>
+                  </DialogContent>
+                </Dialog>
               );
             })}
           </div>
