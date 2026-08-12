@@ -14,6 +14,25 @@ Vorrei costruire un software di gestione radiofonica completamente automatizzato
 - Auth: Emergent Google OAuth (free) for admin.
 
 ## What's implemented (2026-08 · v10 · Stability fixes)
+- **v12.10 · COVER CARDS CINEMATOGRAFICHE — 4 immagini AI-native + expand on click** (2026-02, this session):
+  - **Nuovo script** `backend/scripts/generate_card_covers.py`: usa `emergentintegrations` + `gemini-3.1-flash-image-preview` (Nano Banana) per generare in parallelo 4 cover 16:9 fotorealistiche coerenti con la palette console (blu elettrico + arancione ON AIR, no testo, no watermark).
+  - **Immagini generate** salvate in `/app/frontend/public/cards/`:
+    - `human-vs-ai.png` — braccio robotico chromato vs braccio umano in braccio-di-ferro, scintille arancioni al contatto, ON AIR sign sullo sfondo
+    - `disco-del-giorno.png` — vinile futuristico di puro laser blu, rotante, con anelli sonori
+    - `esperimento.png` — cervello sezionato con circuiti + antenne radio, sinapsi blu, spark arancione al centro
+    - `chat-led.png` — onda sonora digitale scultorea, barre verticali blu/cyan con spike arancioni
+  - **`HomeCards` refactor**: nuovo componente `CoverCard` riutilizzabile che:
+    - Mostra l'immagine come sfondo full-bleed (aspect-ratio 16:10 → 16:6.5 quando aperta)
+    - Overlay in top-left: icona hi-tech grande (CircuitBoard/Disc3/Users/MessageCircle) con glow accent colore modulo
+    - Overlay in top-right: `MOD · X · TAG` tab hi-tech
+    - Corner-accents a 4 angoli
+    - Vignette + scanlines CRT + hover-scale (1.04x) sull'immagine
+    - Titolo + eyebrow + hint "▶ APRI MODULO" / "▼ CHIUDI" sempre in overlay basso
+    - **Click → espansione con animazione**: la cover si contrae verticalmente (aspect ratio riduce), l'immagine viene desaturata + oscurata (`brightness 0.65`), un body slide dal basso con `max-height` 0 → 720px in 500ms cubic-bezier + il contenuto interno appare con opacity/translateY 150ms delay.
+    - Click di nuovo (o ESC) → chiude smooth.
+    - `stopPropagation` sui form/link interni per non chiudere accidentalmente.
+  - **Card Chat LED** conserva il led-screen scanlines interno (altezza ridotta a 40 per stare nel body); input form ancora funzionante.
+  - **CSS nuovo**: `.cover-card`, `.cover-card-btn`, `.cover-card-img`, `.cover-card-vignette`, `.cover-card-scan`, `.cover-card-tag`, `.cover-card-icon`, `.cover-card-title-wrap`, `.cover-card-body` (max-height transition), `.spin-slow` (per icona Disc3).
 - **v12.9 · CONSOLE DI CONTROLLO AI — Restyling ispirato a plancia radio hi-tech** (2026-02, this session):
   - **Palette rifatta** (`index.css`): dominante **blu elettrico** (`#00BFFF` / `#00E5FF`) su nero profondo (`#02040A`), **arancione** (`#FF6B1A`) **riservato esclusivamente** agli avvisi ON AIR / alert. Rimosso il vecchio rosa/magenta/violetto dallo scheletro (retro-compat via alias `--neon-*`).
   - **Nuovi utility CSS**: `.console-panel` (cornice modulo con scanlines interne + module-tag), `.on-air-badge` (arancione pulsante), `.standby-badge` (blu), `.led-screen` (display CRT con scanlines + fosforo), `.glow-blue`/`.glow-orange`/`.text-glow-*`, `.vu-meter`, `.corner-accent` (4 angoli hi-tech), `.btn-alert` (arancione), `.rai-bg-grid` (griglia tecnica), `.rai-bg-scan`.

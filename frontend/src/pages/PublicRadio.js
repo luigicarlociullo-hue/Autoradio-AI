@@ -868,10 +868,11 @@ function MiniDisplay({ icon: Icon, label, value }) {
   );
 }
 
-// ==================== HOME CARDS — 4 moduli console ====================
+// ==================== HOME CARDS — 4 moduli cover cinematografici ====================
 function HomeCards({ djs, questionName, setQuestionName, questionText, setQuestionText, submitQuestion, busy }) {
   const [daily, setDaily] = React.useState(null);
   const [messages, setMessages] = React.useState([]);
+  const [openId, setOpenId] = React.useState(null); // id della card espansa
   const scrollRef = React.useRef(null);
 
   React.useEffect(() => {
@@ -891,170 +892,148 @@ function HomeCards({ djs, questionName, setQuestionName, questionText, setQuesti
 
   React.useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-  }, [messages]);
+  }, [messages, openId]);
+
+  // Chiudi la card espansa con ESC
+  React.useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") setOpenId(null); };
+    if (openId) window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [openId]);
+
+  const toggle = (id) => setOpenId(prev => (prev === id ? null : id));
 
   return (
     <div className="mt-8 grid gap-5 md:grid-cols-2" data-testid="home-cards">
-      {/* Modulo B — L'ESPERIMENTO */}
-      <section
-        data-testid="card-esperimento"
-        className="console-panel p-6"
+      {/* ====== MOD · B — L'ESPERIMENTO ====== */}
+      <CoverCard
+        id="esperimento"
+        open={openId === "esperimento"}
+        onToggle={() => toggle("esperimento")}
+        image="/cards/esperimento.png"
+        moduleTag="MOD · B · MANIFESTO"
+        badgeColor="#00BFFF"
+        icon={CircuitBoard}
+        eyebrow="◂ L'ESPERIMENTO ▸"
+        title="Radio che non dovrebbe esistere"
+        testId="card-esperimento"
       >
-        <CornerAccents />
-        <span className="module-tag">MOD · B · MANIFESTO</span>
-        <div className="flex items-start gap-3 mt-3">
-          <div className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0 mt-1"
-               style={{
-                 background: "rgba(0,191,255,0.08)",
-                 border: "1px solid var(--console-line-strong)",
-                 boxShadow: "0 0 12px rgba(0,191,255,0.3)",
-               }}>
-            <CircuitBoard className="w-5 h-5" style={{ color: "var(--console-cyan)", filter: "drop-shadow(0 0 6px rgba(0,229,255,0.8))" }} />
-          </div>
-          <div className="flex-1">
-            <div className="label-mono">◂ L'ESPERIMENTO ▸</div>
-            <h3 className="font-display font-black text-xl mt-1 text-glow-blue">Radio che non dovrebbe esistere</h3>
-          </div>
-        </div>
-        <p className="mt-4 text-sm font-mono text-zinc-300 leading-relaxed">
+        <p className="text-sm font-mono text-zinc-200 leading-relaxed">
           <span className="text-cyan-400">▸</span> Autonomia totale · zero conduttori umani.<br />
           <span className="text-cyan-400">▸</span> L'AI sceglie musica, scrive copioni, risponde live.<br />
           <span className="text-cyan-400">▸</span> Ogni glitch è la prova che siamo in territorio nuovo.
         </p>
-        <div className="mt-4 flex items-center gap-2 pt-3 border-t" style={{ borderColor: "var(--console-line)" }}>
+        <div className="mt-4 flex items-center gap-2">
           <span className="chip"><Signal className="w-3 h-3" /> UPTIME 99.4%</span>
           <span className="chip"><Cpu className="w-3 h-3" /> 3 LLM</span>
         </div>
-      </section>
+      </CoverCard>
 
-      {/* Modulo C — DISCO DEL GIORNO */}
-      <section
-        data-testid="card-disco-del-giorno"
-        className="console-panel p-6"
-        style={{ boxShadow: "0 0 0 1px rgba(0,229,255,0.18) inset, 0 12px 40px rgba(0,0,0,0.6), 0 0 24px rgba(0,229,255,0.15)" }}
+      {/* ====== MOD · C — DISCO DEL GIORNO ====== */}
+      <CoverCard
+        id="disco"
+        open={openId === "disco"}
+        onToggle={() => toggle("disco")}
+        image="/cards/disco-del-giorno.png"
+        moduleTag="MOD · C · DAILY TRACK"
+        badgeColor="#00E5FF"
+        icon={Disc3}
+        iconSpin
+        eyebrow="◂ IL DISCO DEL GIORNO ▸"
+        title="Un brano esclusivo"
+        testId="card-disco-del-giorno"
       >
-        <CornerAccents />
-        <span className="module-tag" style={{ color: "var(--console-cyan)" }}>MOD · C · DAILY TRACK</span>
-        <div className="flex items-start gap-3 mt-3">
-          <div className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0 mt-1"
-               style={{
-                 background: "rgba(0,229,255,0.08)",
-                 border: "1px solid var(--console-cyan)",
-                 boxShadow: "0 0 14px rgba(0,229,255,0.4)",
-               }}>
-            <Disc3 className="w-5 h-5 animate-spin" style={{ color: "var(--console-cyan)", animationDuration: "8s", filter: "drop-shadow(0 0 6px rgba(0,229,255,0.9))" }} />
-          </div>
-          <div className="flex-1">
-            <div className="label-mono">◂ IL DISCO DEL GIORNO ▸</div>
-            <h3 className="font-display font-black text-xl mt-1 text-glow-cyan">Un brano esclusivo</h3>
-          </div>
-        </div>
-        <p className="mt-3 text-xs font-mono text-zinc-400 leading-relaxed">
-          Un brano generato dall'AI, in onda ogni 2h.
+        <p className="text-xs font-mono text-zinc-300 leading-relaxed">
+          Un brano generato dall'AI, in onda ogni 2 ore.
         </p>
-
         {daily ? (
-          <div className="mt-4 rounded-lg p-4"
+          <div className="mt-3 rounded-lg p-3"
                style={{
-                 background: "linear-gradient(180deg, rgba(0,20,30,0.9), rgba(0,10,20,0.95))",
-                 border: "1px solid rgba(0,229,255,0.35)",
-                 boxShadow: "inset 0 0 20px rgba(0,229,255,0.15)",
+                 background: "linear-gradient(180deg, rgba(0,20,30,0.85), rgba(0,10,20,0.9))",
+                 border: "1px solid rgba(0,229,255,0.4)",
+                 boxShadow: "inset 0 0 20px rgba(0,229,255,0.18)",
                }}
                data-testid="daily-track">
-            <div className="flex items-center gap-2 mb-2">
+            <div className="flex items-center gap-2 mb-1.5">
               <AudioWaveform className="w-4 h-4" style={{ color: "var(--console-cyan)" }} />
-              <div className="text-lg font-bold text-glow-cyan" style={{ color: "var(--console-cyan)" }}>{daily.title}</div>
+              <div className="text-base font-bold text-glow-cyan" style={{ color: "var(--console-cyan)" }}>{daily.title}</div>
             </div>
-            {daily.artist && <div className="text-xs font-mono text-zinc-400 mt-1 uppercase tracking-widest">▸ {daily.artist}</div>}
-            {daily.style_tags && <div className="text-xs font-mono text-zinc-500 mt-2 italic">{daily.style_tags}</div>}
+            {daily.artist && <div className="text-[10px] font-mono text-zinc-400 uppercase tracking-widest">▸ {daily.artist}</div>}
+            {daily.style_tags && <div className="text-[10px] font-mono text-zinc-500 mt-1 italic">{daily.style_tags}</div>}
             {daily.audio_url && (
               <audio
                 controls preload="none"
                 src={endpoints.audioUrl(daily.audio_url)}
-                className="mt-3 w-full"
-                style={{ height: 36 }}
+                className="mt-2 w-full"
+                style={{ height: 32 }}
                 data-testid="daily-track-audio"
               />
             )}
           </div>
         ) : (
-          <div className="mt-4 rounded-lg p-4 text-center"
+          <div className="mt-3 rounded-lg p-3 text-center"
                style={{
-                 background: "rgba(0,0,0,0.4)",
-                 border: "1px dashed rgba(0,191,255,0.25)",
+                 background: "rgba(0,0,0,0.5)",
+                 border: "1px dashed rgba(0,191,255,0.3)",
                }}>
-            <div className="text-xs font-mono text-cyan-500/70 uppercase tracking-widest">Generazione in coda</div>
-            <div className="text-[10px] font-mono text-zinc-500 mt-1 italic">Ritenta più tardi.</div>
+            <div className="text-[10px] font-mono text-cyan-500/80 uppercase tracking-widest">Generazione in coda</div>
+            <div className="text-[9px] font-mono text-zinc-500 mt-0.5 italic">Ritenta più tardi.</div>
           </div>
         )}
-      </section>
+      </CoverCard>
 
-      {/* Modulo D — HUMAN VS AI */}
-      <section
-        data-testid="card-human-vs-ai"
-        className="console-panel p-6"
-        style={{ boxShadow: "0 0 0 1px rgba(255,107,26,0.25) inset, 0 12px 40px rgba(0,0,0,0.6), 0 0 24px rgba(255,107,26,0.18)" }}
+      {/* ====== MOD · D — HUMAN VS AI ====== */}
+      <CoverCard
+        id="human-vs-ai"
+        open={openId === "human-vs-ai"}
+        onToggle={() => toggle("human-vs-ai")}
+        image="/cards/human-vs-ai.png"
+        moduleTag="MOD · D · CHALLENGE"
+        badgeColor="#FF6B1A"
+        icon={Users}
+        eyebrow="◂ HUMAN VS A.I. ▸"
+        title="Umano contro algoritmo"
+        titleGlow="orange"
+        testId="card-human-vs-ai"
       >
-        <CornerAccents />
-        <span className="module-tag" style={{ color: "var(--alert-orange)", borderColor: "rgba(255,107,26,0.5)" }}>
-          MOD · D · CHALLENGE
-        </span>
-        <div className="flex items-start gap-3 mt-3">
-          <div className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0 mt-1 glow-orange"
-               style={{ background: "linear-gradient(135deg, rgba(255,107,26,0.15), rgba(255,138,61,0.08))", border: "1px solid rgba(255,107,26,0.5)" }}>
-            <Users className="w-5 h-5" style={{ color: "var(--alert-orange-glow)", filter: "drop-shadow(0 0 6px rgba(255,107,26,0.8))" }} />
-          </div>
-          <div className="flex-1">
-            <div className="label-mono" style={{ color: "var(--alert-orange-glow)", textShadow: "0 0 8px rgba(255,107,26,0.5)" }}>◂ HUMAN VS A.I. ▸</div>
-            <h3 className="font-display font-black text-xl mt-1 text-glow-orange">La sfida umano vs algoritmo</h3>
-          </div>
-        </div>
-        <p className="mt-3 text-sm font-mono text-zinc-300 leading-relaxed">
+        <p className="text-sm font-mono text-zinc-200 leading-relaxed">
           <span style={{ color: "var(--alert-orange-glow)" }}>▸</span> Manda un tuo brano.<br />
           <span style={{ color: "var(--alert-orange-glow)" }}>▸</span> Va in onda in rotazione con l'AI.<br />
-          <span style={{ color: "var(--alert-orange-glow)" }}>▸</span> Il pubblico decide.
+          <span style={{ color: "var(--alert-orange-glow)" }}>▸</span> Il pubblico decide chi vince.
         </p>
         <Link
           to="/submit"
           data-testid="submit-track-link"
           className="btn-alert inline-flex items-center gap-2 mt-4"
+          onClick={(e) => e.stopPropagation()}
         >
           <Send className="w-4 h-4" />
           Inviaci il brano
         </Link>
-      </section>
+      </CoverCard>
 
-      {/* Modulo E — CHAT LED (display digitale) */}
-      <section
-        data-testid="card-chat-led"
-        className="console-panel p-5"
+      {/* ====== MOD · E — CHAT LED ====== */}
+      <CoverCard
+        id="chat"
+        open={openId === "chat"}
+        onToggle={() => toggle("chat")}
+        image="/cards/chat-led.png"
+        moduleTag="MOD · E · LIVE FEED"
+        badgeColor="#00BFFF"
+        icon={MessageCircle}
+        eyebrow="◂ CHAT LED · LIVE FEED ▸"
+        title="I DJ ascoltano."
+        testId="card-chat-led"
       >
-        <CornerAccents />
-        <span className="module-tag">MOD · E · LIVE FEED</span>
-        <div className="flex items-start gap-3 mt-3 mb-3">
-          <div className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0"
-               style={{
-                 background: "rgba(0,191,255,0.08)",
-                 border: "1px solid var(--console-line-strong)",
-                 boxShadow: "0 0 10px rgba(0,191,255,0.35)",
-               }}>
-            <MessageCircle className="w-5 h-5" style={{ color: "var(--console-cyan)", filter: "drop-shadow(0 0 6px rgba(0,229,255,0.8))" }} />
-          </div>
-          <div className="flex-1">
-            <div className="label-mono">◂ CHAT LED · LIVE FEED ▸</div>
-            <h3 className="font-display font-black text-xl mt-1 text-glow-blue">I DJ ascoltano.</h3>
-          </div>
-        </div>
-
-        {/* Display LED — stile scanline CRT */}
+        {/* Display LED */}
         <div
           ref={scrollRef}
           data-testid="led-feed"
-          className="led-screen h-56 overflow-y-auto text-sm space-y-1"
-          style={{ fontSize: "16px", lineHeight: "1.35" }}
+          className="led-screen h-40 overflow-y-auto text-sm space-y-1"
+          style={{ fontSize: "15px", lineHeight: "1.35" }}
         >
           {messages.length === 0 ? (
-            <div className="led-row led-line-sys text-center pt-16" style={{ fontSize: "18px" }}>
+            <div className="led-row led-line-sys text-center pt-12" style={{ fontSize: "16px" }}>
               &gt; IN ATTESA DI SEGNALE_
             </div>
           ) : (
@@ -1078,14 +1057,14 @@ function HomeCards({ djs, questionName, setQuestionName, questionText, setQuesti
           )}
         </div>
 
-        {/* Input inline */}
-        <form onSubmit={submitQuestion} className="mt-3 flex flex-col sm:flex-row gap-2" data-testid="led-input-form">
+        <form onSubmit={submitQuestion} className="mt-3 flex flex-col sm:flex-row gap-2" data-testid="led-input-form"
+              onClick={(e) => e.stopPropagation()}>
           <input
             data-testid="led-input-name"
             value={questionName}
             onChange={(e) => setQuestionName(e.target.value)}
             placeholder="NOME"
-            className="w-full sm:w-28 rounded-md bg-black border outline-none px-3 py-2 text-xs font-mono text-cyan-300 placeholder:text-cyan-800 uppercase tracking-widest"
+            className="w-full sm:w-24 rounded-md bg-black border outline-none px-3 py-2 text-xs font-mono text-cyan-300 placeholder:text-cyan-800 uppercase tracking-widest"
             style={{ borderColor: "var(--console-line-strong)" }}
           />
           <input
@@ -1106,7 +1085,85 @@ function HomeCards({ djs, questionName, setQuestionName, questionText, setQuesti
             <Send className="w-3 h-3" /> INVIA
           </button>
         </form>
-      </section>
+      </CoverCard>
     </div>
   );
 }
+
+// ==================== CoverCard — Card cover con espansione al click ====================
+function CoverCard({
+  id, open, onToggle, image, moduleTag, badgeColor = "#00BFFF",
+  icon: Icon, iconSpin = false, eyebrow, title, titleGlow = "blue",
+  testId, children,
+}) {
+  const titleGlowClass = titleGlow === "orange" ? "text-glow-orange" : "text-glow-blue";
+  return (
+    <section
+      data-testid={testId}
+      className="cover-card"
+      data-open={open}
+      style={{
+        boxShadow: open
+          ? `0 0 0 1px ${badgeColor}66, 0 20px 60px rgba(0,0,0,0.7), 0 0 40px ${badgeColor}55`
+          : `0 0 0 1px ${badgeColor}22, 0 14px 40px rgba(0,0,0,0.6), 0 0 22px ${badgeColor}22`,
+      }}
+    >
+      {/* Cover image */}
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={open}
+        aria-label={`${open ? "Chiudi" : "Apri"} ${title}`}
+        className="cover-card-btn"
+        data-testid={`${testId}-toggle`}
+      >
+        <img src={image} alt="" className="cover-card-img" loading="lazy" />
+
+        {/* Vignette + scanlines overlay */}
+        <span className="cover-card-vignette" aria-hidden />
+        <span className="cover-card-scan" aria-hidden />
+
+        {/* Corner accents */}
+        <span className="corner-accent tl" />
+        <span className="corner-accent tr" />
+        <span className="corner-accent bl" />
+        <span className="corner-accent br" />
+
+        {/* Module tag */}
+        <span className="cover-card-tag" style={{ color: badgeColor, borderColor: `${badgeColor}66` }}>
+          {moduleTag}
+        </span>
+
+        {/* Icona hi-tech in alto a sinistra */}
+        <span className="cover-card-icon" style={{ color: badgeColor, borderColor: `${badgeColor}55`, boxShadow: `0 0 16px ${badgeColor}66` }}>
+          <Icon className={`w-5 h-5 ${iconSpin ? "spin-slow" : ""}`} />
+        </span>
+
+        {/* Titolo in overlay in basso */}
+        <div className="cover-card-title-wrap">
+          <div className="cover-card-eyebrow" style={{ color: badgeColor, textShadow: `0 0 8px ${badgeColor}` }}>
+            {eyebrow}
+          </div>
+          <h3 className={`cover-card-title ${titleGlowClass}`}>
+            {title}
+          </h3>
+          <div className="cover-card-hint">
+            {open ? "▼ CHIUDI" : "▶ APRI MODULO"}
+          </div>
+        </div>
+      </button>
+
+      {/* Contenuto — slide dal basso al click */}
+      <div
+        className="cover-card-body"
+        data-testid={`${testId}-body`}
+        aria-hidden={!open}
+      >
+        <div className="cover-card-body-inner">
+          {children}
+        </div>
+      </div>
+    </section>
+  );
+}
+
