@@ -451,15 +451,15 @@ export default function PublicRadio() {
       <header className="glass sticky top-0 z-40 relative">
         <div className="max-w-7xl mx-auto px-4 py-2.5 flex items-center justify-between gap-3 flex-wrap">
           <div className="flex items-center gap-3 min-w-0">
-            {/* Logo simbolo R-A.I. (waveform + antenna + ON AIR dot) */}
+            {/* SIMBOLO GRAFICO R-A.I. — cerchio + waveform + antenna con LED arancione */}
             <div
-              className="relative w-12 h-12 shrink-0 flex items-center justify-center"
+              className="relative w-14 h-14 shrink-0 flex items-center justify-center"
               data-testid="rai-logo"
-              style={{ filter: "drop-shadow(0 0 8px rgba(0,229,255,0.55))" }}
+              style={{ filter: "drop-shadow(0 0 10px rgba(0,229,255,0.55))" }}
             >
               <img
-                src="/rai-logo.png"
-                alt="R-A.I."
+                src="/rai-face.png"
+                alt="R-A.I. symbol"
                 className="w-full h-full object-contain"
                 style={{ animation: "raiLogoFloat 6s ease-in-out infinite" }}
               />

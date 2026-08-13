@@ -23,6 +23,7 @@ export default function HoloBrand({ isPlaying = false, current = null, trackOver
   const rafRef = useRef(null);
   const glyphRefs = useRef([]);
   const ringRef = useRef(null);
+  const logoBgRef = useRef(null);
   const infoRef = useRef(null);
   const state = useRef({ bass: 0, mid: 0, high: 0, phase: 0 });
 
@@ -68,6 +69,14 @@ export default function HoloBrand({ isPlaying = false, current = null, trackOver
         const opa = 0.55 + state.current.bass * 0.45;
         ringRef.current.style.transform = `translate(-50%, -50%) scale(${scale.toFixed(3)})`;
         ringRef.current.style.opacity = opa.toFixed(2);
+      }
+
+      // Logo simbolo di sfondo: respira con i bassi
+      if (logoBgRef.current) {
+        const scale = 1 + state.current.bass * 0.08 + breath * 0.015;
+        const opa = 0.55 + state.current.bass * 0.30 + breath * 0.05;
+        logoBgRef.current.style.transform = `translate(-50%, -50%) scale(${scale.toFixed(3)})`;
+        logoBgRef.current.style.opacity = Math.min(1, opa).toFixed(2);
       }
 
       // Glyph reattivi: scale + glow indipendenti per bin
@@ -125,6 +134,15 @@ export default function HoloBrand({ isPlaying = false, current = null, trackOver
       data-testid="holo-brand"
       data-playing={isPlaying}
     >
+      {/* Simbolo grafico R-A.I. come layer di sfondo, dietro le lettere */}
+      <img
+        ref={logoBgRef}
+        src="/rai-logo.png"
+        alt=""
+        aria-hidden
+        className="holo-logo-bg"
+        data-testid="holo-logo-bg"
+      />
       {/* Aura ring esterno (pulsa con i bassi) */}
       <div ref={ringRef} className="holo-ring" aria-hidden />
       {/* Griglia radiale di scanline */}

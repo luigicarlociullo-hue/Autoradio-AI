@@ -609,6 +609,21 @@ body {
   opacity: 0.55;
 }
 
+/* Simbolo grafico R-A.I. come layer di sfondo */
+.holo-logo-bg {
+  position: absolute;
+  left: 50%; top: 45%;
+  width: 55%;
+  height: auto;
+  transform: translate(-50%, -50%);
+  z-index: 3;
+  opacity: 0.65;
+  pointer-events: none;
+  filter: drop-shadow(0 0 24px rgba(0,229,255,0.55)) drop-shadow(0 0 8px rgba(0,191,255,0.4));
+  transition: transform 60ms linear, opacity 120ms linear;
+  will-change: transform, opacity;
+}
+
 /* Aura pulsante attorno al logo */
 .holo-ring {
   position: absolute;
