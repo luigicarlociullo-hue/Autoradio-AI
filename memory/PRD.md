@@ -14,6 +14,21 @@ Vorrei costruire un software di gestione radiofonica completamente automatizzato
 - Auth: Emergent Google OAuth (free) for admin.
 
 ## What's implemented (2026-08 · v10 · Stability fixes)
+- **v12.12 · LOGO 3D + HOLOBRAND — Marchio R-A.I. reattivo integrato** (2026-02, this session):
+  - **Nuovo logo simbolo** generato con Nano Banana in `/app/frontend/public/rai-logo.png`: cerchio neon blu elettrico con anello luminoso, antenna sottile con LED arancione (ON AIR indicator), waveform interna che disegna sottilmente "R" e "A". Sfondo trasparente per uso overlay.
+  - **Firma "Powered by *L&C Project*"**: font Google `Great Vibes` (script/autografo) con gradient blu→arancione, `skewX(-8deg)` diagonale, drop-shadow neon, delimitatori sfumati. Integrata sotto "AI CONTROL ROOM" nell'header.
+  - **`<HoloBrand>`** — nuovo componente in `/app/frontend/src/components/HoloBrand.js` che sostituisce `PulsingBrand` nell'hero:
+    - Marchio scomposto in **6 glyph indipendenti** (R, -, A, ., I, .) — trattino e punti evidenti, i punti "." in arancione ON AIR mentre R/I in cyan e A in bianco brillante
+    - Ogni glyph ha un `band` di frequenze dedicato (bassi 2-14 per R, medi 12-22 per A, acuti 40-100 per I) → scale/glow/translateZ reattivi in tempo reale via `radioEngine.getAnalyser()`
+    - Container 3D con `perspective: 1200px` + `rotateX(4deg) rotateY(±)` che oscilla in base ai bassi
+    - Antenna simbolica in alto con LED arancione blinking
+    - Aura ring pulsante con 2 cerchi tratteggiati che ruotano in direzioni opposte
+    - **Info brani integrate come parte dell'hologramma**: chip "◂ KIND · DJ ▸" + titolo brano in font Orbitron con text-shadow neon + artista in Share Tech Mono arancione. Lo stesso stile neon del logo → tutto amalgamato.
+    - Riflesso pavimento (gradient inferiore) + scanlines CRT + badge ON AIR/STAND-BY nel corner
+    - Marquee opzionale in basso quando `trackOverlay.visible` (titolo scroll infinito).
+    - Idle breath sinusoidale quando `analyser` non è disponibile (radio ferma) → il logo sembra sempre "vivo".
+  - `PulsingBrand` non è stato eliminato (conservato come componente alternativo) ma non è più usato nel visual centrale.
+  - Nessuna modifica a `radioEngine.js` (solo lettura dell'analyser).
 - **v12.11 · AUTONOMIA + REGIA NOTTURNA — 4 fasi complete** (2026-02, this session):
 
   ### FASE 1 · Play First + Firma + Chat aperta + Main Partner

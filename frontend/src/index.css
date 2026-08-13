@@ -569,6 +569,248 @@ body {
 }
 
 /* =====================================================================
+   HoloBrand — Marchio R-A.I. ologramma 3D reattivo
+   ===================================================================== */
+.holo-brand-frame {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  background:
+    radial-gradient(ellipse at center, #041530 0%, #030812 55%, #000208 100%);
+  border-radius: 14px;
+  border: 1px solid rgba(0,191,255,0.35);
+  box-shadow:
+    0 0 30px rgba(0,191,255,0.25),
+    0 0 60px rgba(0,191,255,0.12),
+    inset 0 0 30px rgba(0,191,255,0.10);
+  overflow: hidden;
+  isolation: isolate;
+  perspective: 1200px;
+}
+.holo-brand-frame::before {
+  /* riflesso pavimento */
+  content: '';
+  position: absolute;
+  inset: 55% 0 0 0;
+  background: linear-gradient(180deg, rgba(0,20,40,0) 0%, rgba(0,40,80,0.35) 60%, rgba(0,10,20,0.6) 100%);
+  pointer-events: none;
+  z-index: 1;
+}
+
+.holo-scan {
+  position: absolute; inset: 0;
+  background:
+    repeating-linear-gradient(0deg, rgba(0,229,255,0.06) 0px, rgba(0,229,255,0.06) 1px, transparent 1px, transparent 3px);
+  pointer-events: none;
+  z-index: 2;
+  mix-blend-mode: screen;
+  opacity: 0.55;
+}
+
+/* Aura pulsante attorno al logo */
+.holo-ring {
+  position: absolute;
+  left: 50%; top: 45%;
+  width: 62%; aspect-ratio: 1;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 2;
+  background:
+    radial-gradient(circle, rgba(0,229,255,0.30) 0%, rgba(0,191,255,0.14) 35%, rgba(0,191,255,0) 65%);
+  filter: blur(2px);
+  pointer-events: none;
+}
+.holo-ring::before, .holo-ring::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 1px solid rgba(0,229,255,0.4);
+  pointer-events: none;
+}
+.holo-ring::before {
+  inset: 6%;
+  border-color: rgba(0,229,255,0.28);
+  border-style: dashed;
+  animation: holoRingSpin 24s linear infinite;
+}
+.holo-ring::after {
+  inset: 16%;
+  border-color: rgba(0,191,255,0.20);
+  animation: holoRingSpin 42s linear infinite reverse;
+}
+@keyframes holoRingSpin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+/* Antenna simbolica sopra il logo */
+.holo-antenna {
+  position: absolute;
+  left: 50%; top: 6%;
+  transform: translateX(-50%);
+  display: flex; flex-direction: column; align-items: center;
+  z-index: 6;
+  pointer-events: none;
+}
+.holo-antenna-line {
+  width: 1.5px; height: 22px;
+  background: linear-gradient(180deg, transparent, #00E5FF);
+  box-shadow: 0 0 6px #00E5FF;
+}
+.holo-antenna-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: #FF6B1A;
+  box-shadow: 0 0 10px #FF6B1A, 0 0 18px rgba(255,107,26,0.55);
+  animation: holoAntennaBlink 1.6s ease-in-out infinite;
+}
+@keyframes holoAntennaBlink {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.35; transform: scale(0.7); }
+}
+
+/* ON AIR badge nel corner */
+.holo-onair {
+  position: absolute;
+  top: 12px; left: 14px;
+  display: inline-flex; align-items: center; gap: 8px;
+  z-index: 6;
+  padding: 3px 10px;
+  border-radius: 4px;
+  background: rgba(0,4,10,0.72);
+  border: 1px solid rgba(0,229,255,0.35);
+  backdrop-filter: blur(6px);
+}
+.holo-onair-label {
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+}
+
+/* Container 3D dei glyph */
+.holo-3d {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  transform-style: preserve-3d;
+  transition: transform 40ms linear;
+  padding: 8% 6% 12%;
+}
+.holo-glyphs {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.05em;
+  font-family: 'Orbitron', 'Unbounded', 'Share Tech Mono', sans-serif;
+  font-size: clamp(3rem, 8vw, 6.5rem);
+  line-height: 0.9;
+  letter-spacing: -0.02em;
+  transform-style: preserve-3d;
+  will-change: transform;
+  user-select: none;
+}
+.holo-glyph {
+  display: inline-block;
+  transform: translateZ(0);
+  transition: text-shadow 80ms linear, filter 80ms linear;
+  will-change: transform, filter, text-shadow;
+  transform-origin: 50% 60%;
+}
+.holo-glyph.is-mono {
+  /* trattino: più sottile e alzato */
+  font-family: 'Share Tech Mono', monospace;
+  transform-origin: 50% 55%;
+}
+.holo-glyph.is-dot {
+  /* punto: piccolo bulbo neon più corposo */
+  font-family: 'Orbitron', 'Unbounded', sans-serif;
+  transform-origin: 50% 90%;
+}
+
+/* Info panel integrato nell'ologramma */
+.holo-info {
+  margin-top: 1.2rem;
+  text-align: center;
+  transform-style: preserve-3d;
+  will-change: transform;
+  transition: transform 40ms linear;
+  max-width: 90%;
+}
+.holo-info-kind {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-family: 'Share Tech Mono', 'JetBrains Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.32em;
+  text-transform: uppercase;
+  color: rgba(0,229,255,0.9);
+  text-shadow: 0 0 8px rgba(0,229,255,0.5);
+  padding: 3px 12px;
+  border: 1px solid rgba(0,229,255,0.35);
+  border-radius: 3px;
+  background: rgba(0,10,20,0.55);
+}
+.holo-info-tick { color: rgba(0,229,255,0.8); font-size: 9px; }
+.holo-info-dot { opacity: 0.55; }
+.holo-info-title {
+  margin-top: 8px;
+  font-family: 'Orbitron', 'Unbounded', sans-serif;
+  font-weight: 800;
+  font-size: clamp(0.9rem, 1.6vw, 1.15rem);
+  letter-spacing: 0.02em;
+  color: #E6F1FF;
+  text-shadow:
+    0 0 8px rgba(0,229,255,0.85),
+    0 0 20px rgba(0,229,255,0.4);
+  line-height: 1.15;
+  padding: 0 8px;
+  max-width: 480px;
+  margin-left: auto; margin-right: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.holo-info-artist {
+  margin-top: 4px;
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: rgba(255,138,61,0.9);
+  text-shadow: 0 0 8px rgba(255,107,26,0.4);
+}
+
+/* Marquee opzionale in basso */
+.holo-marquee {
+  position: absolute;
+  left: 0; right: 0; bottom: 8%;
+  z-index: 5;
+  overflow: hidden;
+  pointer-events: none;
+  mask-image: linear-gradient(to right, transparent 0%, #000 10%, #000 90%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to right, transparent 0%, #000 10%, #000 90%, transparent 100%);
+}
+.holo-marquee-inner {
+  display: inline-block;
+  white-space: nowrap;
+  animation: holoMarqueeSlide 22s linear infinite;
+  font-family: 'Orbitron', monospace;
+  font-weight: 700;
+  letter-spacing: 0.28em;
+  font-size: 12px;
+  color: rgba(0,229,255,0.85);
+  text-shadow: 0 0 8px rgba(0,229,255,0.5);
+  padding-left: 100%;
+}
+@keyframes holoMarqueeSlide {
+  0%   { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+
+/* =====================================================================
    Cover Cards — Card cinematografica con espansione al click
    ===================================================================== */
 .cover-card {
