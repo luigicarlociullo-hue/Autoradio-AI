@@ -450,21 +450,25 @@ export default function PublicRadio() {
       <header className="glass sticky top-0 z-40 relative">
         <div className="max-w-7xl mx-auto px-4 py-2.5 flex items-center justify-between gap-3 flex-wrap">
           <div className="flex items-center gap-3 min-w-0">
-            <div className="relative w-9 h-9 rounded-lg flex items-center justify-center shrink-0"
-                 style={{
-                   background: "linear-gradient(180deg, #0A1428, #050A18)",
-                   border: "1px solid var(--console-line-strong)",
-                   boxShadow: "0 0 12px rgba(0,191,255,0.35), inset 0 0 8px rgba(0,191,255,0.2)",
-                 }}>
-              <Antenna className="w-4 h-4" style={{ color: "var(--console-cyan)", filter: "drop-shadow(0 0 6px rgba(0,229,255,0.8))" }} />
+            {/* Logo simbolo R-A.I. (waveform + antenna + ON AIR dot) */}
+            <div
+              className="relative w-12 h-12 shrink-0 flex items-center justify-center"
+              data-testid="rai-logo"
+              style={{ filter: "drop-shadow(0 0 8px rgba(0,229,255,0.55))" }}
+            >
+              <img
+                src="/rai-logo.png"
+                alt="R-A.I."
+                className="w-full h-full object-contain"
+                style={{ animation: "raiLogoFloat 6s ease-in-out infinite" }}
+              />
             </div>
             <div className="min-w-0">
-              <BrandName className="font-display font-black text-base text-glow-blue" />
-              <div className="label-mono !text-[9px] flex items-center gap-2 truncate">
-                AI CONTROL ROOM
-                <span className="opacity-70" style={{ color: "rgba(0,229,255,0.6)" }}>·</span>
-                <span className="italic opacity-70 tracking-normal" style={{ color: "rgba(0,229,255,0.7)", fontStyle: "italic" }}>
-                  Powered by L&amp;C Project
+              <BrandName className="font-display font-black text-base sm:text-lg text-glow-blue" />
+              <div className="flex items-center gap-2 mt-0.5">
+                <span className="label-mono !text-[9px] !tracking-widest">AI CONTROL ROOM</span>
+                <span className="powered-by-signature" data-testid="powered-by">
+                  Powered by <span className="lc-brand">L&amp;C Project</span>
                 </span>
               </div>
             </div>

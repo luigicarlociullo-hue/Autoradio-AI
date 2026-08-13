@@ -2,7 +2,7 @@
 @tailwind components;
 @tailwind utilities;
 
-@import url('https://fonts.googleapis.com/css2?family=Unbounded:wght@300;400;600;800;900&family=IBM+Plex+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Chakra+Petch:wght@300;400;500;600;700&family=Orbitron:wght@400;500;600;700;800&family=Share+Tech+Mono&family=VT323&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Unbounded:wght@300;400;600;800;900&family=IBM+Plex+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Chakra+Petch:wght@300;400;500;600;700&family=Orbitron:wght@400;500;600;700;800&family=Share+Tech+Mono&family=VT323&family=Great+Vibes&family=Cormorant+Garamond:ital,wght@1,400;1,500&display=swap');
 
 /* =====================================================================
    R-A.I. · Console di Controllo AI
@@ -518,6 +518,55 @@ body {
 .corner-accent.tr { top: 6px; right: 6px; border-left: none; border-bottom: none; }
 .corner-accent.bl { bottom: 6px; left: 6px; border-right: none; border-top: none; }
 .corner-accent.br { bottom: 6px; right: 6px; border-left: none; border-top: none; }
+
+/* =====================================================================
+   R-A.I. Logo — floating breath animation
+   ===================================================================== */
+@keyframes raiLogoFloat {
+  0%, 100% { transform: translateY(0) scale(1); filter: brightness(1); }
+  50%      { transform: translateY(-2px) scale(1.02); filter: brightness(1.15); }
+}
+
+/* =====================================================================
+   "Powered by L&C Project" signature — corsivo diagonale stilizzato
+   ===================================================================== */
+.powered-by-signature {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  font-family: 'Cormorant Garamond', 'Georgia', serif;
+  font-style: italic;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: rgba(230, 241, 255, 0.55);
+  transform: skewX(-8deg);
+  position: relative;
+  padding: 0 4px;
+  line-height: 1;
+}
+.powered-by-signature::before,
+.powered-by-signature::after {
+  content: '';
+  display: inline-block;
+  width: 10px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(0,229,255,0.5), transparent);
+  margin: 0 2px 2px;
+  vertical-align: middle;
+}
+.powered-by-signature .lc-brand {
+  font-family: 'Great Vibes', 'Cormorant Garamond', cursive;
+  font-style: normal;
+  font-size: 15px;
+  background: linear-gradient(135deg, #00E5FF 0%, #00BFFF 45%, #FF8A3D 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  filter: drop-shadow(0 0 6px rgba(0,229,255,0.4));
+  padding-left: 2px;
+  letter-spacing: 0.01em;
+}
 
 /* =====================================================================
    Cover Cards — Card cinematografica con espansione al click
