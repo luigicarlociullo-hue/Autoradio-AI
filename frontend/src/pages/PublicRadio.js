@@ -465,12 +465,14 @@ export default function PublicRadio() {
               />
             </div>
             <div className="min-w-0">
-              <BrandName className="font-display font-black text-base sm:text-lg text-glow-blue" />
-              <div className="flex items-center gap-2 mt-0.5">
-                <span className="label-mono !text-[9px] !tracking-widest">AI CONTROL ROOM</span>
+              <div className="flex items-baseline gap-3 flex-wrap">
+                <BrandName className="font-display font-black text-lg sm:text-xl text-glow-blue" />
                 <span className="powered-by-signature" data-testid="powered-by">
                   Powered by <span className="lc-brand">L&amp;C Project</span>
                 </span>
+              </div>
+              <div className="label-mono !text-[9px] !tracking-widest mt-0.5">
+                AI CONTROL ROOM
               </div>
             </div>
           </div>

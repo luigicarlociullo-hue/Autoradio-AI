@@ -536,36 +536,38 @@ body {
   gap: 4px;
   font-family: 'Cormorant Garamond', 'Georgia', serif;
   font-style: italic;
-  font-size: 11px;
+  font-size: 13px;
   letter-spacing: 0.02em;
-  color: rgba(230, 241, 255, 0.55);
+  color: rgba(230, 241, 255, 0.72);
   transform: skewX(-8deg);
   position: relative;
-  padding: 0 4px;
+  padding: 0 6px;
   line-height: 1;
+  white-space: nowrap;
 }
 .powered-by-signature::before,
 .powered-by-signature::after {
   content: '';
   display: inline-block;
-  width: 10px;
+  width: 14px;
   height: 1px;
-  background: linear-gradient(90deg, transparent, rgba(0,229,255,0.5), transparent);
-  margin: 0 2px 2px;
+  background: linear-gradient(90deg, transparent, rgba(0,229,255,0.6), transparent);
+  margin: 0 2px 3px;
   vertical-align: middle;
 }
 .powered-by-signature .lc-brand {
   font-family: 'Great Vibes', 'Cormorant Garamond', cursive;
   font-style: normal;
-  font-size: 15px;
+  font-size: 20px;
   background: linear-gradient(135deg, #00E5FF 0%, #00BFFF 45%, #FF8A3D 100%);
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
   color: transparent;
-  filter: drop-shadow(0 0 6px rgba(0,229,255,0.4));
+  filter: drop-shadow(0 0 8px rgba(0,229,255,0.55)) drop-shadow(0 0 2px rgba(255,138,61,0.35));
   padding-left: 2px;
   letter-spacing: 0.01em;
+  line-height: 0.9;
 }
 
 /* =====================================================================

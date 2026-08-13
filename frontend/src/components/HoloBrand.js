@@ -27,14 +27,15 @@ export default function HoloBrand({ isPlaying = false, current = null, trackOver
   const state = useRef({ bass: 0, mid: 0, high: 0, phase: 0 });
 
   // 6 glyph indipendenti: R  -  A  .  I  .
-  // Ogni glyph è mappato ad un bin range dell'analyser.
+  // STILE: outline laser filiforme (weight leggero + text-stroke). I punti
+  // e il trattino sono più corposi per rimanere leggibili come simboli.
   const GLYPHS = [
-    { ch: "R",  band: [4, 12],   depthZ: 20,  color: "#00E5FF", weight: 900, size: 1.00 },
-    { ch: "-",  band: [8, 16],   depthZ: 10,  color: "#00BFFF", weight: 400, size: 0.55, mono: true },
-    { ch: "A",  band: [12, 22],  depthZ: 30,  color: "#E6F1FF", weight: 900, size: 1.00 },
-    { ch: ".",  band: [22, 40],  depthZ: 12,  color: "#FF8A3D", weight: 900, size: 0.55, dot: true },
-    { ch: "I",  band: [40, 70],  depthZ: 25,  color: "#00E5FF", weight: 900, size: 1.00 },
-    { ch: ".",  band: [60, 100], depthZ: 12,  color: "#FF8A3D", weight: 900, size: 0.55, dot: true },
+    { ch: "R",  band: [4, 12],   depthZ: 20,  color: "#00E5FF", weight: 300, size: 1.00, outline: true },
+    { ch: "-",  band: [8, 16],   depthZ: 10,  color: "#00E5FF", weight: 400, size: 0.60, outline: false, mono: true },
+    { ch: "A",  band: [12, 22],  depthZ: 30,  color: "#E6F1FF", weight: 300, size: 1.00, outline: true },
+    { ch: ".",  band: [22, 40],  depthZ: 12,  color: "#00E5FF", weight: 700, size: 0.55, outline: false, dot: true },
+    { ch: "I",  band: [40, 70],  depthZ: 25,  color: "#00E5FF", weight: 300, size: 1.00, outline: true },
+    { ch: ".",  band: [60, 100], depthZ: 12,  color: "#00E5FF", weight: 700, size: 0.55, outline: false, dot: true },
   ];
 
   useEffect(() => {
@@ -149,12 +150,11 @@ export default function HoloBrand({ isPlaying = false, current = null, trackOver
             <span
               key={i}
               ref={(el) => (glyphRefs.current[i] = el)}
-              className={`holo-glyph ${g.dot ? "is-dot" : ""} ${g.mono ? "is-mono" : ""}`}
+              className={`holo-glyph ${g.dot ? "is-dot" : ""} ${g.mono ? "is-mono" : ""} ${g.outline ? "is-outline" : "is-solid"}`}
               style={{
                 color: g.color,
                 fontWeight: g.weight,
                 fontSize: `${g.size * 100}%`,
-                // baseline per '-' e '.'
                 verticalAlign: g.dot ? "0.02em" : (g.mono ? "0.10em" : "baseline"),
               }}
             >
