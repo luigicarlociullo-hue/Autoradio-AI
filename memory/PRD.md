@@ -14,6 +14,44 @@ Vorrei costruire un software di gestione radiofonica completamente automatizzato
 - Auth: Emergent Google OAuth (free) for admin.
 
 ## What's implemented (2026-08 · v10 · Stability fixes)
+- **v12.11 · AUTONOMIA + REGIA NOTTURNA — 4 fasi complete** (2026-02, this session):
+
+  ### FASE 1 · Play First + Firma + Chat aperta + Main Partner
+  - **Firma "Powered by L&C Project"** mono-tech affianco al logo/label AI CONTROL ROOM.
+  - **Header e hero rimpiccioliti**: layout grid `lg:grid-cols-5` con visual (2 col) + Now Playing (3 col) → **PLAY sopra la piega** su desktop e mobile. Mini display LIVE/SEGS/DJ integrati al lato del PLAY.
+  - **Card Chat LED SEMPRE APERTA** (span md:col-span-2), fuori dal set CoverCard che espande al click. Le altre 3 card (Esperimento/Disco/Human vs AI) restano cover cinematografiche.
+  - **Nuovo modello backend `Partner`** (id, name, logo_url, link, description, active). Endpoints: `GET /api/partners/active` (pubblico), `GET/POST/PATCH/DELETE /api/admin/partners`.
+  - **`<MainPartnerSlot>`** in header: mostra il partner attivo con neon glow arancione+cyan, alterna ogni 8s se più di uno, cliccabile se link presente.
+  - **`<PartnersPanel>`** in Dashboard: form create/edit/delete + toggle attivo/OFF + preview logo.
+
+  ### FASE 2 · TTS Smart Routing
+  - Nuovo modo **`smart`** (default v12.11+) nel toggle admin TTS: ElevenLabs SOLO per `kind=='answer'` (risposte agli ascoltatori), OpenAI TTS-1-HD per tutti gli altri segmenti.
+  - `synth_speech()` in server.py + `_synth_elevenlabs()` in elevenlabs_service.py ora accettano parametro `kind` e leggono `station.state.tts_provider ∈ {smart, elevenlabs, openai}`.
+  - Endpoint `/api/admin/tts/provider` ora accetta 3 valori. UI in Regia Audio: 3 pill buttons Smart/11Labs/OpenAI con colori distinti.
+  - **Prompt anti-ripetizione DJ rinforzato**: buffer allargato a 20 intro recenti, blocco esplicito "non iniziare con le stesse 3 parole, cambia metafore, cambia struttura ritmica".
+
+  ### FASE 3 · Club Night 22:00-04:00
+  - **Campo `night_slot: Optional[int] ∈ {1,2,3}`** su `DJPersona`. Campo `is_night_jingle: bool` su `Track`.
+  - **Endpoint `PATCH /api/djs/{id}`** per aggiornare campi liberi (usato per night_slot).
+  - **Endpoint `PATCH /api/tracks/{id}/night-jingle`** per marcare/smarcare jingle notturni.
+  - **Scheduler backend** in `/api/segments/generate?hour_local=N`:
+    - hour ∈ [22-23] → slot 1
+    - hour ∈ [0-1]   → slot 2
+    - hour ∈ [2-3]   → slot 3
+    - hour ∈ [4-21]  → DJ diurni (esclude night_slot)
+  - **Jingle notturni**: `/api/jingles/random?hour_local=N` filtra `is_night_jingle=true` in Club Night, altrimenti solo diurni. Fallback su qualunque jingle se il set è vuoto.
+  - **Frontend passa `hour_local`** in `PublicRadio.js` (fuso browser dell'ascoltatore): a mezzogiorno CET LUMA suona in Giappone alle sue 20:00 ma NYX solo dopo le 22:00 giapponesi.
+  - **`scripts/seed_night_djs.py`**: genera 3 DJ notturni con avatar cyberpunk clubbing via Nano Banana (NYX slot 1 techno cinematica, HEX slot 2 industrial dark, LUMA slot 3 ambient afterhours). Salvati in `/app/frontend/public/djs/night-*.png`.
+  - **`ensure_seeded()` fix**: preserva i DJ con `night_slot` durante il purge (prima li cancellava).
+  - **`<NightDJsPanel>`** in Dashboard: 3 slot visuali con DJ assegnato + tabella completa con `<select>` slot 1/2/3/diurno + tasto "Cancella".
+
+  ### FASE 4 · Regia · Kill Switch + Delete Forever
+  - **`POST /api/admin/automation/kill-switch`** con payload `{enabled, stop_after_current}`: ferma la generazione automatica dei segmenti (mode=manual) con opzione stop dolce (finisce il segmento in corso).
+  - **`DELETE /api/admin/tracks/{id}`**: cancella definitivamente dalla DB + best-effort dei file locali (SUNO_AUDIO_DIR, AUDIO_DIR, COMMUNITY_AUDIO_DIR).
+  - **`<KillSwitchPanel>`** in Dashboard: display "AUTOMAZIONE ATTIVA / MANUALE · L'AI È FERMA" con colore switch (cyan/arancione glow), bottoni "Stop dolce" (esce con conferma dopo il segmento corrente) e "KILL SWITCH" (stop immediato). Conferme obbligatorie via `window.confirm`.
+  - **Colonna "Elimina" arancione** in TrackManagerPanel (chiama `endpoints.trackDelete`) + colonna "Notte" (toggle 🌙 NOTTE / ☀ Giorno per jingle).
+  - **Bottone "Elimina" arancione** in NightDJsPanel per ogni DJ (chiama `DELETE /djs/{id}`).
+  - Il `<CommunityPanel>` e `<PartnersPanel>` avevano già il delete: uniformati con `<Trash2>` arancione e conferma.
 - **v12.10 · COVER CARDS CINEMATOGRAFICHE — 4 immagini AI-native + expand on click** (2026-02, this session):
   - **Nuovo script** `backend/scripts/generate_card_covers.py`: usa `emergentintegrations` + `gemini-3.1-flash-image-preview` (Nano Banana) per generare in parallelo 4 cover 16:9 fotorealistiche coerenti con la palette console (blu elettrico + arancione ON AIR, no testo, no watermark).
   - **Immagini generate** salvate in `/app/frontend/public/cards/`:

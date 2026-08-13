@@ -62,4 +62,15 @@ export const endpoints = {
   ttsProviderSet: (provider) => api.patch("/admin/tts/provider", { provider }).then(r => r.data),
   dailyTrack: () => api.get("/tracks/daily").then(r => r.data),
   questionsRecent: (limit = 20) => api.get(`/questions/recent?limit=${limit}`).then(r => r.data),
+  // ----- Partner / Main Sponsor -----
+  partnersActive: () => api.get("/partners/active").then(r => r.data),
+  partnersList: () => api.get("/admin/partners").then(r => r.data),
+  partnerCreate: (payload) => api.post("/admin/partners", payload).then(r => r.data),
+  partnerUpdate: (id, payload) => api.patch(`/admin/partners/${id}`, payload).then(r => r.data),
+  partnerDelete: (id) => api.delete(`/admin/partners/${id}`).then(r => r.data),
+  // ----- Club Night + Regia -----
+  djPatch: (id, payload) => api.patch(`/djs/${id}`, payload).then(r => r.data),
+  trackDelete: (id) => api.delete(`/admin/tracks/${id}`).then(r => r.data),
+  trackNightJingle: (id, isNight) => api.patch(`/tracks/${id}/night-jingle`, { is_night_jingle: !!isNight }).then(r => r.data),
+  killSwitch: (enabled, stopAfterCurrent = false) => api.post("/admin/automation/kill-switch", { enabled: !!enabled, stop_after_current: !!stopAfterCurrent }).then(r => r.data),
 };

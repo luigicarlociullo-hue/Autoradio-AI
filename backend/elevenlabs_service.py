@@ -79,14 +79,23 @@ async def _synth_openai(text: str, voice_key: str) -> bytes | None:
         return None
 
 
-async def _synth_elevenlabs(text: str, voice_key: str) -> bytes | None:
-    """ElevenLabs primario (eleven_multilingual_v2). Ritorna bytes mp3 o None."""
+async def _synth_elevenlabs(text: str, voice_key: str, kind: str = "") -> bytes | None:
+    """ElevenLabs primario (eleven_multilingual_v2). Ritorna bytes mp3 o None.
+
+    Il parametro `kind` abilita il routing "smart" (default v12.11):
+      - Se station.tts_provider == 'smart' (o non impostato): usa ElevenLabs
+        SOLO quando kind == 'answer' (risposta a un ascoltatore). Per tutti
+        gli altri segmenti (music intro, news, meteo, etc.) ritorna None così
+        il fallback OpenAI TTS-1-HD entra in azione — molto più economico.
+      - Se station.tts_provider == 'elevenlabs': usa sempre ElevenLabs.
+      - Se station.tts_provider == 'openai': usa sempre OpenAI (return None).
+    """
     # KILL SWITCH (env, permanente): TTS_DISABLE_ELEVENLABS=true blocca sempre.
     if os.environ.get("TTS_DISABLE_ELEVENLABS", "").strip().lower() in ("1", "true", "yes"):
         logger.info("[TTS] ElevenLabs disabled by env kill-switch")
         return None
-    # SOFT SWITCH (runtime, dal Dashboard): station.state.tts_provider == "openai"
-    # → l'admin ha scelto di forzare OpenAI TTS-1-HD dal toggle in Regia Audio.
+    # SOFT SWITCH (runtime, dal Dashboard) — station.state.tts_provider
+    provider_mode = "smart"  # default v12.11+ = smart routing
     try:
         from motor.motor_asyncio import AsyncIOMotorClient
         _mongo_url = os.environ.get("MONGO_URL")
@@ -95,11 +104,19 @@ async def _synth_elevenlabs(text: str, voice_key: str) -> bytes | None:
             _client = AsyncIOMotorClient(_mongo_url)
             _st = await _client[_db_name].station.find_one({"_id": "state"}, {"tts_provider": 1})
             _client.close()
-            if _st and (_st.get("tts_provider") or "").lower() == "openai":
-                logger.info("[TTS] ElevenLabs disabled by admin toggle (station.state.tts_provider=openai)")
-                return None
+            if _st and _st.get("tts_provider"):
+                provider_mode = str(_st.get("tts_provider")).lower()
     except Exception:
         pass
+
+    if provider_mode == "openai":
+        logger.info("[TTS] ElevenLabs disabled by admin toggle (openai)")
+        return None
+    if provider_mode == "smart" and (kind or "").lower() != "answer":
+        # Riserva ElevenLabs solo alle risposte in diretta agli ascoltatori.
+        logger.info(f"[TTS] smart-mode: kind='{kind}' → OpenAI (ElevenLabs solo per 'answer')")
+        return None
+    # provider_mode == 'elevenlabs' oppure smart+answer → prosegui con ElevenLabs
     if not ELEVENLABS_API_KEY:
         return None
     voice_id = VOICE_KEY_TO_ELEVEN.get(voice_key, DEFAULT_ELEVEN_ID)
@@ -122,17 +139,18 @@ async def _synth_elevenlabs(text: str, voice_key: str) -> bytes | None:
         return None
 
 
-async def synth_speech(text: str, voice_key: str = "female-1") -> str | None:
+async def synth_speech(text: str, voice_key: str = "female-1", kind: str = "") -> str | None:
     """
     Genera TTS. Primario ElevenLabs, fallback OpenAI TTS-1-HD (Universal Key).
+    Il parametro `kind` abilita il routing "smart" (ElevenLabs solo per 'answer').
     Ritorna il filename dentro TTS_DIR, o None se entrambi falliscono.
     """
     if not text or not text.strip():
         return None
     text = text.strip()
 
-    # 1) ElevenLabs (primary — HD voice)
-    audio = await _synth_elevenlabs(text, voice_key)
+    # 1) ElevenLabs (primary — HD voice) — con smart-routing su kind
+    audio = await _synth_elevenlabs(text, voice_key, kind=kind)
     provider = "elevenlabs"
 
     # 2) Fallback OpenAI TTS-1-HD (only if ElevenLabs failed / not configured)

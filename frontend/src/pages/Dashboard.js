@@ -183,6 +183,12 @@ export default function Dashboard() {
           </div>
         </section>
 
+        {/* Kill Switch — automation OFF / ON con conferma */}
+        <KillSwitchPanel />
+
+        {/* Club Night — assegnazione night_slot ai DJ */}
+        <NightDJsPanel />
+
         {/* DB Sync — export/import tracks between preview and production */}
         <DbSyncPanel />
 
@@ -197,6 +203,8 @@ export default function Dashboard() {
 
         {/* Community "A.I. Vs Umani" — brani caricati dagli utenti */}
         <CommunityPanel />
+        {/* Main Partner / Sponsor slot */}
+        <PartnersPanel />
         {/* Manual Mode & Line-In Mixer */}
         <ManualModePanel />
 
@@ -1685,6 +1693,8 @@ function TrackManagerPanel() {
               <th className="px-3 py-2 font-mono w-24 text-center">In Onda</th>
               <th className="px-3 py-2 font-mono w-24 text-center">Download</th>
               <th className="px-3 py-2 font-mono w-28 text-center">Sostituisci</th>
+              <th className="px-3 py-2 font-mono w-24 text-center">Notte</th>
+              <th className="px-3 py-2 font-mono w-24 text-center">Elimina</th>
             </tr>
           </thead>
           <tbody>
@@ -1752,6 +1762,45 @@ function TrackManagerPanel() {
                     className="inline-flex items-center gap-1 px-3 py-1 rounded bg-pink-500/10 border border-pink-500/30 text-pink-300 text-xs hover:bg-pink-500/20 transition"
                   >
                     <Replace className="w-3 h-3" /> Sostituisci
+                  </button>
+                </td>
+                <td className="px-3 py-2 text-center">
+                  {t.kind === "jingle" && (
+                    <button
+                      data-testid={`night-jingle-${t.id.slice(0,8)}`}
+                      onClick={async () => {
+                        try {
+                          await endpoints.trackNightJingle(t.id, !t.is_night_jingle);
+                          toast.success(!t.is_night_jingle ? "Marcato jingle NOTTE" : "Rimosso dal set notte");
+                          load();
+                        } catch (e) { toast.error("Errore"); }
+                      }}
+                      className="inline-flex items-center gap-1 px-2 py-1 rounded text-[10px] font-mono uppercase border transition"
+                      style={t.is_night_jingle
+                        ? { background: "rgba(0,229,255,0.15)", borderColor: "rgba(0,229,255,0.5)", color: "#00E5FF" }
+                        : { background: "rgba(255,255,255,0.03)", borderColor: "rgba(255,255,255,0.1)", color: "#a1a1aa" }}
+                      title={t.is_night_jingle ? "Jingle notturno (22-04)" : "Marca come jingle notturno"}
+                    >
+                      {t.is_night_jingle ? "🌙 NOTTE" : "☀ Giorno"}
+                    </button>
+                  )}
+                </td>
+                <td className="px-3 py-2 text-center">
+                  <button
+                    data-testid={`delete-${t.id.slice(0,8)}`}
+                    onClick={async () => {
+                      if (!window.confirm(`Cancellare DEFINITIVAMENTE "${t.title || 'questa traccia'}"?\nQuesta azione è irreversibile.`)) return;
+                      try {
+                        await endpoints.trackDelete(t.id);
+                        toast.success("Traccia eliminata");
+                        load();
+                      } catch (e) { toast.error("Errore eliminazione"); }
+                    }}
+                    className="inline-flex items-center gap-1 px-2 py-1 rounded text-[10px] font-mono uppercase border transition"
+                    style={{ background: "rgba(255,107,26,0.10)", borderColor: "rgba(255,107,26,0.45)", color: "#FF8A3D" }}
+                    title="CANCELLA DEFINITIVAMENTE"
+                  >
+                    <Trash2 className="w-3 h-3" /> Cancella
                   </button>
                 </td>
               </tr>
@@ -2637,20 +2686,22 @@ function RegiaAudioPanel() {
       });
       setBeds(b.beds || []);
       setActiveBedUrl(b.active_bed_url || null);
-      setTtsProvider(t.provider || "elevenlabs");
+      setTtsProvider(t.provider || "smart");
     } catch (e) {
       toast.error("Impossibile caricare regia audio");
     }
   };
   useEffect(() => { load(); }, []);
 
-  const toggleProvider = async () => {
-    const next = ttsProvider === "elevenlabs" ? "openai" : "elevenlabs";
+  const setProvider = async (next) => {
     setTtsSaving(true);
     try {
       await endpoints.ttsProviderSet(next);
       setTtsProvider(next);
-      toast.success(`Sorgente voce ora: ${next === "elevenlabs" ? "ElevenLabs (HD premium)" : "OpenAI TTS-1-HD"}`);
+      const label = next === "elevenlabs" ? "ElevenLabs (sempre HD)"
+                  : next === "openai"     ? "OpenAI TTS-1-HD (sempre)"
+                  : "Smart · ElevenLabs solo per risposte";
+      toast.success(`Sorgente voce: ${label}`);
     } catch (e) {
       toast.error("Errore switch TTS");
     } finally {
@@ -2734,22 +2785,30 @@ function RegiaAudioPanel() {
             Mixer in tempo reale (aggiornamento <span className="text-pink-400">~2s</span>) · Crossfade dinamico · Sottofondi loop
           </div>
         </div>
-        {/* Switch sorgente voce (ElevenLabs ↔ OpenAI TTS-1-HD) */}
-        <div className="flex items-center gap-3 rounded-xl bg-black/30 border border-white/10 px-4 py-2" data-testid="tts-provider-toggle">
-          <div className="text-xs font-mono uppercase tracking-widest text-zinc-400">Sorgente voce</div>
-          <button
-            onClick={toggleProvider}
-            disabled={ttsSaving}
-            data-testid="tts-provider-button"
-            className={`relative flex items-center gap-2 text-xs font-bold px-3 py-1.5 rounded-full transition ${
-              ttsProvider === "elevenlabs"
-                ? "bg-pink-500 text-black hover:bg-pink-400"
-                : "bg-cyan-500 text-black hover:bg-cyan-400"
-            } ${ttsSaving ? "opacity-50" : ""}`}
-          >
-            {ttsProvider === "elevenlabs" ? "ElevenLabs (HD)" : "OpenAI TTS-1-HD"}
-          </button>
-          <span className="text-[10px] text-zinc-500 font-mono">click per switch</span>
+        {/* Switch sorgente voce (3 modi: smart / elevenlabs / openai) */}
+        <div className="flex items-center gap-2 rounded-xl bg-black/30 border border-white/10 px-3 py-2" data-testid="tts-provider-toggle">
+          <div className="text-[10px] font-mono uppercase tracking-widest text-zinc-400 mr-1">Voice</div>
+          {[
+            { k: "smart",      label: "Smart",      color: "#00E5FF", hint: "ElevenLabs solo per risposte" },
+            { k: "elevenlabs", label: "11Labs",     color: "#FF6B1A", hint: "Sempre ElevenLabs" },
+            { k: "openai",     label: "OpenAI",     color: "#00BFFF", hint: "Sempre OpenAI TTS-1-HD" },
+          ].map(opt => (
+            <button
+              key={opt.k}
+              onClick={() => setProvider(opt.k)}
+              disabled={ttsSaving}
+              data-testid={`tts-provider-${opt.k}`}
+              title={opt.hint}
+              className={`text-[11px] font-bold px-2.5 py-1 rounded-md transition font-mono uppercase tracking-widest ${ttsSaving ? "opacity-50" : ""}`}
+              style={
+                ttsProvider === opt.k
+                  ? { background: opt.color, color: "#000", boxShadow: `0 0 10px ${opt.color}88` }
+                  : { background: "transparent", color: opt.color, border: `1px solid ${opt.color}44` }
+              }
+            >
+              {opt.label}
+            </button>
+          ))}
         </div>
       </div>
 
@@ -2848,6 +2907,410 @@ function RegiaAudioPanel() {
             })}
           </div>
         )}
+      </div>
+    </section>
+  );
+}
+
+
+// ==================== PartnersPanel — Main Partner gestione ====================
+function PartnersPanel() {
+  const [partners, setPartners] = useState([]);
+  const [form, setForm] = useState({ name: "", logo_url: "", link: "", description: "", active: true });
+  const [busy, setBusy] = useState(false);
+  const [editId, setEditId] = useState(null);
+
+  const load = async () => {
+    try {
+      const r = await endpoints.partnersList();
+      setPartners(r?.partners || []);
+    } catch (e) {}
+  };
+  useEffect(() => { load(); }, []);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (!form.name.trim()) return;
+    setBusy(true);
+    try {
+      if (editId) {
+        await endpoints.partnerUpdate(editId, form);
+        toast.success("Partner aggiornato");
+      } else {
+        await endpoints.partnerCreate(form);
+        toast.success("Partner creato");
+      }
+      setForm({ name: "", logo_url: "", link: "", description: "", active: true });
+      setEditId(null);
+      await load();
+    } catch (e) {
+      toast.error("Errore salvataggio partner");
+    } finally { setBusy(false); }
+  };
+
+  const remove = async (id) => {
+    if (!window.confirm("Eliminare definitivamente questo partner?")) return;
+    try {
+      await endpoints.partnerDelete(id);
+      toast.success("Partner eliminato");
+      await load();
+    } catch (e) { toast.error("Errore eliminazione"); }
+  };
+
+  const toggleActive = async (p) => {
+    try {
+      await endpoints.partnerUpdate(p.id, { ...p, active: !p.active });
+      await load();
+    } catch (e) { toast.error("Errore"); }
+  };
+
+  return (
+    <section className="lg:col-span-4 card-surface p-6" data-testid="partners-panel">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+        <div>
+          <div className="label-mono flex items-center gap-2">
+            <Megaphone className="w-3.5 h-3.5" /> MAIN PARTNER · Slot dinamico
+          </div>
+          <h2 className="text-xl font-display font-bold mt-1">Sponsor / Partner in header</h2>
+          <p className="text-xs text-zinc-400 mt-1">Il primo partner attivo appare nell'header. Se ne attivi più di uno, ruotano ogni 8s.</p>
+        </div>
+      </div>
+
+      <form onSubmit={submit} className="grid gap-2 md:grid-cols-2 mb-4" data-testid="partner-form">
+        <input
+          data-testid="partner-name"
+          value={form.name}
+          onChange={(e) => setForm({ ...form, name: e.target.value })}
+          placeholder="Nome partner"
+          className="bg-black/40 border border-white/10 rounded px-3 py-2 text-sm"
+          required
+        />
+        <input
+          data-testid="partner-logo"
+          value={form.logo_url}
+          onChange={(e) => setForm({ ...form, logo_url: e.target.value })}
+          placeholder="URL logo (https://…)"
+          className="bg-black/40 border border-white/10 rounded px-3 py-2 text-sm font-mono"
+        />
+        <input
+          data-testid="partner-link"
+          value={form.link}
+          onChange={(e) => setForm({ ...form, link: e.target.value })}
+          placeholder="Link partner (https://…)"
+          className="bg-black/40 border border-white/10 rounded px-3 py-2 text-sm font-mono"
+        />
+        <input
+          data-testid="partner-description"
+          value={form.description}
+          onChange={(e) => setForm({ ...form, description: e.target.value })}
+          placeholder="Descrizione breve (max 80 char)"
+          maxLength={80}
+          className="bg-black/40 border border-white/10 rounded px-3 py-2 text-sm"
+        />
+        <div className="md:col-span-2 flex items-center gap-3">
+          <label className="flex items-center gap-2 text-xs font-mono uppercase tracking-widest text-zinc-400">
+            <input
+              type="checkbox"
+              data-testid="partner-active"
+              checked={form.active}
+              onChange={(e) => setForm({ ...form, active: e.target.checked })}
+            /> Attivo
+          </label>
+          <button
+            type="submit"
+            disabled={busy || !form.name.trim()}
+            className="btn-primary !text-xs !py-2 disabled:opacity-40"
+            data-testid="partner-save"
+          >
+            {editId ? "Aggiorna" : "Aggiungi"} partner
+          </button>
+          {editId && (
+            <button
+              type="button"
+              onClick={() => { setEditId(null); setForm({ name: "", logo_url: "", link: "", description: "", active: true }); }}
+              className="btn-outline !text-xs !py-2"
+            >
+              Annulla
+            </button>
+          )}
+        </div>
+      </form>
+
+      {partners.length === 0 ? (
+        <div className="text-xs font-mono text-zinc-500 italic border border-dashed border-white/10 rounded p-4 text-center">
+          Nessun partner registrato. Il primo che aggiungi e attivi apparirà nell'header pubblico.
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {partners.map(p => (
+            <div
+              key={p.id}
+              className="flex flex-wrap items-center gap-3 rounded-lg p-3"
+              style={{
+                background: p.active ? "rgba(0,191,255,0.05)" : "rgba(0,0,0,0.35)",
+                border: `1px solid ${p.active ? "rgba(0,191,255,0.35)" : "rgba(255,255,255,0.08)"}`,
+              }}
+              data-testid={`partner-row-${p.id}`}
+            >
+              {p.logo_url && <img src={p.logo_url} alt={p.name} className="h-8 max-w-[80px] object-contain" />}
+              <div className="flex-1 min-w-0">
+                <div className="font-display font-bold text-sm truncate">{p.name}</div>
+                {p.description && <div className="text-[10px] font-mono text-zinc-400 truncate">{p.description}</div>}
+                {p.link && <div className="text-[10px] font-mono text-cyan-500 truncate">{p.link}</div>}
+              </div>
+              <button
+                onClick={() => toggleActive(p)}
+                data-testid={`partner-toggle-${p.id}`}
+                className="text-[10px] font-mono uppercase tracking-widest px-2 py-1 rounded"
+                style={{
+                  color: p.active ? "#00E5FF" : "#71717a",
+                  border: `1px solid ${p.active ? "rgba(0,229,255,0.4)" : "rgba(255,255,255,0.1)"}`,
+                }}
+              >
+                {p.active ? "ON AIR" : "OFF"}
+              </button>
+              <button
+                onClick={() => { setEditId(p.id); setForm({ name: p.name, logo_url: p.logo_url || "", link: p.link || "", description: p.description || "", active: p.active }); }}
+                data-testid={`partner-edit-${p.id}`}
+                className="text-[10px] font-mono uppercase tracking-widest px-2 py-1 rounded border border-white/10 text-zinc-300"
+              >
+                Modifica
+              </button>
+              <button
+                onClick={() => remove(p.id)}
+                data-testid={`partner-delete-${p.id}`}
+                className="text-[10px] font-mono uppercase tracking-widest px-2 py-1 rounded"
+                style={{ color: "#FF6B1A", border: "1px solid rgba(255,107,26,0.45)" }}
+                title="Elimina definitivamente"
+              >
+                <Trash2 className="w-3 h-3 inline mr-1" /> Elimina
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+
+// ==================== KillSwitchPanel — Automation ON/OFF ====================
+function KillSwitchPanel() {
+  const [mode, setMode] = useState("auto");
+  const [busy, setBusy] = useState(false);
+
+  const load = async () => {
+    try {
+      const r = await api.get("/station/mode");
+      setMode(r.data?.mode || "auto");
+    } catch (e) {}
+  };
+  useEffect(() => { load(); const iv = setInterval(load, 4000); return () => clearInterval(iv); }, []);
+
+  const setKill = async (enabled, stopAfter) => {
+    if (!enabled) {
+      const msg = stopAfter
+        ? "Vuoi fermare l'automazione DOPO il segmento corrente?\nLa radio andrà in modalità MANUALE."
+        : "Vuoi fermare l'automazione IMMEDIATAMENTE?\nLa radio andrà in modalità MANUALE all'istante.";
+      if (!window.confirm(msg)) return;
+    }
+    setBusy(true);
+    try {
+      await endpoints.killSwitch(enabled, stopAfter);
+      setMode(enabled ? "auto" : "manual");
+      toast.success(enabled ? "Automazione ON — programmazione normale" : "Automazione OFF — controllo manuale");
+    } catch (e) { toast.error("Errore kill switch"); }
+    finally { setBusy(false); }
+  };
+
+  const isAuto = mode === "auto";
+  return (
+    <section
+      className="lg:col-span-4 rounded-xl p-5 relative"
+      data-testid="kill-switch-panel"
+      style={{
+        background: isAuto
+          ? "linear-gradient(180deg, rgba(0,229,255,0.08), rgba(0,10,20,0.7))"
+          : "linear-gradient(180deg, rgba(255,107,26,0.12), rgba(20,4,0,0.85))",
+        border: `1px solid ${isAuto ? "rgba(0,229,255,0.35)" : "rgba(255,107,26,0.55)"}`,
+        boxShadow: isAuto ? "0 0 22px rgba(0,229,255,0.15)" : "0 0 30px rgba(255,107,26,0.35)",
+      }}
+    >
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <div className="label-mono flex items-center gap-2" style={{ color: isAuto ? "#00E5FF" : "#FF8A3D" }}>
+            <Power className="w-3.5 h-3.5" /> AUTOMATION KILL SWITCH
+          </div>
+          <div className="font-display font-black text-2xl mt-1" style={{ color: isAuto ? "#E6F1FF" : "#FF8A3D", textShadow: isAuto ? "0 0 8px rgba(0,229,255,0.4)" : "0 0 10px rgba(255,107,26,0.6)" }}>
+            {isAuto ? "AUTOMAZIONE ATTIVA" : "MANUALE · L'AI È FERMA"}
+          </div>
+          <div className="text-xs font-mono text-zinc-400 mt-1">
+            {isAuto ? "La radio genera segmenti in autonomia." : "Tu decidi ogni segmento. Nessuna generazione automatica finché non riaccendi."}
+          </div>
+        </div>
+        <div className="flex gap-2 flex-wrap">
+          {isAuto ? (
+            <>
+              <button
+                onClick={() => setKill(false, true)}
+                disabled={busy}
+                data-testid="kill-graceful"
+                className="btn-outline !text-xs flex items-center gap-2"
+                title="Ferma dopo il segmento corrente"
+              >
+                <PauseCircle className="w-4 h-4" /> Stop dolce
+              </button>
+              <button
+                onClick={() => setKill(false, false)}
+                disabled={busy}
+                data-testid="kill-hard"
+                className="!text-xs flex items-center gap-2 font-bold uppercase tracking-widest px-4 py-2 rounded-md"
+                style={{ background: "linear-gradient(180deg, #FF8A3D, #E24E00)", color: "#180800", boxShadow: "0 0 20px rgba(255,107,26,0.6)" }}
+              >
+                <Power className="w-4 h-4" /> KILL SWITCH
+              </button>
+            </>
+          ) : (
+            <button
+              onClick={() => setKill(true, false)}
+              disabled={busy}
+              data-testid="kill-resume"
+              className="btn-primary !text-sm flex items-center gap-2"
+            >
+              <PlayCircle className="w-4 h-4" /> Riavvia automazione
+            </button>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// ==================== NightDJsPanel — Assegnazione slot 22-04 ====================
+function NightDJsPanel() {
+  const [djs, setDjs] = useState([]);
+  const [busy, setBusy] = useState(false);
+
+  const load = async () => {
+    try {
+      const r = await endpoints.djs();
+      setDjs(r || []);
+    } catch (e) {}
+  };
+  useEffect(() => { load(); }, []);
+
+  const setSlot = async (id, slot) => {
+    setBusy(true);
+    try {
+      await endpoints.djPatch(id, { night_slot: slot });
+      await load();
+      toast.success(slot ? `Slot ${slot} assegnato` : "Slot rimosso (DJ diurno)");
+    } catch (e) { toast.error("Errore"); }
+    finally { setBusy(false); }
+  };
+
+  const deleteDj = async (id, name) => {
+    if (!window.confirm(`Cancellare DEFINITIVAMENTE il DJ "${name}"?\nQuesta azione è irreversibile.`)) return;
+    try {
+      await api.delete(`/djs/${id}`);
+      await load();
+      toast.success("DJ eliminato");
+    } catch (e) { toast.error("Errore"); }
+  };
+
+  const SLOT_LABELS = {
+    1: "22:00-00:00",
+    2: "00:00-02:00",
+    3: "02:00-04:00",
+  };
+  const dayDjs = djs.filter(d => !d.night_slot);
+  const nightDjs = djs.filter(d => d.night_slot);
+
+  return (
+    <section className="lg:col-span-4 card-surface p-6" data-testid="night-djs-panel">
+      <div className="flex items-start justify-between mb-4 flex-wrap gap-3">
+        <div>
+          <div className="label-mono flex items-center gap-2"><Mic className="w-3.5 h-3.5" /> CLUB NIGHT · Fasce 22:00-04:00</div>
+          <h3 className="text-xl font-display font-bold mt-1">DJ notturni · palinsesto club</h3>
+          <p className="text-xs text-zinc-400 mt-1">Ogni slot di 2 ore ha 1 DJ dedicato. Alle 04:00 torna il palinsesto diurno.</p>
+        </div>
+      </div>
+
+      {/* 3 slot notturni */}
+      <div className="grid md:grid-cols-3 gap-3 mb-5">
+        {[1,2,3].map(slot => {
+          const dj = nightDjs.find(d => d.night_slot === slot);
+          return (
+            <div
+              key={slot}
+              className="rounded-lg p-3"
+              style={{
+                background: "linear-gradient(180deg, rgba(0,20,40,0.7), rgba(2,4,10,0.9))",
+                border: "1px solid rgba(0,191,255,0.35)",
+                boxShadow: "inset 0 0 14px rgba(0,191,255,0.15)",
+              }}
+              data-testid={`night-slot-${slot}`}
+            >
+              <div className="label-mono text-cyan-300">SLOT {slot} · {SLOT_LABELS[slot]}</div>
+              {dj ? (
+                <div className="mt-2 flex items-center gap-3">
+                  {dj.avatar_url && <img src={dj.avatar_url} alt={dj.name} className="w-12 h-12 rounded object-cover" style={{ boxShadow: `0 0 12px ${dj.accent_color}88` }} />}
+                  <div className="flex-1 min-w-0">
+                    <div className="font-display font-black" style={{ color: dj.accent_color }}>{dj.name}</div>
+                    <div className="text-[10px] font-mono text-zinc-400 truncate">{dj.llm_provider}</div>
+                  </div>
+                  <button
+                    onClick={() => setSlot(dj.id, null)}
+                    disabled={busy}
+                    className="text-[10px] font-mono uppercase px-2 py-1 rounded border border-white/10 text-zinc-400 hover:text-white"
+                    title="Rimuovi da questo slot"
+                  >×</button>
+                </div>
+              ) : (
+                <div className="mt-2 text-[10px] font-mono text-zinc-500 italic">Slot vuoto — assegna un DJ qui sotto</div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Tabella DJ per assegnazione */}
+      <div className="space-y-1">
+        {djs.map(dj => (
+          <div
+            key={dj.id}
+            className="flex items-center gap-3 rounded p-2"
+            style={{ background: dj.night_slot ? "rgba(0,191,255,0.06)" : "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)" }}
+            data-testid={`dj-row-${dj.name}`}
+          >
+            {dj.avatar_url && <img src={dj.avatar_url} alt={dj.name} className="w-8 h-8 rounded object-cover" />}
+            <div className="flex-1 min-w-0">
+              <div className="font-display font-bold text-sm truncate" style={{ color: dj.accent_color }}>{dj.name}</div>
+              <div className="text-[10px] font-mono text-zinc-500 truncate">{dj.llm_provider}/{dj.llm_model}</div>
+            </div>
+            <select
+              value={dj.night_slot || ""}
+              onChange={(e) => setSlot(dj.id, e.target.value ? parseInt(e.target.value, 10) : null)}
+              disabled={busy}
+              className="bg-black/60 border border-white/10 rounded px-2 py-1 text-xs font-mono"
+              data-testid={`dj-slot-select-${dj.name}`}
+            >
+              <option value="">Diurno (no slot)</option>
+              <option value="1">Slot 1 · 22-00</option>
+              <option value="2">Slot 2 · 00-02</option>
+              <option value="3">Slot 3 · 02-04</option>
+            </select>
+            <button
+              onClick={() => deleteDj(dj.id, dj.name)}
+              className="text-[10px] font-mono uppercase tracking-widest px-2 py-1 rounded"
+              style={{ color: "#FF6B1A", border: "1px solid rgba(255,107,26,0.4)" }}
+              data-testid={`dj-delete-${dj.name}`}
+              title="CANCELLA DEFINITIVAMENTE"
+            >
+              <Trash2 className="w-3 h-3 inline mr-1" /> Elimina
+            </button>
+          </div>
+        ))}
       </div>
     </section>
   );

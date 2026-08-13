@@ -26,11 +26,13 @@ import elevenlabs_service
 import object_storage
 
 
-async def synth_speech(text: str, voice_key: str = "female-1"):
+async def synth_speech(text: str, voice_key: str = "female-1", kind: str = ""):
     """Preferred TTS pipeline: ElevenLabs first (best Italian quality), then Bark as fallback.
+    `kind` viene passato al layer ElevenLabs per il routing "smart" (usa
+    ElevenLabs solo per kind='answer', OpenAI TTS-1-HD per il resto).
     Returns (filename, subpath) where subpath is 'tts' or 'audio' for URL routing."""
     if elevenlabs_service.is_enabled():
-        fn = await elevenlabs_service.synth_speech(text, voice_key)
+        fn = await elevenlabs_service.synth_speech(text, voice_key, kind=kind)
         if fn:
             return fn, "tts"
     # fallback to Bark HF space (open-source)
@@ -133,6 +135,8 @@ class DJPersona(BaseModel):
     llm_model: str = "gpt-5.2"
     avatar_url: Optional[str] = None
     accent_color: str = "#FF1493"
+    # Club Night (v12.11+): 1 = 22-00, 2 = 00-02, 3 = 02-04. Null = DJ diurno normale.
+    night_slot: Optional[int] = None
     created_at: str = Field(default_factory=now_iso)
 
 
@@ -144,6 +148,7 @@ class DJCreate(BaseModel):
     llm_model: str = "gpt-5.2"
     avatar_url: Optional[str] = None
     accent_color: str = "#FF1493"
+    night_slot: Optional[int] = None
 
 
 class Track(BaseModel):
@@ -164,6 +169,7 @@ class Track(BaseModel):
     is_anthem: bool = False               # official R-A.I. anthem — played periodically as jingle
     is_daily: bool = False                # "Disco del giorno" — rotazione mattutina
     is_jingle: bool = False               # short R-A.I. station jingle — played between segments
+    is_night_jingle: bool = False         # jingle notturno (Club Night 22-04) — set separato
     on_air: bool = True                   # admin toggle: if False, excluded from rotation
     suno_task_id: Optional[str] = None
     status: Literal["ready", "pending", "failed", "retired", "disabled"] = "ready"
@@ -472,10 +478,14 @@ DEFAULT_DJS = [
 
 
 async def ensure_seeded():
-    # Il roster ora ha 3 DJ soli (Leo/Aria/Max). Purge attivo dei DJ vecchi
-    # che non fanno più parte del roster ufficiale.
+    # Il roster diurno ha 3 DJ (Leo/Aria/Max). Purge dei DJ vecchi che non
+    # sono più nel roster ufficiale, MA preserva i DJ notturni (night_slot
+    # in [1,2,3]) — quelli sono gestiti separatamente dal seed_night_djs.py.
     default_names = {d["name"] for d in DEFAULT_DJS}
-    await db.djs.delete_many({"name": {"$nin": list(default_names)}})
+    await db.djs.delete_many({
+        "name": {"$nin": list(default_names)},
+        "$or": [{"night_slot": None}, {"night_slot": {"$exists": False}}],
+    })
     # Assicura che i 3 DJ ufficiali esistano (idempotente).
     for d in DEFAULT_DJS:
         existing = await db.djs.find_one({"name": d["name"]})
@@ -594,6 +604,43 @@ async def create_dj(payload: DJCreate):
 async def delete_dj(dj_id: str):
     await db.djs.delete_one({"id": dj_id})
     return {"ok": True}
+
+
+@api_router.patch("/djs/{dj_id}")
+async def patch_dj(dj_id: str, payload: dict):
+    """Aggiorna campi liberi del DJ (usato per assegnare night_slot, cambiare
+    personality, ecc.). Ritorna il DJ aggiornato."""
+    allowed = {"name", "personality", "voice_key", "llm_provider", "llm_model",
+               "avatar_url", "accent_color", "night_slot"}
+    updates = {k: v for k, v in payload.items() if k in allowed}
+    if "night_slot" in updates:
+        v = updates["night_slot"]
+        if v in ("", None, 0):
+            updates["night_slot"] = None
+        else:
+            try:
+                updates["night_slot"] = int(v)
+                if updates["night_slot"] not in (1, 2, 3):
+                    updates["night_slot"] = None
+            except Exception:
+                updates["night_slot"] = None
+    if not updates:
+        raise HTTPException(400, "No valid fields to update")
+    r = await db.djs.update_one({"id": dj_id}, {"$set": updates})
+    if r.matched_count == 0:
+        raise HTTPException(404, "DJ not found")
+    dj = await db.djs.find_one({"id": dj_id}, {"_id": 0})
+    return dj
+
+
+@api_router.patch("/tracks/{track_id}/night-jingle")
+async def toggle_night_jingle(track_id: str, payload: dict):
+    """Marca/smarca un jingle come 'notturno' (Club Night 22-04)."""
+    is_night = bool(payload.get("is_night_jingle"))
+    r = await db.tracks.update_one({"id": track_id, "is_jingle": True}, {"$set": {"is_night_jingle": is_night}})
+    if r.matched_count == 0:
+        raise HTTPException(404, "Jingle not found")
+    return {"ok": True, "is_night_jingle": is_night}
 
 
 # ----------------------- Station -----------------------
@@ -1324,6 +1371,70 @@ async def admin_toggle_on_air(track_id: str, on_air: bool = Form(...)):
     return {"ok": True, "track_id": track_id, "on_air": bool(on_air)}
 
 
+@api_router.delete("/admin/tracks/{track_id}")
+async def admin_delete_track(track_id: str):
+    """CANCELLA DEFINITIVAMENTE una traccia dal magazzino (musica, jingle,
+    anthem, disco del giorno). Elimina il record DB e — best-effort — il file
+    locale. Irreversibile."""
+    t = await db.tracks.find_one({"id": track_id})
+    if not t:
+        raise HTTPException(404, "Track non trovata")
+    audio_url = t.get("audio_url") or ""
+    if audio_url and audio_url.startswith("/api/"):
+        try:
+            parts = audio_url.split("/")
+            if len(parts) >= 4:
+                subdir = parts[2]
+                fname = parts[3]
+                base = None
+                if subdir == "suno_audio":
+                    base = SUNO_AUDIO_DIR
+                elif subdir == "audio":
+                    base = AUDIO_DIR
+                elif subdir == "community_audio":
+                    base = COMMUNITY_AUDIO_DIR
+                if base:
+                    fp = Path(base) / fname
+                    if fp.exists():
+                        fp.unlink()
+        except Exception as e:
+            logger.warning(f"Track file cleanup failed for {track_id}: {e}")
+    await db.tracks.delete_one({"id": track_id})
+    return {"ok": True, "deleted": track_id}
+
+
+@api_router.post("/admin/automation/kill-switch")
+async def admin_kill_switch(payload: dict):
+    """Attiva/disattiva l'automazione con un unico interruttore.
+    Payload: {"enabled": true|false, "stop_after_current": true|false}
+      - enabled=false → passa in 'manual'. Se stop_after_current=true, la
+        radio finisce il segmento corrente prima di fermarsi.
+      - enabled=true  → torna in 'auto' (programmazione normale)."""
+    enabled = bool(payload.get("enabled"))
+    stop_after = bool(payload.get("stop_after_current", False))
+    mode = "auto" if enabled else "manual"
+    doc = await db.station.find_one({"_id": "state"}) or {}
+    seq = int(doc.get("command_seq") or 0) + 1
+    now = now_iso()
+    cmd = {
+        "type": "kill_switch",
+        "enabled": enabled,
+        "mode": mode,
+        "stop_after_current": stop_after,
+        "seq": seq,
+        "issued_at": now,
+    }
+    updates = {
+        "mode": mode,
+        "last_command": cmd,
+        "command_seq": seq,
+        "command_updated_at": now,
+        "pending_graceful_stop": (not enabled) and stop_after,
+    }
+    await db.station.update_one({"_id": "state"}, {"$set": updates}, upsert=True)
+    return {"ok": True, "enabled": enabled, "mode": mode, "seq": seq}
+
+
 # ----------------------- Admin: rotation rules -----------------------
 @api_router.get("/admin/rotation-rules")
 async def admin_get_rotation_rules():
@@ -1785,18 +1896,38 @@ async def library_seed_list():
 
 
 @api_router.get("/jingles/random")
-async def jingles_random():
-    """Restituisce un jingle R-A.I. random tra quelli marcati is_jingle=True.
+async def jingles_random(hour_local: Optional[int] = None):
+    """Restituisce un jingle R-A.I. random. Se ora ∈ [22-04] preferisce
+    jingle notturni (is_night_jingle=true) altrimenti solo jingle diurni.
     Usato dal frontend per riempire le transizioni tra segmenti diversi."""
-    # Round-robin sui jingle: prendi 20 candidati e sceglie random
-    docs = await db.tracks.find(
-        {"is_jingle": True, "status": "ready", "audio_url": {"$ne": None}},
-        {"_id": 0},
-        sort=[("last_played_at", 1)],
-    ).to_list(20)
+    # Determina se siamo in Club Night
+    def _is_night(h: Optional[int]) -> bool:
+        if h is None:
+            try:
+                import datetime as _dt
+                h = _dt.datetime.now().hour
+            except Exception:
+                return False
+        h = int(h) % 24
+        return h >= 22 or h <= 3
+
+    is_night = _is_night(hour_local)
+    # Query base: jingle diurno o notturno in base alla fascia
+    if is_night:
+        query = {"is_jingle": True, "is_night_jingle": True, "status": "ready", "audio_url": {"$ne": None}}
+    else:
+        query = {"is_jingle": True, "$or": [{"is_night_jingle": {"$ne": True}}, {"is_night_jingle": {"$exists": False}}], "status": "ready", "audio_url": {"$ne": None}}
+
+    docs = await db.tracks.find(query, {"_id": 0}, sort=[("last_played_at", 1)]).to_list(20)
+    # Fallback: se non ci sono jingle nel set richiesto, usa qualunque jingle
+    if not docs:
+        docs = await db.tracks.find(
+            {"is_jingle": True, "status": "ready", "audio_url": {"$ne": None}},
+            {"_id": 0},
+            sort=[("last_played_at", 1)],
+        ).to_list(20)
     if not docs:
         return {"jingle": None}
-    # Pick random tra i 5 meno recenti per varietà
     pool = docs[:5] if len(docs) >= 5 else docs
     chosen = random.choice(pool)
     await db.tracks.update_one(
@@ -1876,7 +2007,17 @@ async def list_segments(limit: int = 30):
 
 
 @api_router.post("/segments/generate", response_model=Segment)
-async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = None, question_id: Optional[str] = None, hd: bool = False):
+async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = None, question_id: Optional[str] = None, hd: bool = False, hour_local: Optional[int] = None):
+    """Genera il prossimo segmento radio.
+
+    `hour_local` (0-23) è l'ora del BROWSER dell'ascoltatore. Il frontend la
+    passa per attivare la Club Night (22-04) sul suo fuso locale:
+      - 22:00-23:59 → slot 1
+      -  0:00-01:59 → slot 2
+      -  2:00-03:59 → slot 3
+      -  4:00-21:59 → programmazione normale (diurna)
+    Se hour_local è None ricadiamo sull'ora server (Europe/Rome).
+    """
     await ensure_seeded()
 
     # Ad rotation: ~1 out of every 5 segments becomes an ad if there is any
@@ -2132,6 +2273,35 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
     djs = await db.djs.find({}, {"_id": 0}).to_list(20)
     if not djs:
         raise HTTPException(400, "No DJs configured")
+
+    # ==================== CLUB NIGHT (22:00-04:00) ====================
+    # Determina slot notturno dall'ora locale del browser (query param) o dall'ora server.
+    def _night_slot(h: Optional[int]) -> Optional[int]:
+        if h is None:
+            try:
+                import datetime as _dt
+                h = _dt.datetime.now().hour  # fuso server (Europe/Rome via TZ env)
+            except Exception:
+                return None
+        h = int(h) % 24
+        if 22 <= h <= 23: return 1
+        if  0 <= h <=  1: return 2
+        if  2 <= h <=  3: return 3
+        return None  # programmazione diurna
+
+    active_slot = _night_slot(hour_local)
+    if active_slot is not None:
+        night_djs = [d for d in djs if int(d.get("night_slot") or 0) == active_slot]
+        if night_djs:
+            djs = night_djs  # se abbiamo un DJ per lo slot, usiamo solo quello
+    else:
+        # Programmazione diurna: escludi i DJ night-only dal pool
+        djs = [d for d in djs if not d.get("night_slot")]
+        if not djs:
+            djs = await db.djs.find({"night_slot": None}, {"_id": 0}).to_list(20)
+            if not djs:
+                djs = await db.djs.find({}, {"_id": 0}).to_list(20)
+
     dj = random.choice(djs)
     provider = dj.get("llm_provider", "openai")
     model = dj.get("llm_model", "gpt-5.2")
@@ -2295,14 +2465,19 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
         bpm_match = _re.search(r"(\d{2,3})\s*bpm", track.genre or "", _re.IGNORECASE)
         bpm = bpm_match.group(1) if bpm_match else "128"
 
-        recent = await get_recent_intros(10)
+        recent = await get_recent_intros(20)
         recent_block = ""
         if recent:
             joined = "\n".join(f"- \"{r}\"" for r in recent)
             recent_block = (
-                "\n\nEVITA di ripetere le ultime frasi che hai già detto — cambia radicalmente parole, "
-                "immagini e ritmo. Sorprendi. Sii imprevedibile. NON usare mai le stesse parole di apertura "
-                f"due volte di fila. Ecco le ultime frasi (NON RIUSARE nulla di simile):\n{joined}"
+                "\n\n=== ANTI-RIPETIZIONE (CRITICO) ===\n"
+                "Le frasi qui sotto sono i tuoi ultimi 20 interventi. NON puoi:\n"
+                "1. Iniziare con le stesse 3 parole di nessuna di esse.\n"
+                "2. Usare le stesse metafore o immagini.\n"
+                "3. Ricalcare la stessa struttura ritmica.\n"
+                "Ogni intervento deve essere RADICALMENTE diverso: cambia registro, ritmo, angolazione.\n"
+                f"ULTIME FRASI (NON riusare NULLA di simile):\n{joined}\n"
+                "=== FINE ANTI-RIPETIZIONE ==="
             )
         tone_intro = random.choice(DJ_TONES)
         prompt = (
@@ -2631,13 +2806,13 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
     # HD quality across every segment, not only when hd=true is explicitly requested.
     if elevenlabs_service.is_enabled() and segment.script:
         try:
-            fn, subpath = await synth_speech(segment.script, segment.voice_key or "female-1")
+            fn, subpath = await synth_speech(segment.script, segment.voice_key or "female-1", kind=segment.kind or "")
             if fn:
                 segment.speech_audio_url = f"/api/{subpath}/{fn}"
                 update = {"speech_audio_url": segment.speech_audio_url}
                 # For music segments, also render outro
                 if segment.kind == "music" and segment.outro_script:
-                    of, os_ = await synth_speech(segment.outro_script, segment.voice_key or "female-1")
+                    of, os_ = await synth_speech(segment.outro_script, segment.voice_key or "female-1", kind=segment.kind)
                     if of:
                         segment.outro_speech_url = f"/api/{os_}/{of}"
                         update["outro_speech_url"] = segment.outro_speech_url
@@ -2780,7 +2955,7 @@ async def _generate_answer_background(qid: str, question_text: str, listener_nam
                 return
 
             # ---- TTS ElevenLabs (indipendente da Universal Key) ----
-            audio_fname, audio_subpath = await synth_speech(answer_text, voice_key)
+            audio_fname, audio_subpath = await synth_speech(answer_text, voice_key, kind="answer")
             if not audio_fname:
                 logger.error(f"[Q&A] TTS failed for qid={qid}")
                 await db.questions.update_one({"id": qid}, {"$set": {"processing_status": "failed"}})
@@ -3438,16 +3613,21 @@ async def get_station_mix():
 @api_router.get("/admin/tts/provider")
 async def get_tts_provider():
     st = await db.station.find_one({"_id": "state"}) or {}
-    return {"provider": (st.get("tts_provider") or "elevenlabs").lower()}
+    # Default v12.11+: smart (ElevenLabs solo per answer)
+    return {"provider": (st.get("tts_provider") or "smart").lower()}
 
 
 @api_router.patch("/admin/tts/provider")
 async def set_tts_provider(payload: dict):
-    """Toggle runtime della sorgente voce (default: elevenlabs).
-    Accetta {'provider': 'elevenlabs'|'openai'}."""
+    """Toggle runtime della sorgente voce.
+    Accetta {'provider': 'elevenlabs'|'openai'|'smart'}.
+    - 'elevenlabs' : sempre ElevenLabs HD
+    - 'openai'     : sempre OpenAI TTS-1-HD (Universal Key)
+    - 'smart'      : ElevenLabs SOLO per le risposte agli ascoltatori (kind=answer),
+                     OpenAI TTS-1-HD per tutti gli altri segmenti (default)."""
     prov = (payload.get("provider") or "").lower().strip()
-    if prov not in ("elevenlabs", "openai"):
-        raise HTTPException(400, "provider deve essere 'elevenlabs' o 'openai'")
+    if prov not in ("elevenlabs", "openai", "smart"):
+        raise HTTPException(400, "provider deve essere 'elevenlabs', 'openai' o 'smart'")
     await db.station.update_one({"_id": "state"}, {"$set": {"tts_provider": prov}}, upsert=True)
     return {"ok": True, "provider": prov}
 
@@ -3682,6 +3862,65 @@ async def render_segment_hd(seg_id: str):
         logger.error(f"HD render failed for {seg_id}: {e}")
         await db.segments.update_one({"id": seg_id}, {"$set": {"hd_status": "failed"}})
         raise HTTPException(500, str(e))
+
+
+# ----------------------- Partner / Sponsor -----------------------
+class Partner(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    name: str
+    logo_url: Optional[str] = None
+    link: Optional[str] = None
+    description: Optional[str] = None
+    active: bool = True
+    created_at: str = Field(default_factory=now_iso)
+
+
+class PartnerCreate(BaseModel):
+    name: str
+    logo_url: Optional[str] = None
+    link: Optional[str] = None
+    description: Optional[str] = None
+    active: bool = True
+
+
+@api_router.get("/partners/active")
+async def get_active_partners():
+    """Ritorna i partner attivi in ordine di creazione. Endpoint pubblico."""
+    partners = await db.partners.find({"active": True}, {"_id": 0}).sort("created_at", 1).to_list(length=20)
+    return {"partners": partners}
+
+
+@api_router.get("/admin/partners")
+async def admin_list_partners():
+    partners = await db.partners.find({}, {"_id": 0}).sort("created_at", 1).to_list(length=100)
+    return {"partners": partners}
+
+
+@api_router.post("/admin/partners")
+async def admin_create_partner(payload: PartnerCreate):
+    p = Partner(**payload.dict())
+    await db.partners.insert_one(p.dict())
+    return p
+
+
+@api_router.patch("/admin/partners/{partner_id}")
+async def admin_update_partner(partner_id: str, payload: PartnerCreate):
+    r = await db.partners.update_one(
+        {"id": partner_id},
+        {"$set": {k: v for k, v in payload.dict().items() if v is not None or k == "active"}},
+    )
+    if r.matched_count == 0:
+        raise HTTPException(404, "Partner not found")
+    p = await db.partners.find_one({"id": partner_id}, {"_id": 0})
+    return p
+
+
+@api_router.delete("/admin/partners/{partner_id}")
+async def admin_delete_partner(partner_id: str):
+    r = await db.partners.delete_one({"id": partner_id})
+    if r.deleted_count == 0:
+        raise HTTPException(404, "Partner not found")
+    return {"deleted": partner_id}
 
 
 # ----------------------- Utility -----------------------

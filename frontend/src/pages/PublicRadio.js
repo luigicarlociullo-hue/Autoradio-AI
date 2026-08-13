@@ -235,7 +235,10 @@ export default function PublicRadio() {
     const fetchSegmentSafe = async () => {
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          const seg = await endpoints.generateSegment(hdMode ? { hd: true } : {});
+          const hourLocal = new Date().getHours();  // 0-23, browser locale (Club Night 22-04)
+          const params = { hour_local: hourLocal };
+          if (hdMode) params.hd = true;
+          const seg = await endpoints.generateSegment(params);
           if (seg) return resolveUrls(seg);
         } catch (e) {
           if (attempt < 2) await new Promise(r => setTimeout(r, 2000));
@@ -445,29 +448,41 @@ export default function PublicRadio() {
 
       {/* ================ HEADER — Console top bezel ================ */}
       <header className="glass sticky top-0 z-40 relative">
-        <div className="max-w-7xl mx-auto px-6 py-3 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="relative w-10 h-10 rounded-lg flex items-center justify-center"
+        <div className="max-w-7xl mx-auto px-4 py-2.5 flex items-center justify-between gap-3 flex-wrap">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="relative w-9 h-9 rounded-lg flex items-center justify-center shrink-0"
                  style={{
                    background: "linear-gradient(180deg, #0A1428, #050A18)",
                    border: "1px solid var(--console-line-strong)",
                    boxShadow: "0 0 12px rgba(0,191,255,0.35), inset 0 0 8px rgba(0,191,255,0.2)",
                  }}>
-              <Antenna className="w-5 h-5" style={{ color: "var(--console-cyan)", filter: "drop-shadow(0 0 6px rgba(0,229,255,0.8))" }} />
+              <Antenna className="w-4 h-4" style={{ color: "var(--console-cyan)", filter: "drop-shadow(0 0 6px rgba(0,229,255,0.8))" }} />
             </div>
-            <div>
-              <BrandName className="font-display font-black text-lg text-glow-blue" />
-              <div className="label-mono">AI CONTROL ROOM</div>
+            <div className="min-w-0">
+              <BrandName className="font-display font-black text-base text-glow-blue" />
+              <div className="label-mono !text-[9px] flex items-center gap-2 truncate">
+                AI CONTROL ROOM
+                <span className="opacity-70" style={{ color: "rgba(0,229,255,0.6)" }}>·</span>
+                <span className="italic opacity-70 tracking-normal" style={{ color: "rgba(0,229,255,0.7)", fontStyle: "italic" }}>
+                  Powered by L&amp;C Project
+                </span>
+              </div>
             </div>
           </div>
-          <nav className="flex items-center gap-3">
+
+          {/* Main Partner slot inline nell'header */}
+          <div className="hidden md:flex flex-1 justify-center min-w-0">
+            <MainPartnerSlot />
+          </div>
+
+          <nav className="flex items-center gap-2">
             {onAir ? (
-              <div className="on-air-badge" data-testid="live-indicator">
+              <div className="on-air-badge !py-1 !px-3 !text-[11px]" data-testid="live-indicator">
                 <span className="dot" />
                 <span>ON AIR</span>
               </div>
             ) : (
-              <div className="standby-badge" data-testid="standby-indicator">
+              <div className="standby-badge !py-1 !px-3 !text-[11px]" data-testid="standby-indicator">
                 <span className="dot" />
                 <span>STANDBY</span>
               </div>
@@ -477,108 +492,97 @@ export default function PublicRadio() {
               target="_blank"
               rel="noopener noreferrer"
               data-testid="admin-link"
-              className="btn-outline focusable text-sm hidden sm:inline-flex"
+              className="btn-outline focusable !py-1.5 !px-3 !text-[11px] hidden sm:inline-flex"
             >
-              <Cpu className="w-4 h-4 mr-1.5" /> Regia
+              <Cpu className="w-3.5 h-3.5 mr-1.5" /> Regia
             </a>
           </nav>
         </div>
+        {/* Main Partner mobile — sotto header */}
+        <div className="md:hidden px-4 pb-2">
+          <MainPartnerSlot />
+        </div>
       </header>
 
-      {/* ================ HERO — Visual + player centrali ================ */}
-      <section className="max-w-7xl mx-auto px-6 pt-10 pb-6 relative z-10">
-        {/* Titolo minimalista con glow blu */}
-        <div className="flex flex-col items-center text-center mb-6">
-          <div className="label-mono mb-3">◂ La prima radio gestita solo da AI ▸</div>
-          <h1 className="font-display font-black text-4xl sm:text-5xl lg:text-6xl leading-[0.95] text-glow-blue">
-            <span style={{ color: "var(--console-cyan)" }}>R</span>
-            <span style={{ color: "#E6F1FF" }}>-A.I.</span>
-          </h1>
-          <p className="mt-3 max-w-xl text-sm text-zinc-400 font-mono tracking-wide">
-            <Mic className="inline w-3.5 h-3.5 mb-0.5 mr-1" style={{ color: "var(--console-cyan)" }} />
-            Voci sintetiche · Musica generata · Zero umani in cabina
-          </p>
-        </div>
-
-        {/* Visual centrale — ridotto */}
-        <div className="max-w-2xl mx-auto relative">
-          <div className="absolute -top-3 left-4 z-20">
-            <span className="chip"><Signal className="w-3 h-3" /> LIVE SIGNAL</span>
-          </div>
-          <div className="absolute -top-3 right-4 z-20">
-            <VuMeter />
-          </div>
-          <PulsingBrand
-            isPlaying={isPlaying || broadcastMode === "live_external"}
-            currentKind={current?.kind || ""}
-            trackOverlay={trackOverlay}
-          />
-        </div>
-
-        {/* NOW PLAYING — modulo console */}
-        <div className="mt-6 console-panel p-6 md:p-7">
-          <CornerAccents />
-          <span className="module-tag">MOD · A · NOW PLAYING</span>
-
-          <div className="grid md:grid-cols-3 gap-6 items-center mt-4">
-            <div className="md:col-span-2">
-              <div className="flex items-center gap-2 mb-3 flex-wrap">
-                {current && <KindBadge kind={current.kind} />}
-                {current?.llm_provider && (
-                  <span className="chip" data-testid="current-llm-provider">
-                    <Cpu className="w-3 h-3" /> {current.llm_provider}
-                  </span>
-                )}
-                {current?.dj_name && (
-                  <span className="chip" style={{ color: "var(--console-cyan)" }}>
-                    <Mic className="w-3 h-3" /> {current.dj_name}
-                  </span>
-                )}
-              </div>
-              <div className="overflow-hidden">
-                <div className="font-display text-2xl sm:text-3xl font-bold min-h-[3rem] flex items-center gap-3 text-glow-cyan" data-testid="now-playing-title">
-                  {isPreparing && !current && (
-                    <Loader2 className="w-6 h-6 text-cyan-400 animate-spin shrink-0" data-testid="loading-spinner" />
-                  )}
-                  <span>{current ? current.title : (isPreparing ? "Preparazione…" : (isPlaying ? "Un attimo…" : "Trasmissione in stand-by"))}</span>
-                </div>
-              </div>
-              {current?.script && (
-                <p className="mt-3 text-zinc-400 leading-relaxed line-clamp-2 font-mono text-sm" data-testid="current-script">
-                  {current.script}
-                </p>
-              )}
-              <div className="mt-5">
-                <Waveform active={isPlaying} />
-              </div>
+      {/* ================ HERO — Visual + player centrali (compatto) ================ */}
+      <section className="max-w-7xl mx-auto px-4 pt-4 pb-4 relative z-10">
+        {/* Layout compatto: visual + now-playing affiancati su desktop */}
+        <div className="grid lg:grid-cols-5 gap-4 items-stretch">
+          {/* Visual centrale — rimpicciolito */}
+          <div className="lg:col-span-2 relative">
+            <div className="absolute -top-2 left-3 z-20">
+              <span className="chip !text-[9px] !px-2 !py-0.5"><Signal className="w-2.5 h-2.5" /> LIVE SIGNAL</span>
             </div>
-            <div className="flex md:justify-end items-center gap-3">
+            <div className="absolute -top-2 right-3 z-20">
+              <VuMeter />
+            </div>
+            <PulsingBrand
+              isPlaying={isPlaying || broadcastMode === "live_external"}
+              currentKind={current?.kind || ""}
+              trackOverlay={trackOverlay}
+            />
+          </div>
+
+          {/* NOW PLAYING — pannello compatto */}
+          <div className="lg:col-span-3 console-panel p-4 md:p-5 flex flex-col">
+            <CornerAccents />
+            <span className="module-tag">MOD · A · NOW PLAYING</span>
+
+            <div className="flex items-center gap-2 mt-3 mb-2 flex-wrap">
+              {current && <KindBadge kind={current.kind} />}
+              {current?.llm_provider && (
+                <span className="chip" data-testid="current-llm-provider">
+                  <Cpu className="w-3 h-3" /> {current.llm_provider}
+                </span>
+              )}
+              {current?.dj_name && (
+                <span className="chip" style={{ color: "var(--console-cyan)" }}>
+                  <Mic className="w-3 h-3" /> {current.dj_name}
+                </span>
+              )}
+            </div>
+
+            <div className="font-display text-xl sm:text-2xl font-bold min-h-[2.5rem] flex items-center gap-3 text-glow-cyan flex-1" data-testid="now-playing-title">
+              {isPreparing && !current && (
+                <Loader2 className="w-5 h-5 text-cyan-400 animate-spin shrink-0" data-testid="loading-spinner" />
+              )}
+              <span>{current ? current.title : (isPreparing ? "Preparazione…" : (isPlaying ? "Un attimo…" : "Trasmissione in stand-by"))}</span>
+            </div>
+
+            {current?.script && (
+              <p className="mt-2 text-zinc-400 leading-relaxed line-clamp-2 font-mono text-xs" data-testid="current-script">
+                {current.script}
+              </p>
+            )}
+            <div className="mt-2">
+              <Waveform active={isPlaying} />
+            </div>
+
+            <div className="mt-4 flex items-center gap-3">
               <button
                 data-testid="play-pause-button"
                 onClick={handlePlay}
-                className="btn-primary flex items-center gap-2 focusable"
+                className="btn-primary flex items-center gap-2 focusable !text-base !px-6 !py-3"
                 aria-label={isPlaying ? "Metti in pausa" : "Ascolta ora"}
               >
-                {isPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
+                {isPlaying ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5" />}
                 <span>{isPlaying ? "PAUSE" : "PLAY"}</span>
               </button>
               <button
                 data-testid="skip-button"
                 onClick={() => { radioEngine.stopAll(); }}
-                className="btn-outline focusable flex items-center gap-2 !px-3"
+                className="btn-outline focusable flex items-center gap-2 !px-3 !py-3"
                 title="Salta al prossimo"
                 aria-label="Salta"
               >
                 <SkipForward className="w-4 h-4" />
               </button>
+              <div className="flex-1 grid grid-cols-3 gap-2">
+                <MiniDisplay icon={Users}    label="LIVE"    value={station.listeners || 0} />
+                <MiniDisplay icon={Waves}    label="SEGS"    value={station.total_segments || 0} />
+                <MiniDisplay icon={Mic}      label="DJ"      value={djs.length} />
+              </div>
             </div>
-          </div>
-
-          {/* Stats mini-display in stile mixer */}
-          <div className="mt-6 grid grid-cols-3 gap-3">
-            <MiniDisplay icon={Users}    label="ASCOLTATORI" value={station.listeners || 0} />
-            <MiniDisplay icon={Waves}    label="SEGMENTI"    value={station.total_segments || 0} />
-            <MiniDisplay icon={Mic}      label="DJ ATTIVI"   value={djs.length} />
           </div>
         </div>
 
@@ -1012,24 +1016,36 @@ function HomeCards({ djs, questionName, setQuestionName, questionText, setQuesti
         </Link>
       </CoverCard>
 
-      {/* ====== MOD · E — CHAT LED ====== */}
-      <CoverCard
-        id="chat"
-        open={openId === "chat"}
-        onToggle={() => toggle("chat")}
-        image="/cards/chat-led.png"
-        moduleTag="MOD · E · LIVE FEED"
-        badgeColor="#00BFFF"
-        icon={MessageCircle}
-        eyebrow="◂ CHAT LED · LIVE FEED ▸"
-        title="I DJ ascoltano."
-        testId="card-chat-led"
+      {/* ====== MOD · E — CHAT LED (sempre visibile, no cover) ====== */}
+      <section
+        data-testid="card-chat-led"
+        className="console-panel p-5 md:col-span-2"
+        style={{ boxShadow: "0 0 0 1px rgba(0,191,255,0.28) inset, 0 14px 40px rgba(0,0,0,0.6), 0 0 32px rgba(0,191,255,0.22)" }}
       >
+        <CornerAccents />
+        <span className="module-tag">MOD · E · LIVE FEED · CHAT</span>
+
+        <div className="flex items-start gap-3 mt-3 mb-3">
+          <div className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0"
+               style={{
+                 background: "rgba(0,191,255,0.08)",
+                 border: "1px solid var(--console-line-strong)",
+                 boxShadow: "0 0 12px rgba(0,191,255,0.4)",
+               }}>
+            <MessageCircle className="w-5 h-5" style={{ color: "var(--console-cyan)", filter: "drop-shadow(0 0 6px rgba(0,229,255,0.8))" }} />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="label-mono">◂ CHIEDI AI DJ · LIVE ▸</div>
+            <h3 className="font-display font-black text-xl mt-0.5 text-glow-blue">I DJ ascoltano.</h3>
+          </div>
+          <div className="hidden sm:block"><VuMeter /></div>
+        </div>
+
         {/* Display LED */}
         <div
           ref={scrollRef}
           data-testid="led-feed"
-          className="led-screen h-40 overflow-y-auto text-sm space-y-1"
+          className="led-screen h-44 overflow-y-auto text-sm space-y-1"
           style={{ fontSize: "15px", lineHeight: "1.35" }}
         >
           {messages.length === 0 ? (
@@ -1057,14 +1073,13 @@ function HomeCards({ djs, questionName, setQuestionName, questionText, setQuesti
           )}
         </div>
 
-        <form onSubmit={submitQuestion} className="mt-3 flex flex-col sm:flex-row gap-2" data-testid="led-input-form"
-              onClick={(e) => e.stopPropagation()}>
+        <form onSubmit={submitQuestion} className="mt-3 flex flex-col sm:flex-row gap-2" data-testid="led-input-form">
           <input
             data-testid="led-input-name"
             value={questionName}
             onChange={(e) => setQuestionName(e.target.value)}
             placeholder="NOME"
-            className="w-full sm:w-24 rounded-md bg-black border outline-none px-3 py-2 text-xs font-mono text-cyan-300 placeholder:text-cyan-800 uppercase tracking-widest"
+            className="w-full sm:w-28 rounded-md bg-black border outline-none px-3 py-2 text-xs font-mono text-cyan-300 placeholder:text-cyan-800 uppercase tracking-widest"
             style={{ borderColor: "var(--console-line-strong)" }}
           />
           <input
@@ -1085,7 +1100,7 @@ function HomeCards({ djs, questionName, setQuestionName, questionText, setQuesti
             <Send className="w-3 h-3" /> INVIA
           </button>
         </form>
-      </CoverCard>
+      </section>
     </div>
   );
 }
@@ -1167,3 +1182,75 @@ function CoverCard({
   );
 }
 
+
+
+// ==================== Main Partner Slot ====================
+// Slot dinamico "MAIN PARTNER" nell'header. Se attivi >1 partner, alterna
+// automaticamente ogni 8s con cross-fade.
+function MainPartnerSlot() {
+  const [partners, setPartners] = React.useState([]);
+  const [idx, setIdx] = React.useState(0);
+
+  React.useEffect(() => {
+    let live = true;
+    const load = async () => {
+      try {
+        const r = await endpoints.partnersActive();
+        if (!live) return;
+        setPartners(r?.partners || []);
+      } catch (e) {}
+    };
+    load();
+    const iv = setInterval(load, 60000);
+    return () => { live = false; clearInterval(iv); };
+  }, []);
+
+  React.useEffect(() => {
+    if (partners.length <= 1) return;
+    const iv = setInterval(() => setIdx(i => (i + 1) % partners.length), 8000);
+    return () => clearInterval(iv);
+  }, [partners.length]);
+
+  if (!partners || partners.length === 0) return null;
+  const p = partners[Math.min(idx, partners.length - 1)];
+
+  const inner = (
+    <div
+      className="flex items-center gap-2.5 px-3 py-1.5 rounded-md transition-all"
+      style={{
+        background: "linear-gradient(180deg, rgba(255,107,26,0.10), rgba(0,191,255,0.05))",
+        border: "1px solid rgba(255,107,26,0.35)",
+        boxShadow: "0 0 12px rgba(255,107,26,0.25), inset 0 0 8px rgba(0,191,255,0.1)",
+      }}
+    >
+      <span className="font-mono text-[9px] tracking-[0.28em] uppercase" style={{ color: "var(--alert-orange-glow)", textShadow: "0 0 6px rgba(255,107,26,0.6)" }}>
+        MAIN PARTNER
+      </span>
+      <span className="w-px h-4" style={{ background: "rgba(255,107,26,0.45)" }} />
+      {p.logo_url && (
+        <img
+          src={p.logo_url}
+          alt={p.name}
+          className="h-6 max-w-[80px] object-contain"
+          style={{ filter: "drop-shadow(0 0 6px rgba(0,229,255,0.5))" }}
+        />
+      )}
+      <span className="font-display font-black text-sm text-glow-cyan truncate max-w-[180px]" style={{ color: "var(--console-cyan)" }}>
+        {p.name}
+      </span>
+      {p.description && (
+        <span className="hidden lg:inline font-mono text-[10px] text-zinc-400 truncate max-w-[180px]">
+          · {p.description}
+        </span>
+      )}
+    </div>
+  );
+
+  return p.link ? (
+    <a href={p.link} target="_blank" rel="noopener noreferrer" data-testid="main-partner-slot" className="focusable">
+      {inner}
+    </a>
+  ) : (
+    <div data-testid="main-partner-slot">{inner}</div>
+  );
+}
