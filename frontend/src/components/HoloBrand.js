@@ -42,14 +42,14 @@ export default function HoloBrand({ isPlaying = false, current = null, trackOver
         const mEnd = Math.min(110, binCount);
         for (let i = 18; i < mEnd; i++) { mhSum += freq[i]; mhN++; }
       }
-      const bassRaw = analyser && bassN > 0 ? bassSum / bassN / 255 : 0;
-      const mhRaw   = analyser && mhN   > 0 ? mhSum   / mhN   / 255 : 0;
-      // Smoothing (attack fast, decay slow)
-      state.current.bass    = Math.max(state.current.bass    * 0.82, bassRaw);
-      state.current.midHigh = Math.max(state.current.midHigh * 0.85, mhRaw);
-      // Decay quando non c'è audio
-      state.current.bass    *= 0.985;
-      state.current.midHigh *= 0.985;
+      const bassRaw = analyser && bassN > 0 ? Math.min(1, (bassSum / bassN / 255) * 1.8) : 0;
+      const mhRaw   = analyser && mhN   > 0 ? Math.min(1, (mhSum   / mhN   / 255) * 1.6) : 0;
+      // Smoothing (attack fast, decay meno aggressivo così i picchi restano visibili)
+      state.current.bass    = Math.max(state.current.bass    * 0.90, bassRaw);
+      state.current.midHigh = Math.max(state.current.midHigh * 0.92, mhRaw);
+      // Decay più lento per un pulse più leggibile
+      state.current.bass    *= 0.995;
+      state.current.midHigh *= 0.995;
 
       const bass = state.current.bass;
       const midHigh = state.current.midHigh;
@@ -60,30 +60,30 @@ export default function HoloBrand({ isPlaying = false, current = null, trackOver
       const B = Math.min(1, bass + idleBass);
       const M = Math.min(1, midHigh + idleMh);
 
-      // === Warm mouth glow (bassi) ===
+      // === Warm mouth glow (bassi) === (max opa alzata da 0.95 a 1.15 forte)
       if (warmMouthRef.current) {
-        const op = 0.10 + B * 0.85;
-        const scale = 1 + B * 0.20;
-        warmMouthRef.current.style.opacity = op.toFixed(3);
+        const op = 0.12 + B * 1.05;
+        const scale = 1 + B * 0.35;
+        warmMouthRef.current.style.opacity = Math.min(1.15, op).toFixed(3);
         warmMouthRef.current.style.transform = `translate(-50%, -50%) scale(${scale.toFixed(3)})`;
       }
       // === Warm ring glow (bassi) ===
       if (warmRingRef.current) {
-        const op = 0.08 + B * 0.62;
-        const scale = 1 + B * 0.08;
-        warmRingRef.current.style.opacity = op.toFixed(3);
+        const op = 0.10 + B * 0.90;
+        const scale = 1 + B * 0.14;
+        warmRingRef.current.style.opacity = Math.min(1, op).toFixed(3);
         warmRingRef.current.style.transform = `translate(-50%, -50%) scale(${scale.toFixed(3)})`;
       }
-      // === Face principale (medi/alti = blu pulse; bassi = leggero scale) ===
+      // === Face principale (medi/alti = blu pulse marcato; bassi = scale) ===
       if (faceRef.current) {
-        const scale = 1 + B * 0.035 + M * 0.02;
-        const blueGlow = 8 + M * 34;
-        const blueAlpha = 0.35 + M * 0.55;
-        const bright = 0.92 + M * 0.28 + B * 0.05;
+        const scale = 1 + B * 0.06 + M * 0.05;
+        const blueGlow = 10 + M * 60;
+        const blueAlpha = 0.4 + M * 0.9;
+        const bright = 0.95 + M * 0.55 + B * 0.10;
         faceRef.current.style.transform = `translate(-50%, -50%) scale(${scale.toFixed(3)})`;
         faceRef.current.style.filter =
-          `drop-shadow(0 0 ${blueGlow.toFixed(1)}px rgba(0,229,255,${blueAlpha.toFixed(2)})) ` +
-          `drop-shadow(0 0 ${(blueGlow*2.4).toFixed(1)}px rgba(0,191,255,${(blueAlpha*0.4).toFixed(2)})) ` +
+          `drop-shadow(0 0 ${blueGlow.toFixed(1)}px rgba(0,229,255,${Math.min(1, blueAlpha).toFixed(2)})) ` +
+          `drop-shadow(0 0 ${(blueGlow*2.5).toFixed(1)}px rgba(0,191,255,${Math.min(1, blueAlpha*0.5).toFixed(2)})) ` +
           `brightness(${bright.toFixed(2)})`;
       }
       // === Info panel float ===

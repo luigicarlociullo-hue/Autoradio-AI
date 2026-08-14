@@ -637,32 +637,31 @@ a.powered-by-signature:hover {
 .holo-warm-mouth {
   position: absolute;
   left: 50%; top: 55%;
-  width: 45%; aspect-ratio: 1;
+  width: 55%; aspect-ratio: 1;
   transform: translate(-50%, -50%);
   z-index: 4;
-  background: radial-gradient(circle, rgba(255,107,26,0.75) 0%, rgba(255,138,61,0.35) 22%, rgba(255,107,26,0) 55%);
-  filter: blur(6px);
+  background: radial-gradient(circle, rgba(255,107,26,0.95) 0%, rgba(255,138,61,0.55) 20%, rgba(255,107,26,0) 55%);
+  filter: blur(5px);
   mix-blend-mode: screen;
   pointer-events: none;
   opacity: 0.1;
   will-change: opacity, transform;
-  transition: opacity 60ms linear;
+  transition: opacity 40ms linear;
 }
 
-/* Warm ring — glow arancione ESTERNO al cerchio-testa (bassi) */
 .holo-warm-ring {
   position: absolute;
   left: 50%; top: 45%;
-  width: 62%; aspect-ratio: 1;
+  width: 66%; aspect-ratio: 1;
   transform: translate(-50%, -50%);
   z-index: 3;
-  background: radial-gradient(circle, rgba(255,107,26,0) 42%, rgba(255,107,26,0.55) 50%, rgba(255,107,26,0.20) 60%, rgba(255,107,26,0) 74%);
-  filter: blur(4px);
+  background: radial-gradient(circle, rgba(255,107,26,0) 40%, rgba(255,107,26,0.85) 50%, rgba(255,107,26,0.35) 60%, rgba(255,107,26,0) 74%);
+  filter: blur(3px);
   mix-blend-mode: screen;
   pointer-events: none;
   opacity: 0.08;
   will-change: opacity, transform;
-  transition: opacity 60ms linear;
+  transition: opacity 40ms linear;
 }
 
 /* Badge ON AIR / STAND-BY */
