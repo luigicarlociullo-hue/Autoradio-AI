@@ -4113,12 +4113,27 @@ async def root():
 
 app.include_router(api_router)
 
+_cors_origins_env = os.environ.get('CORS_ORIGINS', '*').strip()
+if _cors_origins_env and _cors_origins_env != '*':
+    _cors_kwargs = {"allow_origins": [o.strip() for o in _cors_origins_env.split(',') if o.strip()]}
+else:
+    # FIX (ticket 220609): allow_origins=["*"] together with allow_credentials=True
+    # is invalid per the Fetch/CORS spec and browsers reject it outright for any
+    # credentialed cross-origin request (frontend's axios client sets
+    # withCredentials=True in lib/api.js) — confirmed live: every /api/* call from a
+    # cross-origin frontend (preview testing, custom domain) failed with
+    # "Access-Control-Allow-Origin header ... must not be the wildcard '*' when the
+    # request's credentials mode is 'include'". Same-origin calls (prod on r-ai.it)
+    # were unaffected, which is why this stayed hidden. Echo this app's known
+    # origins via regex instead of the wildcard so cross-origin calls actually work.
+    _cors_kwargs = {"allow_origin_regex": r"^https://(www\.)?r-ai\.it$|^https://autoradio-ai\.(preview\.emergentagent\.com|emergent\.host)$|^http://localhost(:\d+)?$"}
+
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
     allow_methods=["*"],
     allow_headers=["*"],
+    **_cors_kwargs,
 )
 
 

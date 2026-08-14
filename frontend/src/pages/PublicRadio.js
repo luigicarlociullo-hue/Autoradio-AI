@@ -1056,6 +1056,7 @@ function HomeCards({ djs, questionName, setQuestionName, questionText, setQuesti
         iconSpin
         eyebrow="◂ CLUB NIGHT · 22:00-04:00 ▸"
         title="Techno & House · 6 ore di mixaggio AI"
+        subtitle={djs.filter(d => d.night_slot).sort((a, b) => a.night_slot - b.night_slot).map(d => d.name).join(" · ")}
         testId="card-club-night"
       >
         <div className="text-sm font-mono text-zinc-200 leading-relaxed">
@@ -1184,7 +1185,7 @@ function HomeCards({ djs, questionName, setQuestionName, questionText, setQuesti
 function CoverCard({
   id, open, onToggle, image, moduleTag, badgeColor = "#00BFFF",
   icon: Icon, iconSpin = false, eyebrow, title, titleGlow = "blue",
-  testId, children,
+  subtitle, testId, children,
 }) {
   const titleGlowClass = titleGlow === "orange" ? "text-glow-orange" : "text-glow-blue";
   return (
@@ -1237,6 +1238,11 @@ function CoverCard({
           <h3 className={`cover-card-title ${titleGlowClass}`}>
             {title}
           </h3>
+          {subtitle && (
+            <div className="cover-card-subtitle" data-testid={`${testId}-subtitle`}>
+              {subtitle}
+            </div>
+          )}
           <div className="cover-card-hint">
             {open ? "▼ CHIUDI" : "▶ APRI MODULO"}
           </div>

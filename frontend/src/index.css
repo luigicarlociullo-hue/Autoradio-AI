@@ -530,24 +530,29 @@ body {
 /* =====================================================================
    "Powered by L&C Project" signature — Signature Tech diagonale UP
    ===================================================================== */
-/* Firma autografo — posizionata sopra-destra del logo, in diagonale verso l'alto */
+/* Firma autografo — posizionata sotto-destra del logo, in diagonale.
+   FIX (ticket 220609): la versione precedente usava bottom:100% dentro un
+   header sticky top-0, quindi la firma finiva SOPRA il viewport (bounding-box
+   y negativa) ed era invisibile all'utente pur essendo nel DOM. Ora è
+   posizionata sotto il logo (top:100%), dentro l'area visibile, con font e
+   opacità aumentati per essere leggibile. */
 .powered-by-signature {
   position: absolute;
-  bottom: 100%;
-  left: 100%;
-  transform: translate(-32%, 22%) rotate(-22deg);
-  transform-origin: left bottom;
+  top: 100%;
+  left: 55%;
+  transform: translate(-10%, 6%) rotate(-14deg);
+  transform-origin: left top;
   display: inline-flex;
   align-items: baseline;
   gap: 2px;
   font-family: 'Caveat', 'Kalam', 'Audiowide', cursive;
   font-weight: 400;
   font-style: italic;
-  font-size: 8px;
+  font-size: 11px;
   letter-spacing: 0.04em;
   line-height: 1;
   white-space: nowrap;
-  color: rgba(230, 241, 255, 0.55);
+  color: rgba(230, 241, 255, 0.8);
   text-decoration: none;
   padding: 0;
   pointer-events: auto;
@@ -557,15 +562,15 @@ body {
 a.powered-by-signature:hover {
   color: rgba(0, 229, 255, 0.95);
   filter: drop-shadow(0 0 4px rgba(0, 229, 255, 0.6));
-  transform: translate(-32%, 22%) rotate(-22deg) scale(1.05);
+  transform: translate(-10%, 6%) rotate(-14deg) scale(1.05);
 }
 .powered-by-signature .lc-brand {
   font-family: 'Caveat', 'Kalam', cursive;
   font-weight: 700;
   font-style: italic;
-  font-size: 11px;
+  font-size: 13px;
   letter-spacing: 0.01em;
-  color: rgba(0, 229, 255, 0.85);
+  color: rgba(0, 229, 255, 0.9);
   filter: drop-shadow(0 0 3px rgba(0, 229, 255, 0.5));
   padding-left: 2px;
   line-height: 0.85;
@@ -834,6 +839,17 @@ a.powered-by-signature:hover {
   color: #E6F1FF;
   font-size: clamp(1.15rem, 2.2vw, 1.6rem);
   line-height: 1.05;
+}
+/* Riga sempre visibile sulla cover (anche a scheda chiusa) — usata per i
+   nomi dei DJ notturni (ticket 220609: prima erano leggibili solo a scheda
+   aperta ed erano scambiati per "non applicati") */
+.cover-card-subtitle {
+  margin-top: 6px;
+  font-family: 'Share Tech Mono', 'JetBrains Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: rgba(0, 229, 255, 0.85);
+  text-shadow: 0 0 6px rgba(0,229,255,0.4);
 }
 .cover-card-hint {
   margin-top: 8px;
