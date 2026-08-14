@@ -2,7 +2,7 @@
 @tailwind components;
 @tailwind utilities;
 
-@import url('https://fonts.googleapis.com/css2?family=Unbounded:wght@300;400;600;800;900&family=IBM+Plex+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Chakra+Petch:wght@300;400;500;600;700&family=Orbitron:wght@400;500;600;700;800&family=Share+Tech+Mono&family=VT323&family=Great+Vibes&family=Cormorant+Garamond:ital,wght@1,400;1,500&family=Audiowide&family=Kalam:wght@300;400;700&family=Michroma&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Unbounded:wght@300;400;600;800;900&family=IBM+Plex+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Chakra+Petch:wght@300;400;500;600;700&family=Orbitron:wght@400;500;600;700;800&family=Share+Tech+Mono&family=VT323&family=Great+Vibes&family=Cormorant+Garamond:ital,wght@1,400;1,500&family=Audiowide&family=Kalam:wght@300;400;700&family=Michroma&family=Caveat:wght@400;600;700&display=swap');
 
 /* =====================================================================
    R-A.I. · Console di Controllo AI
@@ -530,54 +530,45 @@ body {
 /* =====================================================================
    "Powered by L&C Project" signature — Signature Tech diagonale UP
    ===================================================================== */
+/* Firma autografo — posizionata sopra-destra del logo, in diagonale verso l'alto */
 .powered-by-signature {
+  position: absolute;
+  bottom: 100%;
+  left: 100%;
+  transform: translate(-32%, 22%) rotate(-22deg);
+  transform-origin: left bottom;
   display: inline-flex;
   align-items: baseline;
-  gap: 4px;
-  font-family: 'Audiowide', 'Chakra Petch', sans-serif;
-  font-style: normal;
+  gap: 2px;
+  font-family: 'Caveat', 'Kalam', 'Audiowide', cursive;
+  font-weight: 400;
+  font-style: italic;
   font-size: 8px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: rgba(230, 241, 255, 0.6);
-  transform: rotate(-8deg) translateY(-4px);
-  transform-origin: left center;
-  position: relative;
-  padding: 1px 4px;
+  letter-spacing: 0.04em;
   line-height: 1;
   white-space: nowrap;
+  color: rgba(230, 241, 255, 0.55);
   text-decoration: none;
+  padding: 0;
+  pointer-events: auto;
+  z-index: 4;
   transition: color 200ms ease, filter 200ms ease, transform 200ms ease;
 }
 a.powered-by-signature:hover {
-  color: #00E5FF;
-  filter: drop-shadow(0 0 6px rgba(0,229,255,0.6));
-  transform: rotate(-8deg) translateY(-6px);
-}
-.powered-by-signature::before,
-.powered-by-signature::after {
-  content: '';
-  display: inline-block;
-  width: 8px;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, rgba(0,229,255,0.6), transparent);
-  margin: 0 1px 1px;
-  vertical-align: middle;
+  color: rgba(0, 229, 255, 0.95);
+  filter: drop-shadow(0 0 4px rgba(0, 229, 255, 0.6));
+  transform: translate(-32%, 22%) rotate(-22deg) scale(1.05);
 }
 .powered-by-signature .lc-brand {
-  font-family: 'Audiowide', 'Michroma', 'Chakra Petch', sans-serif;
-  font-style: normal;
-  font-weight: 400;
+  font-family: 'Caveat', 'Kalam', cursive;
+  font-weight: 700;
+  font-style: italic;
   font-size: 11px;
-  letter-spacing: 0.04em;
-  background: linear-gradient(135deg, #00E5FF 0%, #00BFFF 45%, #FF8A3D 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  color: transparent;
-  filter: drop-shadow(0 0 4px rgba(0,229,255,0.5));
-  padding-left: 1px;
-  line-height: 0.9;
+  letter-spacing: 0.01em;
+  color: rgba(0, 229, 255, 0.85);
+  filter: drop-shadow(0 0 3px rgba(0, 229, 255, 0.5));
+  padding-left: 2px;
+  line-height: 0.85;
 }
 
 /* =====================================================================

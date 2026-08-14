@@ -466,7 +466,7 @@ export default function PublicRadio() {
       <header className="glass sticky top-0 z-40 relative">
         <div className="max-w-7xl mx-auto px-4 py-2.5 flex items-center justify-between gap-3 flex-wrap">
           <div className="flex items-center gap-3 min-w-0">
-            {/* SIMBOLO GRAFICO R-A.I. — cerchio + waveform + antenna con LED arancione */}
+            {/* SIMBOLO GRAFICO R-A.I. — con firma autografo attaccata al bordo */}
             <div
               className="relative w-14 h-14 shrink-0 flex items-center justify-center"
               data-testid="rai-logo"
@@ -478,21 +478,20 @@ export default function PublicRadio() {
                 className="w-full h-full object-contain"
                 style={{ animation: "raiLogoFloat 6s ease-in-out infinite" }}
               />
+              {/* Firma autografo — appena sopra-destra del cerchio, in diagonale */}
+              <a
+                href="https://www.facebook.com/profile.php?id=61592908061493"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="powered-by-signature focusable"
+                data-testid="powered-by"
+                title="L&C Project · Facebook"
+              >
+                Powered by <span className="lc-brand">L&amp;C Project</span>
+              </a>
             </div>
             <div className="min-w-0">
-              <div className="flex items-baseline gap-3 flex-wrap">
-                <BrandName className="font-display font-black text-lg sm:text-xl text-glow-blue" />
-                <a
-                  href="https://www.facebook.com/profile.php?id=61592908061493"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="powered-by-signature focusable"
-                  data-testid="powered-by"
-                  title="Vai al profilo Facebook di L&C Project"
-                >
-                  Powered by <span className="lc-brand">L&amp;C Project</span>
-                </a>
-              </div>
+              <BrandName className="font-display font-black text-lg sm:text-xl text-glow-blue" />
               <div className="label-mono !text-[9px] !tracking-widest mt-0.5">
                 AI CONTROL ROOM
               </div>
