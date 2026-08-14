@@ -571,6 +571,15 @@ a.powered-by-signature:hover {
   line-height: 0.85;
 }
 
+/* Titoli DJ Club Night — forzatura visibilità richiesta dall'utente */
+.dj-name-force {
+  color: #00E5FF !important;
+  text-shadow: 0 0 8px rgba(0, 229, 255, 0.55) !important;
+  display: block !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+}
+
 /* =====================================================================
    HoloBrand — Volto R-A.I. reattivo (Youtube-glow style)
    ===================================================================== */

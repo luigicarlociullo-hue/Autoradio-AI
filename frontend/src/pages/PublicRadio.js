@@ -1068,11 +1068,14 @@ function HomeCards({ djs, questionName, setQuestionName, questionText, setQuesti
                 {dj.avatar_url && <img src={dj.avatar_url} alt={dj.name} className="w-11 h-11 rounded object-cover"
                                        style={{ boxShadow: `0 0 10px ${dj.accent_color}88` }} />}
                 <div className="flex-1 min-w-0">
-                  <div className="font-display font-black text-sm" style={{ color: dj.accent_color, textShadow: `0 0 8px ${dj.accent_color}` }}>
-                    {dj.name} · <span className="text-[10px] font-mono text-zinc-400">
-                      {dj.night_slot === 1 ? "22:00-00:00" : dj.night_slot === 2 ? "00:00-02:00" : "02:00-04:00"}
+                  <h3
+                    className="font-display font-black text-sm dj-name-force"
+                    data-testid={`club-dj-name-${dj.name}`}
+                  >
+                    {dj.name} <span className="text-[10px] font-mono text-zinc-400">
+                      · {dj.night_slot === 1 ? "22:00-00:00" : dj.night_slot === 2 ? "00:00-02:00" : "02:00-04:00"}
                     </span>
-                  </div>
+                  </h3>
                   <div className="text-[10px] font-mono text-zinc-400 leading-tight truncate">{dj.personality}</div>
                 </div>
               </div>
