@@ -203,6 +203,10 @@ export default function Dashboard() {
 
         {/* Community "A.I. Vs Umani" — brani caricati dagli utenti */}
         <CommunityPanel />
+        {/* Wall Community pubblico — vetrina brani approvati con contatori */}
+        <CommunityWallPanel />
+        {/* Cestino — soft-deleted tracks con undo + auto-clean */}
+        <TrashPanel />
         {/* Main Partner / Sponsor slot */}
         <PartnersPanel />
         {/* Manual Mode & Line-In Mixer */}
@@ -1533,6 +1537,7 @@ function TrackManagerPanel() {
   const [tracks, setTracks] = useState([]);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all"); // all|song|jingle|anthem
+  const [genreFilter, setGenreFilter] = useState("all"); // all|pop|rock|hiphop|dance|relax|ambient|varie|night-mix
   const [loading, setLoading] = useState(true);
   const [modal, setModal] = useState(null); // { kind: 'new'|'replace', target?: track }
   const [previewId, setPreviewId] = useState(null);
@@ -1559,11 +1564,19 @@ function TrackManagerPanel() {
     const q = search.trim().toLowerCase();
     return tracks.filter(t => {
       if (filter !== "all" && t.kind !== filter) return false;
+      // Filtro genere / Night Mix
+      if (genreFilter === "night-mix") {
+        // "Night Mix (Umani)" — solo comunità notturna, gestita dal CommunityPanel.
+        // Nel TrackManager (magazzino AI) mostriamo qui solo tracce marcate is_night_jingle
+        if (!t.is_night_jingle) return false;
+      } else if (genreFilter !== "all") {
+        if ((t.genre || "").toLowerCase() !== genreFilter) return false;
+      }
       if (!q) return true;
       return (t.title || "").toLowerCase().includes(q) ||
              (t.artist || "").toLowerCase().includes(q);
     });
-  }, [tracks, search, filter]);
+  }, [tracks, search, filter, genreFilter]);
 
   const backend = process.env.REACT_APP_BACKEND_URL;
   const downloadUrl = (id) => `${backend}/api/suno_audio/track_${id}.mp3`;
@@ -1683,6 +1696,35 @@ function TrackManagerPanel() {
         Mostrati: {filtered.length} / {tracks.length}
       </div>
 
+      {/* Filtri per Genere / Archivio Pro */}
+      <div className="flex flex-wrap items-center gap-1.5 mb-3" data-testid="genre-filters">
+        <span className="text-[10px] font-mono uppercase tracking-widest text-zinc-500 mr-2">Archivio:</span>
+        {[
+          { k: "all",       label: "Tutti" },
+          { k: "pop",       label: "Pop" },
+          { k: "rock",      label: "Rock" },
+          { k: "hiphop",    label: "Hip Hop" },
+          { k: "dance",     label: "Dance/Club" },
+          { k: "relax",     label: "Relax" },
+          { k: "ambient",   label: "Ambient" },
+          { k: "varie",     label: "Varie" },
+          { k: "night-mix", label: "🌙 Night Mix (AI)" },
+        ].map(g => (
+          <button
+            key={g.k}
+            data-testid={`genre-filter-${g.k}`}
+            onClick={() => setGenreFilter(g.k)}
+            className={`px-2.5 py-1 rounded text-[10px] font-mono uppercase border transition ${
+              genreFilter === g.k
+                ? "border-cyan-400 text-cyan-300 bg-cyan-500/10"
+                : "border-white/10 text-zinc-400 hover:border-white/20 hover:text-white"
+            }`}
+          >
+            {g.label}
+          </button>
+        ))}
+      </div>
+
       <div className="max-h-[560px] overflow-y-auto rounded border border-white/5">
         <table className="w-full text-sm">
           <thead className="sticky top-0 bg-zinc-900/95 backdrop-blur">
@@ -1693,6 +1735,8 @@ function TrackManagerPanel() {
               <th className="px-3 py-2 font-mono w-24 text-center">In Onda</th>
               <th className="px-3 py-2 font-mono w-24 text-center">Download</th>
               <th className="px-3 py-2 font-mono w-28 text-center">Sostituisci</th>
+              <th className="px-3 py-2 font-mono w-32 text-center">Genere</th>
+              <th className="px-3 py-2 font-mono w-16 text-center">BPM</th>
               <th className="px-3 py-2 font-mono w-24 text-center">Notte</th>
               <th className="px-3 py-2 font-mono w-24 text-center">Elimina</th>
             </tr>
@@ -1765,6 +1809,45 @@ function TrackManagerPanel() {
                   </button>
                 </td>
                 <td className="px-3 py-2 text-center">
+                  <select
+                    value={t.genre || ""}
+                    onChange={async (e) => {
+                      try {
+                        await endpoints.trackSetGenre(t.id, e.target.value || null);
+                        load();
+                      } catch (err) { toast.error("Errore genere"); }
+                    }}
+                    className="bg-black/60 border border-white/10 rounded px-1 py-1 text-[10px] font-mono w-full"
+                    data-testid={`genre-${t.id.slice(0,8)}`}
+                  >
+                    <option value="">—</option>
+                    <option value="pop">Pop</option>
+                    <option value="rock">Rock</option>
+                    <option value="hiphop">Hip Hop</option>
+                    <option value="dance">Dance/Club</option>
+                    <option value="relax">Relax</option>
+                    <option value="ambient">Ambient</option>
+                    <option value="varie">Varie</option>
+                  </select>
+                </td>
+                <td className="px-3 py-2 text-center">
+                  <input
+                    type="number" min={40} max={220}
+                    value={t.bpm || ""}
+                    onChange={async (e) => {
+                      const v = e.target.value ? parseInt(e.target.value, 10) : null;
+                      try {
+                        await endpoints.trackSetBpm(t.id, v, "manual");
+                        load();
+                      } catch (err) { toast.error("BPM non valido"); }
+                    }}
+                    placeholder="—"
+                    className="bg-black/60 border border-white/10 rounded px-1 py-1 text-[10px] font-mono w-14 text-center"
+                    data-testid={`bpm-${t.id.slice(0,8)}`}
+                    title={t.bpm_source ? `Sorgente: ${t.bpm_source}` : "BPM non ancora rilevato"}
+                  />
+                </td>
+                <td className="px-3 py-2 text-center">
                   {t.kind === "jingle" && (
                     <button
                       data-testid={`night-jingle-${t.id.slice(0,8)}`}
@@ -1789,18 +1872,18 @@ function TrackManagerPanel() {
                   <button
                     data-testid={`delete-${t.id.slice(0,8)}`}
                     onClick={async () => {
-                      if (!window.confirm(`Cancellare DEFINITIVAMENTE "${t.title || 'questa traccia'}"?\nQuesta azione è irreversibile.`)) return;
+                      if (!window.confirm(`Spostare nel Cestino "${t.title || 'questa traccia'}"?\nResta 30 giorni recuperabile.`)) return;
                       try {
                         await endpoints.trackDelete(t.id);
-                        toast.success("Traccia eliminata");
+                        toast.success("Spostata nel Cestino. Recuperabile per 30 giorni.");
                         load();
                       } catch (e) { toast.error("Errore eliminazione"); }
                     }}
                     className="inline-flex items-center gap-1 px-2 py-1 rounded text-[10px] font-mono uppercase border transition"
                     style={{ background: "rgba(255,107,26,0.10)", borderColor: "rgba(255,107,26,0.45)", color: "#FF8A3D" }}
-                    title="CANCELLA DEFINITIVAMENTE"
+                    title="Sposta nel Cestino (recuperabile 30gg)"
                   >
-                    <Trash2 className="w-3 h-3" /> Cancella
+                    <Trash2 className="w-3 h-3" /> Cestino
                   </button>
                 </td>
               </tr>
@@ -3331,6 +3414,150 @@ function NightDJsPanel() {
           </div>
         ))}
       </div>
+    </section>
+  );
+}
+
+
+// ==================== TrashPanel — Cestino con Undo + Auto-clean ====================
+function TrashPanel() {
+  const [items, setItems] = useState([]);
+  const [busy, setBusy] = useState(false);
+
+  const load = async () => {
+    try {
+      const r = await endpoints.trashList();
+      setItems(r?.tracks || []);
+    } catch (e) {}
+  };
+  useEffect(() => { load(); const iv = setInterval(load, 15000); return () => clearInterval(iv); }, []);
+
+  const restore = async (id) => {
+    setBusy(true);
+    try { await endpoints.trackRestore(id); toast.success("Ripristinata dal Cestino"); load(); }
+    catch (e) { toast.error("Errore ripristino"); }
+    setBusy(false);
+  };
+  const purge = async (id, title) => {
+    if (!window.confirm(`ELIMINARE DEFINITIVAMENTE "${title || 'questa traccia'}"?\nQuesta azione è irreversibile.`)) return;
+    setBusy(true);
+    try { await endpoints.trackPurge(id); toast.success("Eliminata definitivamente"); load(); }
+    catch (e) { toast.error("Errore"); }
+    setBusy(false);
+  };
+  const runAutoClean = async () => {
+    if (!window.confirm("Rimuovere DEFINITIVAMENTE tutte le tracce nel cestino da più di 30 giorni?")) return;
+    setBusy(true);
+    try {
+      const r = await endpoints.trashAutoClean(30);
+      toast.success(`Auto-clean: ${r.purged_count} tracce eliminate`);
+      load();
+    } catch (e) { toast.error("Errore auto-clean"); }
+    setBusy(false);
+  };
+
+  return (
+    <section className="lg:col-span-4 card-surface p-6" data-testid="trash-panel">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+        <div>
+          <div className="label-mono flex items-center gap-2" style={{ color: "#FF8A3D" }}>
+            <Trash2 className="w-3.5 h-3.5" /> CESTINO · SOFT DELETE · AUTO-CLEAN 30GG
+          </div>
+          <h3 className="text-xl font-display font-bold mt-1">Recupera o elimina definitivamente</h3>
+          <p className="text-xs text-zinc-400 mt-1">Le tracce restano recuperabili per 30 giorni, poi vengono rimosse automaticamente. Ora nel cestino: <b>{items.length}</b>.</p>
+        </div>
+        <button onClick={runAutoClean} disabled={busy || items.length === 0}
+                data-testid="trash-autoclean"
+                className="btn-outline !text-xs !py-2 disabled:opacity-40 flex items-center gap-2">
+          <Trash2 className="w-3.5 h-3.5" /> Esegui auto-clean 30gg
+        </button>
+      </div>
+      {items.length === 0 ? (
+        <div className="text-xs font-mono text-zinc-500 italic border border-dashed border-white/10 rounded p-4 text-center">
+          Cestino vuoto.
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {items.map(t => (
+            <div key={t.id} className="flex items-center gap-3 rounded-lg p-3"
+                 style={{ background: "rgba(255,107,26,0.06)", border: "1px solid rgba(255,107,26,0.25)" }}
+                 data-testid={`trash-row-${t.id.slice(0,8)}`}>
+              <div className="flex-1 min-w-0">
+                <div className="font-display font-bold text-sm truncate">{t.title || "(senza titolo)"}</div>
+                <div className="text-[10px] font-mono text-zinc-500">
+                  {t.kind} · {t.genre || "no-genre"} · deleted {new Date(t.deleted_at).toLocaleString("it-IT")}
+                </div>
+              </div>
+              <button onClick={() => restore(t.id)} disabled={busy}
+                      data-testid={`trash-restore-${t.id.slice(0,8)}`}
+                      className="text-[10px] font-mono uppercase tracking-widest px-3 py-1 rounded border"
+                      style={{ color: "#00E5FF", borderColor: "rgba(0,229,255,0.5)" }}>
+                ↺ Undo
+              </button>
+              <button onClick={() => purge(t.id, t.title)} disabled={busy}
+                      data-testid={`trash-purge-${t.id.slice(0,8)}`}
+                      className="text-[10px] font-mono uppercase tracking-widest px-3 py-1 rounded"
+                      style={{ color: "#FF6B1A", border: "1px solid rgba(255,107,26,0.45)" }}>
+                ✕ Elimina ora
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+// ==================== CommunityWallPanel — Vetrina pubblica readonly ====================
+function CommunityWallPanel() {
+  const [tracks, setTracks] = useState([]);
+  const load = async () => {
+    try {
+      const r = await endpoints.communityWall();
+      setTracks(r?.tracks || []);
+    } catch (e) {}
+  };
+  useEffect(() => { load(); const iv = setInterval(load, 10000); return () => clearInterval(iv); }, []);
+
+  return (
+    <section className="lg:col-span-4 card-surface p-6" data-testid="community-wall-panel">
+      <div className="mb-3">
+        <div className="label-mono flex items-center gap-2" style={{ color: "#00E5FF" }}>
+          <Users className="w-3.5 h-3.5" /> WALL COMMUNITY · brani approvati
+        </div>
+        <h3 className="text-xl font-display font-bold mt-1">Chi sta suonando in radio</h3>
+        <p className="text-xs text-zinc-400 mt-1">
+          Anteprima di ciò che il pubblico vede sulla home. Contatore ascolti aggiornato ad ogni riproduzione.
+        </p>
+      </div>
+      {tracks.length === 0 ? (
+        <div className="text-xs font-mono text-zinc-500 italic border border-dashed border-white/10 rounded p-4 text-center">
+          Nessun brano community attualmente ON AIR.
+        </div>
+      ) : (
+        <div className="grid md:grid-cols-2 gap-2">
+          {tracks.map(t => (
+            <div key={t.id} className="flex items-center gap-3 rounded p-2"
+                 style={{ background: t.is_night ? "rgba(0,191,255,0.05)" : "rgba(255,255,255,0.02)",
+                          border: `1px solid ${t.is_night ? "rgba(0,191,255,0.3)" : "rgba(255,255,255,0.08)"}` }}
+                 data-testid={`wall-row-${t.id.slice(0,8)}`}>
+              <div className="flex-1 min-w-0">
+                <div className="font-display font-bold text-sm truncate">
+                  {t.is_night && <span className="mr-1">🌙</span>}
+                  {t.title}
+                </div>
+                <div className="text-[10px] font-mono text-zinc-500 truncate">{t.author}</div>
+              </div>
+              <div className="text-right">
+                <div className="font-mono text-lg text-cyan-300 leading-none" data-testid={`wall-plays-${t.id.slice(0,8)}`}>
+                  {String(t.play_count || 0).padStart(3, "0")}
+                </div>
+                <div className="text-[8px] font-mono text-zinc-500 uppercase tracking-widest">plays</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </section>
   );
 }

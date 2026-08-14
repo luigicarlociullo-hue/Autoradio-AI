@@ -280,6 +280,15 @@ export default function PublicRadio() {
         return;
       }
       try { radioEngine.preloadSegment(seg); } catch (e) {}
+      // Beat detection client-side per brani musica in Club Night (v12.14)
+      try {
+        const hourLocal = new Date().getHours();
+        const isNight = hourLocal >= 22 || hourLocal <= 3;
+        if (isNight && seg.kind === "music" && seg.track_id && seg.music_audio_url && !seg.track_meta?.bpm) {
+          const apiBase = process.env.REACT_APP_BACKEND_URL;
+          radioEngine.analyzeBpmAndReport(seg.music_audio_url, seg.track_id, apiBase).catch(() => {});
+        }
+      } catch (e) { /* silent */ }
       fillQueue();
 
       let prevKind = null;
@@ -288,6 +297,10 @@ export default function PublicRadio() {
         setCurrent(seg);
         setSegments(prev => mergeSegments(prev, seg));
         setIsPreparing(false);
+        // v12.14 · Incrementa play_count per brani community (fire-and-forget)
+        if (seg.kind === "community" && seg.track_id) {
+          endpoints.communityTrackPlay(seg.track_id).catch(() => {});
+        }
 
         if (overlayTimerRef.current) { clearTimeout(overlayTimerRef.current); overlayTimerRef.current = null; }
         if (seg.kind === "music") {
@@ -706,6 +719,9 @@ export default function PublicRadio() {
           ))}
         </div>
       </section>
+
+      {/* ================ WALL COMMUNITY — brani approvati con play counter ================ */}
+      <CommunityWallPublic />
 
       {/* ================ TIMELINE ================ */}
       <section className="max-w-7xl mx-auto px-6 py-10 relative z-10">
@@ -1311,3 +1327,65 @@ function MainPartnerSlot() {
     <div data-testid="main-partner-slot">{inner}</div>
   );
 }
+
+// ==================== Wall Community pubblico ====================
+function CommunityWallPublic() {
+  const [tracks, setTracks] = React.useState([]);
+  React.useEffect(() => {
+    let live = true;
+    const load = async () => {
+      try {
+        const r = await endpoints.communityWall();
+        if (live) setTracks(r?.tracks || []);
+      } catch (e) {}
+    };
+    load();
+    const iv = setInterval(load, 15000);
+    return () => { live = false; clearInterval(iv); };
+  }, []);
+
+  if (!tracks || tracks.length === 0) return null;
+
+  return (
+    <section className="max-w-7xl mx-auto px-6 py-10 relative z-10" data-testid="wall-community-public">
+      <div className="flex items-end justify-between mb-6">
+        <div>
+          <div className="label-mono flex items-center gap-2"><Users className="w-3 h-3" /> WALL · COMMUNITY BOARD</div>
+          <h2 className="font-display font-bold text-2xl sm:text-3xl mt-1 text-glow-blue">Brani umani in onda</h2>
+          <p className="text-xs font-mono text-zinc-400 mt-2 max-w-xl">Chi ha caricato la sua musica e sta girando nella rotazione R-A.I. — contatore ascolti live.</p>
+        </div>
+      </div>
+      <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        {tracks.slice(0, 12).map(t => (
+          <div
+            key={t.id}
+            className="console-panel p-4 flex items-center gap-4"
+            data-testid={`wall-card-${t.id}`}
+            style={{
+              boxShadow: t.is_night
+                ? "0 0 0 1px rgba(0,229,255,0.35) inset, 0 0 24px rgba(0,229,255,0.2)"
+                : "0 0 0 1px rgba(255,255,255,0.06) inset",
+            }}
+          >
+            <div className="flex-1 min-w-0">
+              <div className="font-display font-bold text-base truncate flex items-center gap-1.5">
+                {t.is_night && <span title="Club Night">🌙</span>}
+                {t.title}
+              </div>
+              <div className="text-[10px] font-mono uppercase tracking-widest text-zinc-500 mt-1 truncate">
+                ▸ {t.author}
+              </div>
+            </div>
+            <div className="text-right shrink-0">
+              <div className="font-mono text-2xl font-black text-glow-cyan" style={{ color: "var(--console-cyan)" }}>
+                {String(t.play_count || 0).padStart(3, "0")}
+              </div>
+              <div className="text-[9px] font-mono text-zinc-500 uppercase tracking-widest">plays</div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+

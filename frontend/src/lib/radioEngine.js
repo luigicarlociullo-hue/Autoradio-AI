@@ -121,6 +121,40 @@ class RadioEngine {
     }
   }
 
+  /**
+   * analyzeBpmAndReport(url, trackId) — Beat detection client-side.
+   * Scarica il file audio, calcola il BPM via web-audio-beat-detector,
+   * lo invia al backend (`PATCH /api/admin/tracks/{id}/bpm`) e ritorna
+   * il BPM rilevato. Non blocca il playback (chiamata fire-and-forget).
+   * Se il rilevamento fallisce ritorna null.
+   */
+  async analyzeBpmAndReport(url, trackId, apiBase) {
+    if (!url || !trackId || !apiBase) return null;
+    try {
+      if (this._bpmCache && this._bpmCache.has(trackId)) return this._bpmCache.get(trackId);
+      this._bpmCache = this._bpmCache || new Map();
+      const { analyze } = await import("web-audio-beat-detector");
+      const ctx = this.audioCtx || new (window.OfflineAudioContext || window.AudioContext)(2, 44100 * 30, 44100);
+      const res = await fetch(url);
+      const buf = await res.arrayBuffer();
+      const decoded = await ctx.decodeAudioData(buf.slice(0));
+      const bpm = await analyze(decoded);
+      const rounded = Math.round(bpm);
+      this._bpmCache.set(trackId, rounded);
+      // Report al backend
+      try {
+        await fetch(`${apiBase}/api/admin/tracks/${trackId}/bpm`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ bpm: rounded, source: "client" }),
+        });
+      } catch (e) { /* silent */ }
+      return rounded;
+    } catch (e) {
+      return null;
+    }
+  }
+
   getFakeAmplitude() {
     // Used by visualizer when speaking via Web Speech (no analyser access)
     if (!this.synth) return 0;

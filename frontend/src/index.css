@@ -533,17 +533,17 @@ body {
 .powered-by-signature {
   display: inline-flex;
   align-items: baseline;
-  gap: 6px;
+  gap: 4px;
   font-family: 'Audiowide', 'Chakra Petch', sans-serif;
   font-style: normal;
-  font-size: 10px;
-  letter-spacing: 0.16em;
+  font-size: 8px;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
-  color: rgba(230, 241, 255, 0.75);
-  transform: rotate(-6deg) translateY(-2px);
+  color: rgba(230, 241, 255, 0.6);
+  transform: rotate(-8deg) translateY(-4px);
   transform-origin: left center;
   position: relative;
-  padding: 2px 6px;
+  padding: 1px 4px;
   line-height: 1;
   white-space: nowrap;
   text-decoration: none;
@@ -552,31 +552,31 @@ body {
 a.powered-by-signature:hover {
   color: #00E5FF;
   filter: drop-shadow(0 0 6px rgba(0,229,255,0.6));
-  transform: rotate(-6deg) translateY(-4px);
+  transform: rotate(-8deg) translateY(-6px);
 }
 .powered-by-signature::before,
 .powered-by-signature::after {
   content: '';
   display: inline-block;
-  width: 12px;
+  width: 8px;
   height: 1px;
-  background: linear-gradient(90deg, transparent, rgba(0,229,255,0.7), transparent);
-  margin: 0 2px 2px;
+  background: linear-gradient(90deg, transparent, rgba(0,229,255,0.6), transparent);
+  margin: 0 1px 1px;
   vertical-align: middle;
 }
 .powered-by-signature .lc-brand {
   font-family: 'Audiowide', 'Michroma', 'Chakra Petch', sans-serif;
   font-style: normal;
   font-weight: 400;
-  font-size: 14px;
+  font-size: 11px;
   letter-spacing: 0.04em;
   background: linear-gradient(135deg, #00E5FF 0%, #00BFFF 45%, #FF8A3D 100%);
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
   color: transparent;
-  filter: drop-shadow(0 0 6px rgba(0,229,255,0.55)) drop-shadow(0 0 2px rgba(255,138,61,0.35));
-  padding-left: 2px;
+  filter: drop-shadow(0 0 4px rgba(0,229,255,0.5));
+  padding-left: 1px;
   line-height: 0.9;
 }
 

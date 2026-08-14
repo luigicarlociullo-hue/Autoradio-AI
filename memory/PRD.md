@@ -1,5 +1,20 @@
 # NEURA·FM — AI Web Radio (Prototipo Beta)
 
+> **⚠️ REGOLA PERMANENTE (SENZA SPRECHI):** Ogni azione deve andare dritta al valore.
+> Zero image gen "creative", zero screenshot pleonastici, zero refactor non richiesti,
+> zero rigenerazioni ridondanti. Riusare sempre asset esistenti prima di generare.
+> Le domande all'utente sono ammesse SOLO se bloccanti. Applicare a ogni sessione futura.
+
+## v12.14 · PERFEZIONAMENTO PRE-FORK (2026-02)
+- Firma Audiowide 8-10px, rotazione -8°, cliccabile → FB profilo L&C.
+- Track: campi `genre`, `bpm`, `bpm_source`, `deleted_at` (soft-delete).
+- Cestino: `DELETE /admin/tracks/{id}` = soft; `POST .../restore`; `DELETE .../purge`; `GET /admin/tracks/trash`; `POST /admin/trash/auto-clean {days:30}`.
+- Rotazione esclude `deleted_at != None`.
+- Beat Detection client-side (`web-audio-beat-detector`) al preload dei music segments in Club Night → `PATCH /admin/tracks/{id}/bpm source=client`. Struttura pronta per `manual` e `server`.
+- Wall Community: `play_count` su CommunityTrack, `GET /community/wall`, `POST /community/tracks/{id}/play`. `<CommunityWallPublic>` sulla home, `<CommunityWallPanel>` in Regia.
+- Filtro Archivio Pro nel TrackManager: chip Pop/Rock/HipHop/Dance/Relax/Ambient/Varie + 🌙 Night Mix. Select/input in-cell per assegnare genere/BPM.
+- preload="auto" su tutti gli `<audio>` component-level. Fix silenzio time_signal attivo. Crossfade night 2500ms.
+
 ## Original problem statement
 Vorrei costruire un software di gestione radiofonica completamente automatizzato e gestito dalle A. I. Un software con un pannello che consenta di creare la prima webradio pensata e gestita esclusivamente da intelligenze artificiali che interfacciandosi tra loro creino una web radio esclusiva con musica inventata con interazioni vocali su argomenti vari attraverso le diverse sintesi vocali e che magari rispondano a quesiti proposti da umani attraverso social o numero di telefono dedicato.
 

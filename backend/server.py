@@ -171,6 +171,12 @@ class Track(BaseModel):
     is_jingle: bool = False               # short R-A.I. station jingle — played between segments
     is_night_jingle: bool = False         # jingle notturno (Club Night 22-04) — set separato
     on_air: bool = True                   # admin toggle: if False, excluded from rotation
+    # v12.14 · Archivio Pro + Beat Detection
+    genre: Optional[Literal["pop", "rock", "hiphop", "dance", "relax", "ambient", "varie"]] = None
+    bpm: Optional[int] = None             # BPM detected (client-side default, o server/manuale)
+    bpm_source: Optional[Literal["client", "server", "manual"]] = None
+    # Cestino soft-delete: quando non-null, il record è nel cestino
+    deleted_at: Optional[str] = None
     suno_task_id: Optional[str] = None
     status: Literal["ready", "pending", "failed", "retired", "disabled"] = "ready"
     created_at: str = Field(default_factory=now_iso)
@@ -1371,38 +1377,6 @@ async def admin_toggle_on_air(track_id: str, on_air: bool = Form(...)):
     return {"ok": True, "track_id": track_id, "on_air": bool(on_air)}
 
 
-@api_router.delete("/admin/tracks/{track_id}")
-async def admin_delete_track(track_id: str):
-    """CANCELLA DEFINITIVAMENTE una traccia dal magazzino (musica, jingle,
-    anthem, disco del giorno). Elimina il record DB e — best-effort — il file
-    locale. Irreversibile."""
-    t = await db.tracks.find_one({"id": track_id})
-    if not t:
-        raise HTTPException(404, "Track non trovata")
-    audio_url = t.get("audio_url") or ""
-    if audio_url and audio_url.startswith("/api/"):
-        try:
-            parts = audio_url.split("/")
-            if len(parts) >= 4:
-                subdir = parts[2]
-                fname = parts[3]
-                base = None
-                if subdir == "suno_audio":
-                    base = SUNO_AUDIO_DIR
-                elif subdir == "audio":
-                    base = AUDIO_DIR
-                elif subdir == "community_audio":
-                    base = COMMUNITY_AUDIO_DIR
-                if base:
-                    fp = Path(base) / fname
-                    if fp.exists():
-                        fp.unlink()
-        except Exception as e:
-            logger.warning(f"Track file cleanup failed for {track_id}: {e}")
-    await db.tracks.delete_one({"id": track_id})
-    return {"ok": True, "deleted": track_id}
-
-
 @api_router.post("/admin/automation/kill-switch")
 async def admin_kill_switch(payload: dict):
     """Attiva/disattiva l'automazione con un unico interruttore.
@@ -2404,6 +2378,7 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
             high_pool = await db.tracks.find(
                 {"source": _music_sources, "status": "ready", "audio_url": {"$ne": None},
                  "on_air": {"$ne": False},
+                 "deleted_at": None,
                  "$or": [
                      {"priority": "high"},
                      {"rotation_weight": {"$gt": 1}},
@@ -2418,6 +2393,7 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
             normal_pool = await db.tracks.find(
                 {"source": _music_sources, "status": "ready", "audio_url": {"$ne": None},
                  "on_air": {"$ne": False},
+                 "deleted_at": None,
                  "$or": [{"is_anthem": {"$exists": False}}, {"is_anthem": False}],
                  "priority": {"$ne": "high"},
                  "is_jingle": {"$ne": True},
@@ -3363,6 +3339,7 @@ class CommunityTrack(BaseModel):
     status: str = "off"          # "off" | "on"
     copyright_ok: bool = True
     is_night: bool = False       # v12.13: brano riservato al Club Night (22-04)
+    play_count: int = 0          # v12.14: contatore ascolti visibile sul Wall
     submitted_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
@@ -3900,6 +3877,159 @@ async def render_segment_hd(seg_id: str):
         logger.error(f"HD render failed for {seg_id}: {e}")
         await db.segments.update_one({"id": seg_id}, {"$set": {"hd_status": "failed"}})
         raise HTTPException(500, str(e))
+
+
+@api_router.delete("/admin/tracks/{track_id}")
+async def admin_delete_track(track_id: str):
+    """SOFT DELETE — sposta nel cestino. Il record resta 30 giorni con
+    `deleted_at` valorizzato, poi viene rimosso definitivamente dal job
+    di auto-clean. Fino ad allora è ripristinabile via `.../restore`."""
+    r = await db.tracks.update_one(
+        {"id": track_id, "deleted_at": None},
+        {"$set": {"deleted_at": now_iso()}},
+    )
+    if r.matched_count == 0:
+        raise HTTPException(404, "Track non trovata (o già nel cestino)")
+    return {"ok": True, "moved_to_trash": track_id}
+
+
+@api_router.post("/admin/tracks/{track_id}/restore")
+async def admin_restore_track(track_id: str):
+    """Ripristina una traccia dal cestino (UNDO). Se già ripristinata, no-op."""
+    r = await db.tracks.update_one(
+        {"id": track_id, "deleted_at": {"$ne": None}},
+        {"$set": {"deleted_at": None}},
+    )
+    if r.matched_count == 0:
+        raise HTTPException(404, "Track non nel cestino")
+    return {"ok": True, "restored": track_id}
+
+
+@api_router.delete("/admin/tracks/{track_id}/purge")
+async def admin_purge_track(track_id: str):
+    """CANCELLA DEFINITIVAMENTE (bypassa cestino). Rimuove file locale."""
+    t = await db.tracks.find_one({"id": track_id})
+    if not t:
+        raise HTTPException(404, "Track non trovata")
+    audio_url = t.get("audio_url") or ""
+    if audio_url and audio_url.startswith("/api/"):
+        try:
+            parts = audio_url.split("/")
+            if len(parts) >= 4:
+                subdir = parts[2]
+                fname = parts[3]
+                base = None
+                if subdir == "suno_audio": base = SUNO_AUDIO_DIR
+                elif subdir == "audio":    base = AUDIO_DIR
+                elif subdir == "community_audio": base = COMMUNITY_AUDIO_DIR
+                if base:
+                    fp = Path(base) / fname
+                    if fp.exists():
+                        fp.unlink()
+        except Exception as e:
+            logger.warning(f"Track file cleanup failed for {track_id}: {e}")
+    await db.tracks.delete_one({"id": track_id})
+    return {"ok": True, "purged": track_id}
+
+
+@api_router.get("/admin/tracks/trash")
+async def admin_list_trash():
+    """Lista tracce nel cestino (soft-deleted). Ordine per data eliminazione."""
+    docs = await db.tracks.find(
+        {"deleted_at": {"$ne": None}}, {"_id": 0},
+        sort=[("deleted_at", -1)]
+    ).to_list(500)
+    return {"tracks": docs, "count": len(docs)}
+
+
+@api_router.post("/admin/trash/auto-clean")
+async def admin_trash_autoclean(payload: dict = None):
+    """Rimuove definitivamente le tracce nel cestino da più di N giorni
+    (default 30). Chiamabile manualmente o via cron esterno."""
+    days = int((payload or {}).get("days") or 30)
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    old = await db.tracks.find(
+        {"deleted_at": {"$ne": None, "$lt": cutoff}}, {"id": 1, "audio_url": 1}
+    ).to_list(1000)
+    purged_ids = []
+    for t in old:
+        try:
+            audio_url = t.get("audio_url") or ""
+            if audio_url.startswith("/api/"):
+                parts = audio_url.split("/")
+                if len(parts) >= 4:
+                    subdir, fname = parts[2], parts[3]
+                    base = {"suno_audio": SUNO_AUDIO_DIR, "audio": AUDIO_DIR,
+                            "community_audio": COMMUNITY_AUDIO_DIR}.get(subdir)
+                    if base:
+                        fp = Path(base) / fname
+                        if fp.exists(): fp.unlink()
+        except Exception as e:
+            logger.warning(f"Auto-clean cleanup skipped for {t.get('id')}: {e}")
+        purged_ids.append(t.get("id"))
+    if purged_ids:
+        await db.tracks.delete_many({"id": {"$in": purged_ids}})
+    return {"ok": True, "days_cutoff": days, "purged_count": len(purged_ids), "purged_ids": purged_ids}
+
+
+@api_router.patch("/admin/tracks/{track_id}/genre")
+async def admin_set_track_genre(track_id: str, payload: dict):
+    """Assegna categoria/genere: pop|rock|hiphop|dance|relax|ambient|varie."""
+    g = (payload.get("genre") or "").lower().strip() or None
+    ALLOWED = {None, "pop", "rock", "hiphop", "dance", "relax", "ambient", "varie"}
+    if g not in ALLOWED:
+        raise HTTPException(400, f"Genre non valido. Usa uno di: {ALLOWED - {None}}")
+    r = await db.tracks.update_one({"id": track_id}, {"$set": {"genre": g}})
+    if r.matched_count == 0:
+        raise HTTPException(404, "Track non trovata")
+    return {"ok": True, "id": track_id, "genre": g}
+
+
+@api_router.patch("/admin/tracks/{track_id}/bpm")
+async def admin_set_track_bpm(track_id: str, payload: dict):
+    """Salva BPM sulla traccia. `source` ∈ {client,server,manual}. Se il
+    valore è null o assente, azzera BPM."""
+    bpm = payload.get("bpm")
+    source = (payload.get("source") or "client").lower()
+    if source not in ("client", "server", "manual"):
+        raise HTTPException(400, "source deve essere client|server|manual")
+    if bpm is None or bpm == "":
+        updates = {"bpm": None, "bpm_source": None}
+    else:
+        try:
+            bpm_int = int(round(float(bpm)))
+        except Exception:
+            raise HTTPException(400, "bpm deve essere numerico")
+        if bpm_int < 40 or bpm_int > 220:
+            raise HTTPException(400, "bpm fuori range plausibile (40-220)")
+        updates = {"bpm": bpm_int, "bpm_source": source}
+    r = await db.tracks.update_one({"id": track_id}, {"$set": updates})
+    if r.matched_count == 0:
+        raise HTTPException(404, "Track non trovata")
+    return {"ok": True, **updates}
+
+
+# ---- WALL COMMUNITY (pubblico) ----
+@api_router.get("/community/wall")
+async def community_wall():
+    """Vetrina pubblica: brani community approvati (status=on) con play_count."""
+    docs = await db.community_tracks.find(
+        {"status": "on"}, {"_id": 0},
+        sort=[("play_count", -1), ("submitted_at", -1)]
+    ).to_list(50)
+    return {"tracks": docs}
+
+
+@api_router.post("/community/tracks/{track_id}/play")
+async def community_track_play(track_id: str):
+    """Incrementa play_count del brano community (chiamato dal player quando
+    lo suona in trasmissione)."""
+    r = await db.community_tracks.update_one(
+        {"id": track_id}, {"$inc": {"play_count": 1}}
+    )
+    if r.matched_count == 0:
+        raise HTTPException(404, "Track non trovato")
+    return {"ok": True}
 
 
 # ----------------------- Partner / Sponsor -----------------------
