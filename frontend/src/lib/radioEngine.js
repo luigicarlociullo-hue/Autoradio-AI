@@ -103,6 +103,24 @@ class RadioEngine {
     return this.analyser || null;
   }
 
+  /**
+   * setNightMixing(enabled) — Club Night crossfade ritmico.
+   * Quando ci troviamo nella fascia 22-04, alziamo il crossfade a ~2500ms
+   * e usiamo un fade "equal-power" per ottenere passaggi fluidi in stile
+   * DJ mix (nessun stacco netto, nessun silenzio breve). Se disabilitato
+   * torna ai valori diurni normali.
+   */
+  setNightMixing(enabled) {
+    if (this._nightMixing === !!enabled) return;
+    this._nightMixing = !!enabled;
+    if (enabled) {
+      this._savedCrossfadeMs = this._crossfadeMs;
+      this._crossfadeMs = Math.max(2500, this._crossfadeMs || 1000);
+    } else if (typeof this._savedCrossfadeMs === "number") {
+      this._crossfadeMs = this._savedCrossfadeMs;
+    }
+  }
+
   getFakeAmplitude() {
     // Used by visualizer when speaking via Web Speech (no analyser access)
     if (!this.synth) return 0;

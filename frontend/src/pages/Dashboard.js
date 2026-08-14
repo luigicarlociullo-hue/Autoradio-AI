@@ -2539,7 +2539,7 @@ function CommunityPanel() {
                     <div className="mb-2 flex items-center gap-2">
                       <audio
                         controls
-                        preload="none"
+                        preload="auto"
                         src={endpoints.audioUrl(cfg[`${role}_jingle_url`])}
                         data-testid={`community-jingle-${role}-audio`}
                         style={{ height: 28, maxWidth: "100%" }}
@@ -2627,6 +2627,25 @@ function CommunityPanel() {
                   </td>
                   <td className="py-3 pr-0 text-right whitespace-nowrap">
                     <button
+                      data-testid={`community-night-${t.id}`}
+                      onClick={async () => {
+                        try {
+                          await endpoints.communityNight(t.id, !t.is_night);
+                          toast.success(!t.is_night ? "Marcato per Club Night" : "Riportato al giorno");
+                          load();
+                        } catch (e) { toast.error("Errore"); }
+                      }}
+                      disabled={busyId === t.id}
+                      className={`text-xs px-3 py-1.5 rounded-full font-semibold mr-2 disabled:opacity-40 inline-flex items-center gap-1 ${
+                        t.is_night
+                          ? "bg-cyan-500/20 text-cyan-300 border border-cyan-400/50"
+                          : "bg-zinc-800 text-zinc-400 border border-zinc-700 hover:text-white"
+                      }`}
+                      title={t.is_night ? "Brano notturno (22-04)" : "Marca come notturno"}
+                    >
+                      {t.is_night ? "🌙 NIGHT" : "☀ Giorno"}
+                    </button>
+                    <button
                       data-testid={`community-toggle-${t.id}`}
                       onClick={() => onToggle(t.id)}
                       disabled={busyId === t.id}
@@ -2636,7 +2655,7 @@ function CommunityPanel() {
                           : "bg-emerald-500 text-black hover:bg-emerald-400"
                       }`}
                     >
-                      {t.status === "on" ? "Metti OFF" : "Metti ON"}
+                      {t.status === "on" ? "Metti OFF" : "Approva ON"}
                     </button>
                     <button
                       data-testid={`community-delete-${t.id}`}
@@ -2885,7 +2904,7 @@ function RegiaAudioPanel() {
                     </div>
                     <div className="text-[10px] text-zinc-500 font-mono">{(bed.file_size / 1024 / 1024).toFixed(2)} MB</div>
                   </div>
-                  <audio controls preload="none" src={endpoints.audioUrl(bed.audio_url)} style={{ height: 28, maxWidth: 220 }} />
+                  <audio controls preload="auto" src={endpoints.audioUrl(bed.audio_url)} style={{ height: 28, maxWidth: 220 }} />
                   {!isActive && (
                     <button
                       onClick={() => activate(bed.id, bed.audio_url)}

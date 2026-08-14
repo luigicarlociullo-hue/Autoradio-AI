@@ -2140,19 +2140,44 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
         # Priority order: time signal (once per hour) → COMMUNITY block → jingle → dj_talk → music.
         if last_time_hour != current_hour_key:
             kind = "time_signal"
+            # ---- FIX SILENZIO POST-SEGNALE ORARIO (v12.13) ----
+            # Reset dei contatori jingle/dj_talk così che DOPO il segnale
+            # orario la musica ripartisca SUBITO senza uno stacco extra
+            # (jingle/talk che si sommano al time_signal creando silenzio).
+            songs_since_jingle = 0
+            songs_since_dj_talk = 0
             await db.station.update_one(
                 {"_id": "state"},
-                {"$set": {"last_time_signal_hour": current_hour_key}},
+                {"$set": {
+                    "last_time_signal_hour": current_hour_key,
+                    "songs_since_jingle": 0,
+                    "songs_since_dj_talk": 0,
+                }},
                 upsert=True,
             )
         elif community_freq > 0 and songs_since_community >= community_freq:
             # === Community block "A.I. Vs Umani" ===
-            # Cerca un brano community ON. Se non c'è, salta al normale palinsesto.
+            # Rispetto Club Night: se ora ∈ [22-04] preferisco brani is_night=true,
+            # altrimenti escludo i brani notturni dalla rotazione diurna.
+            try:
+                _h = int(hour_local) if hour_local is not None else datetime.now().hour
+            except Exception:
+                _h = datetime.now().hour
+            is_night_slot = (_h >= 22 or _h <= 3)
+            night_filter = (
+                {"is_night": True}
+                if is_night_slot
+                else {"$or": [{"is_night": False}, {"is_night": {"$exists": False}}]}
+            )
             comm = await db.community_tracks.find_one(
-                {"status": "on"},
+                {"status": "on", **night_filter},
                 {"_id": 0},
                 sort=[("submitted_at", -1)],
             )
+            if not comm and is_night_slot:
+                comm = await db.community_tracks.find_one(
+                    {"status": "on"}, {"_id": 0}, sort=[("submitted_at", -1)]
+                )
             if comm:
                 intro_url = state_doc.get("community_intro_jingle_url") or None
                 outro_url = state_doc.get("community_outro_jingle_url") or None
@@ -3337,6 +3362,7 @@ class CommunityTrack(BaseModel):
     tag: str = "AI-Vs-Umani"
     status: str = "off"          # "off" | "on"
     copyright_ok: bool = True
+    is_night: bool = False       # v12.13: brano riservato al Club Night (22-04)
     submitted_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
@@ -3485,6 +3511,18 @@ async def admin_community_delete(track_id: str):
     # object_storage.py e chiamarlo qui.)
     await db.community_tracks.delete_one({"id": track_id})
     return {"ok": True, "deleted": track_id}
+
+
+@api_router.patch("/admin/community/{track_id}/night")
+async def admin_community_night_toggle(track_id: str, payload: dict):
+    """Marca/smarca un brano community come 'notturno' (Club Night 22-04)."""
+    is_night = bool(payload.get("is_night"))
+    r = await db.community_tracks.update_one(
+        {"id": track_id}, {"$set": {"is_night": is_night}}
+    )
+    if r.matched_count == 0:
+        raise HTTPException(404, "Brano community non trovato")
+    return {"ok": True, "id": track_id, "is_night": is_night}
 
 
 # ============================================================

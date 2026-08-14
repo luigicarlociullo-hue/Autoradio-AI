@@ -237,6 +237,8 @@ export default function PublicRadio() {
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
           const hourLocal = new Date().getHours();  // 0-23, browser locale (Club Night 22-04)
+          // Enable night crossfade quando siamo in Club Night (22-04)
+          try { radioEngine.setNightMixing(hourLocal >= 22 || hourLocal <= 3); } catch (e) {}
           const params = { hour_local: hourLocal };
           if (hdMode) params.hd = true;
           const seg = await endpoints.generateSegment(params);
@@ -467,9 +469,16 @@ export default function PublicRadio() {
             <div className="min-w-0">
               <div className="flex items-baseline gap-3 flex-wrap">
                 <BrandName className="font-display font-black text-lg sm:text-xl text-glow-blue" />
-                <span className="powered-by-signature" data-testid="powered-by">
+                <a
+                  href="https://www.facebook.com/profile.php?id=61592908061493"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="powered-by-signature focusable"
+                  data-testid="powered-by"
+                  title="Vai al profilo Facebook di L&C Project"
+                >
                   Powered by <span className="lc-brand">L&amp;C Project</span>
-                </span>
+                </a>
               </div>
               <div className="label-mono !text-[9px] !tracking-widest mt-0.5">
                 AI CONTROL ROOM
@@ -970,7 +979,7 @@ function HomeCards({ djs, questionName, setQuestionName, questionText, setQuesti
             {daily.style_tags && <div className="text-[10px] font-mono text-zinc-500 mt-1 italic">{daily.style_tags}</div>}
             {daily.audio_url && (
               <audio
-                controls preload="none"
+                controls preload="auto"
                 src={endpoints.audioUrl(daily.audio_url)}
                 className="mt-2 w-full"
                 style={{ height: 32 }}
@@ -1020,7 +1029,51 @@ function HomeCards({ djs, questionName, setQuestionName, questionText, setQuesti
         </Link>
       </CoverCard>
 
-      {/* ====== MOD · E — CHAT LED (sempre visibile, no cover) ====== */}
+      {/* ====== MOD · F — CLUB NIGHT (22:00-04:00) ====== */}
+      <CoverCard
+        id="club-night"
+        open={openId === "club-night"}
+        onToggle={() => toggle("club-night")}
+        image="/cards/club-night.png"
+        moduleTag="MOD · F · CLUB NIGHT"
+        badgeColor="#00E5FF"
+        icon={Disc3}
+        iconSpin
+        eyebrow="◂ CLUB NIGHT · 22:00-04:00 ▸"
+        title="Techno & House · 6 ore di mixaggio AI"
+        testId="card-club-night"
+      >
+        <div className="text-sm font-mono text-zinc-200 leading-relaxed">
+          <div className="mb-3">Tre DJ AI si passano il microfono ogni 2 ore:</div>
+          <div className="space-y-2">
+            {djs.filter(d => d.night_slot).sort((a,b) => a.night_slot - b.night_slot).map(dj => (
+              <div key={dj.id} className="flex items-center gap-3 rounded-md p-2"
+                   style={{ background: "rgba(0,191,255,0.06)", border: `1px solid ${dj.accent_color || "#00E5FF"}44` }}
+                   data-testid={`club-dj-${dj.name}`}>
+                {dj.avatar_url && <img src={dj.avatar_url} alt={dj.name} className="w-11 h-11 rounded object-cover"
+                                       style={{ boxShadow: `0 0 10px ${dj.accent_color}88` }} />}
+                <div className="flex-1 min-w-0">
+                  <div className="font-display font-black text-sm" style={{ color: dj.accent_color, textShadow: `0 0 8px ${dj.accent_color}` }}>
+                    {dj.name} · <span className="text-[10px] font-mono text-zinc-400">
+                      {dj.night_slot === 1 ? "22:00-00:00" : dj.night_slot === 2 ? "00:00-02:00" : "02:00-04:00"}
+                    </span>
+                  </div>
+                  <div className="text-[10px] font-mono text-zinc-400 leading-tight truncate">{dj.personality}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+        <Link
+          to="/submit"
+          data-testid="submit-night-track-link"
+          className="btn-primary inline-flex items-center gap-2 mt-4 !text-[11px]"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <Send className="w-3.5 h-3.5" />
+          Manda il tuo brano techno/house
+        </Link>
+      </CoverCard>
       <section
         data-testid="card-chat-led"
         className="console-panel p-5 md:col-span-2"

@@ -72,5 +72,6 @@ export const endpoints = {
   djPatch: (id, payload) => api.patch(`/djs/${id}`, payload).then(r => r.data),
   trackDelete: (id) => api.delete(`/admin/tracks/${id}`).then(r => r.data),
   trackNightJingle: (id, isNight) => api.patch(`/tracks/${id}/night-jingle`, { is_night_jingle: !!isNight }).then(r => r.data),
+  communityNight: (id, isNight) => api.patch(`/admin/community/${id}/night`, { is_night: !!isNight }).then(r => r.data),
   killSwitch: (enabled, stopAfterCurrent = false) => api.post("/admin/automation/kill-switch", { enabled: !!enabled, stop_after_current: !!stopAfterCurrent }).then(r => r.data),
 };
