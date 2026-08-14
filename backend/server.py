@@ -172,7 +172,15 @@ class Track(BaseModel):
     is_night_jingle: bool = False         # jingle notturno (Club Night 22-04) — set separato
     on_air: bool = True                   # admin toggle: if False, excluded from rotation
     # v12.14 · Archivio Pro + Beat Detection
-    genre: Optional[Literal["pop", "rock", "hiphop", "dance", "relax", "ambient", "varie"]] = None
+    # NOTE: this is intentionally a SEPARATE field from `genre` above — `genre`
+    # holds the free-text descriptive genre (often with BPM, e.g. 'tech house
+    # 126 bpm') used for display and Suno prompting; `genre_category` is the
+    # curated Archivio Pro bucket used only for the Dashboard filter chips.
+    # A prior revision redeclared `genre` itself as this Literal, which made
+    # pydantic reject every free-text genre value with a ValidationError on
+    # Track(**doc) — breaking track generation and any read of an existing
+    # track. Keep these as two distinct fields.
+    genre_category: Optional[Literal["pop", "rock", "hiphop", "dance", "relax", "ambient", "varie"]] = None
     bpm: Optional[int] = None             # BPM detected (client-side default, o server/manuale)
     bpm_source: Optional[Literal["client", "server", "manual"]] = None
     # Cestino soft-delete: quando non-null, il record è nel cestino
@@ -3974,15 +3982,21 @@ async def admin_trash_autoclean(payload: dict = None):
 
 @api_router.patch("/admin/tracks/{track_id}/genre")
 async def admin_set_track_genre(track_id: str, payload: dict):
-    """Assegna categoria/genere: pop|rock|hiphop|dance|relax|ambient|varie."""
+    """Assegna categoria Archivio Pro: pop|rock|hiphop|dance|relax|ambient|varie.
+
+    Scrive in `genre_category`, NON in `genre` — `genre` resta il testo libero
+    (spesso con BPM) usato per display/prompting e non va sovrascritto da
+    questa categorizzazione (bug precedente: sovrascriveva `genre` perdendo
+    il BPM e rendendo il Track non validabile da pydantic).
+    """
     g = (payload.get("genre") or "").lower().strip() or None
     ALLOWED = {None, "pop", "rock", "hiphop", "dance", "relax", "ambient", "varie"}
     if g not in ALLOWED:
         raise HTTPException(400, f"Genre non valido. Usa uno di: {ALLOWED - {None}}")
-    r = await db.tracks.update_one({"id": track_id}, {"$set": {"genre": g}})
+    r = await db.tracks.update_one({"id": track_id}, {"$set": {"genre_category": g}})
     if r.matched_count == 0:
         raise HTTPException(404, "Track non trovata")
-    return {"ok": True, "id": track_id, "genre": g}
+    return {"ok": True, "id": track_id, "genre_category": g}
 
 
 @api_router.patch("/admin/tracks/{track_id}/bpm")

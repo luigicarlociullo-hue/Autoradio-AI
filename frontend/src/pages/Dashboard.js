@@ -1570,7 +1570,7 @@ function TrackManagerPanel() {
         // Nel TrackManager (magazzino AI) mostriamo qui solo tracce marcate is_night_jingle
         if (!t.is_night_jingle) return false;
       } else if (genreFilter !== "all") {
-        if ((t.genre || "").toLowerCase() !== genreFilter) return false;
+        if ((t.genre_category || "").toLowerCase() !== genreFilter) return false;
       }
       if (!q) return true;
       return (t.title || "").toLowerCase().includes(q) ||
@@ -1810,7 +1810,7 @@ function TrackManagerPanel() {
                 </td>
                 <td className="px-3 py-2 text-center">
                   <select
-                    value={t.genre || ""}
+                    value={t.genre_category || ""}
                     onChange={async (e) => {
                       try {
                         await endpoints.trackSetGenre(t.id, e.target.value || null);
