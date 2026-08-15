@@ -9,7 +9,6 @@ import { endpoints } from "@/lib/api";
 import radioEngine from "@/lib/radioEngine";
 import { toast } from "sonner";
 import PulsingBrand from "@/components/PulsingBrand";
-import HoloBrand from "@/components/HoloBrand";
 import RadioErrorBoundary from "@/components/RadioErrorBoundary";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogTrigger } from "@/components/ui/dialog";
 import BrandName from "@/components/BrandName";
@@ -536,12 +535,12 @@ export default function PublicRadio() {
       <section className="max-w-7xl mx-auto px-4 pt-4 pb-4 relative z-10">
         {/* Layout compatto: visual + now-playing affiancati su desktop */}
         <div className="grid lg:grid-cols-5 gap-4 items-stretch">
-          {/* Visual centrale — HoloBrand 3D reattivo */}
+          {/* Visual centrale — Console PNG originale con riflesso + reattività musicale */}
           <div className="lg:col-span-2 relative">
             <div className="absolute -top-2 right-3 z-20">
               <VuMeter />
             </div>
-            <HoloBrand
+            <PulsingBrand
               isPlaying={isPlaying || broadcastMode === "live_external"}
               current={current}
               trackOverlay={trackOverlay}

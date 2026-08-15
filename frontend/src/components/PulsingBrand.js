@@ -8,6 +8,7 @@ import radioEngine from "@/lib/radioEngine";
  */
 export default function PulsingBrand({
   isPlaying = false,
+  current = null,
   trackOverlay = null,
 }) {
   const imgRef = useRef(null);
@@ -93,87 +94,88 @@ export default function PulsingBrand({
         )}
       </div>
 
-      {trackOverlay && (
-        <div
-          className="track-overlay-strip"
-          data-testid="track-overlay"
-          style={{
-            position: "absolute",
-            top: "60%",           /* centro esatto della banda scura tra immagine e riflesso */
-            left: 0,
-            right: 0,
-            transform: "translateY(-50%)",
-            pointerEvents: "none",
-            opacity: trackOverlay.visible ? 1 : 0,
-            transition: "opacity 0.8s ease",
-            zIndex: 20,
-            overflow: "hidden",
-            whiteSpace: "nowrap",
-            maskImage: "linear-gradient(to right, transparent 0%, #000 8%, #000 92%, transparent 100%)",
-            WebkitMaskImage: "linear-gradient(to right, transparent 0%, #000 8%, #000 92%, transparent 100%)",
-          }}
-        >
+      {/* Overlay HORIZON: titolo + DJ centrati nel corridoio tra immagine e riflesso.
+          Font digitale blu neon (Orbitron/Share Tech Mono), aspetto "proiettato". */}
+      {(() => {
+        const musicTitle = trackOverlay?.visible ? trackOverlay.title : null;
+        const musicArtist = trackOverlay?.visible ? (trackOverlay.artist || "") : "";
+        const segTitle = current?.title || "";
+        const djName = current?.dj_name || "";
+        const hasAny = musicTitle || segTitle || djName;
+        if (!hasAny) return null;
+        const primary = musicTitle
+          ? (musicArtist ? `${musicTitle} · ${musicArtist}` : musicTitle)
+          : segTitle;
+        return (
           <div
-            className="track-marquee"
-            data-testid="track-overlay-title"
+            className="horizon-projection"
+            data-testid="horizon-projection"
+            style={{
+              position: "absolute",
+              top: "60%",
+              left: 0,
+              right: 0,
+              transform: "translateY(-50%)",
+              pointerEvents: "none",
+              zIndex: 20,
+              textAlign: "center",
+              padding: "0 6%",
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              gap: "0.35em",
+            }}
           >
-            {/* Contenuto duplicato per marquee seamless */}
-            <span className="track-marquee-text">
-              {trackOverlay.title}
-              {trackOverlay.artist ? ` · ${trackOverlay.artist}` : ""}
-              &nbsp;&nbsp;&nbsp;•&nbsp;&nbsp;&nbsp;
-            </span>
-            <span className="track-marquee-text" aria-hidden="true">
-              {trackOverlay.title}
-              {trackOverlay.artist ? ` · ${trackOverlay.artist}` : ""}
-              &nbsp;&nbsp;&nbsp;•&nbsp;&nbsp;&nbsp;
-            </span>
+            {primary && (
+              <div
+                className="horizon-title"
+                data-testid="horizon-title"
+                style={{
+                  fontFamily: '"Orbitron", "Share Tech Mono", ui-monospace, monospace',
+                  fontWeight: 700,
+                  letterSpacing: "0.14em",
+                  textTransform: "uppercase",
+                  fontSize: "clamp(0.85rem, 1.6vw, 1.35rem)",
+                  color: "#B8ECFF",
+                  textShadow:
+                    "0 0 4px rgba(0,229,255,0.95), 0 0 14px rgba(0,191,255,0.75), 0 0 32px rgba(0,120,255,0.55)",
+                  filter: "drop-shadow(0 0 6px rgba(0,191,255,0.55))",
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  maxWidth: "100%",
+                  lineHeight: 1.05,
+                }}
+              >
+                {primary}
+              </div>
+            )}
+            {djName && (
+              <div
+                className="horizon-dj"
+                data-testid="horizon-dj"
+                style={{
+                  fontFamily: '"Share Tech Mono", "VT323", ui-monospace, monospace',
+                  fontWeight: 400,
+                  letterSpacing: "0.32em",
+                  textTransform: "uppercase",
+                  fontSize: "clamp(0.6rem, 0.9vw, 0.78rem)",
+                  color: "#7FD8FF",
+                  textShadow:
+                    "0 0 3px rgba(0,229,255,0.9), 0 0 10px rgba(0,180,255,0.6)",
+                  opacity: 0.95,
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  maxWidth: "100%",
+                }}
+              >
+                ▸ {djName}
+              </div>
+            )}
           </div>
-        </div>
-      )}
-
-      <style>{`
-        /* Marquee scorrevole: il testo trascorre da destra a sinistra in
-           loop continuo, così anche titoli lunghi restano su un unico rigo. */
-        @keyframes raiTrackMarquee {
-          0%   { transform: translateX(0); }
-          100% { transform: translateX(-50%); }
-        }
-        /* Pulsazione del glow neon fucsia (palette --neon-pink #FF1493) */
-        @keyframes raiNeonPulse {
-          0%, 100% {
-            text-shadow:
-              0 0 6px rgba(255,20,147,0.95),
-              0 0 18px rgba(255,20,147,0.80),
-              0 0 42px rgba(255,20,147,0.55),
-              0 0 80px rgba(255,20,147,0.30);
-          }
-          50% {
-            text-shadow:
-              0 0 12px rgba(255,105,180,1),
-              0 0 30px rgba(255,20,147,1),
-              0 0 70px rgba(255,20,147,0.75),
-              0 0 120px rgba(255,20,147,0.45);
-          }
-        }
-        .track-marquee {
-          display: inline-flex;
-          white-space: nowrap;
-          animation: raiTrackMarquee 22s linear infinite;
-          will-change: transform;
-        }
-        .track-marquee-text {
-          font-family: 'Orbitron', 'Chakra Petch', sans-serif;
-          font-weight: 700;
-          letter-spacing: 4px;
-          text-transform: uppercase;
-          font-size: clamp(0.95em, 1.4vw, 1.25em);
-          color: #ff1493;
-          padding-right: 2rem;
-          animation: raiNeonPulse 2.4s ease-in-out infinite;
-          filter: drop-shadow(0 0 4px rgba(255,20,147,0.85));
-        }
-      `}</style>
+        );
+      })()}
     </div>
   );
 }
