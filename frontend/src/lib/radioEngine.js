@@ -384,6 +384,7 @@ class RadioEngine {
     const ctx = this.audioCtx;
     const now = ctx ? ctx.currentTime : 0;
     const FADE_MS = 200;
+    let waitMs = 0;
 
     // Caso 1: brano musicale attivo (gain node ancora vivo)
     if (this._currentMusicGain) {
@@ -405,6 +406,7 @@ class RadioEngine {
       this._currentMusicSrcNode = null;
       this._currentMusicAudio = null;
       this.stopRequested = true; // segnala al loop di _playMusicWithVoice di uscire
+      waitMs = Math.max(waitMs, FADE_MS + 30);
     }
 
     // Caso 2: fade-out finale già in corso → tronca subito
@@ -426,6 +428,16 @@ class RadioEngine {
     // Caso 3: eventuale voce/audio corrente (es. outro DJ) — stop netto
     try { this.stopAudio(); } catch (e) {}
     try { this.stopSpeech(); } catch (e) {}
+
+    // Il caso 1 sfuma il brano precedente su `FADE_MS + 30`ms invece di
+    // tagliarlo di netto (evita un click) — ma se il chiamante (es. playJingle)
+    // riparte SUBITO, i due suoni si accavallano per quella finestra: è il bug
+    // "jingle overlaps song" segnalato dall'utente. Restituiamo una Promise che
+    // il chiamante può await-are per partire solo a dissolvenza conclusa.
+    if (waitMs > 0) {
+      return new Promise((resolve) => setTimeout(resolve, waitMs));
+    }
+    return Promise.resolve();
   }
 
   async playAudioUrl(url, onStart) {
@@ -567,7 +579,7 @@ class RadioEngine {
       // Ferma subito qualunque coda di crossfade del brano precedente:
       // senza questo, l'ultimo ~1s di musica in dissolvenza si sovrappone
       // all'inizio del jingle (bug "jingle overlaps song").
-      try { this.hardStopMusic(); } catch (e) {}
+      try { await this.hardStopMusic(); } catch (e) {}
       return this.playJingle(segment.music_audio_url);
     }
     // Music segment con audio reale
@@ -590,7 +602,7 @@ class RadioEngine {
   async _playCommunityBlock(segment) {
     // A) INTRO JINGLE
     if (segment.pre_jingle_url) {
-      try { this.hardStopMusic(); } catch (e) {}
+      try { await this.hardStopMusic(); } catch (e) {}
       try {
         const url = segment.pre_jingle_url.startsWith("/api/")
           ? this._absoluteAudioUrl(segment.pre_jingle_url)
@@ -615,7 +627,7 @@ class RadioEngine {
     await this._playMusicWithVoice(musicSeg);
     // D) OUTRO JINGLE (CTA)
     if (segment.post_jingle_url) {
-      try { this.hardStopMusic(); } catch (e) {}
+      try { await this.hardStopMusic(); } catch (e) {}
       try {
         const url = segment.post_jingle_url.startsWith("/api/")
           ? this._absoluteAudioUrl(segment.post_jingle_url)
@@ -648,9 +660,17 @@ class RadioEngine {
       return new Promise((resolve) => {
         let resolved = false;
         const done = () => { if (!resolved) { resolved = true; resolve(); } };
-        const audio = new Audio();
-        audio.crossOrigin = "anonymous";
-        audio.preload = "auto";
+        // Riusa l'elemento pre-caricato da preloadSegment/preloadUrl quando c'è —
+        // altrimenti il pre-buffering fatto durante il segmento precedente viene
+        // buttato via e si reintroduce il ritardo di rete: è la causa del
+        // silenzio dopo i segnali orari e dopo gli altri parlati.
+        const preloaded = this._takePreloaded(segment.speech_audio_url);
+        const audio = preloaded || new Audio();
+        const alreadyLoaded = !!preloaded;
+        if (!alreadyLoaded) {
+          audio.crossOrigin = "anonymous";
+          audio.preload = "auto";
+        }
         audio.volume = 1.0;
         this.currentAudio = audio;
 
@@ -665,13 +685,18 @@ class RadioEngine {
           done();
         }, safetyMs);
 
-        let srcNode = null;
-        try {
-          if (ctx) {
-            srcNode = ctx.createMediaElementSource(audio);
-            srcNode.connect(this.voiceBus || ctx.destination);
-          }
-        } catch (e) {}
+        let srcNode = audio._srcNode || null;
+        if (!srcNode) {
+          try {
+            if (ctx) {
+              srcNode = ctx.createMediaElementSource(audio);
+              srcNode.connect(this.voiceBus || ctx.destination);
+            }
+          } catch (e) {}
+        } else if (audio._voiceGain) {
+          // Elemento già collegato al grafo dal preload (gain a 0, muto) — riportalo a piena voce.
+          try { audio._voiceGain.gain.value = 1.0; } catch (e) {}
+        }
 
         audio.addEventListener("ended", () => {
           clearTimeout(safety);
@@ -688,16 +713,27 @@ class RadioEngine {
           try { srcNode && srcNode.disconnect(); } catch (e) {}
           done();
         }, { once: true });
-        audio.addEventListener("canplaythrough", () => {
+
+        const startPlayback = () => {
           audio.play().catch((err) => {
             console.error("Voice play() failed:", err);
             clearTimeout(safety);
             done();
           });
-        }, { once: true });
+        };
 
-        audio.src = segment.speech_audio_url;
-        try { audio.load(); } catch (e) {}
+        if (alreadyLoaded && audio.readyState >= 3) {
+          // Già bufferizzato dal preload: "canplaythrough" potrebbe essere già
+          // scattato prima di arrivare qui — non riattenderlo o si resta appesi
+          // fino al safety timeout. Parti subito.
+          startPlayback();
+        } else {
+          audio.addEventListener("canplaythrough", startPlayback, { once: true });
+          if (!alreadyLoaded) {
+            audio.src = segment.speech_audio_url;
+            try { audio.load(); } catch (e) {}
+          }
+        }
       });
     }
     // Fallback: Web Speech del browser (solo se non abbiamo TTS pronto)
