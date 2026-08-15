@@ -45,8 +45,10 @@ class RadioEngine {
       this.compressor.attack.value = 0.003;
       this.compressor.release.value = 0.15;
       this.analyser = this.audioCtx.createAnalyser();
-      this.analyser.fftSize = 512;
-      this.analyser.smoothingTimeConstant = 0.82;
+      // v12.15 · CAPITOLATO: 1024 bande di frequenza per mapping chirurgico
+      // bassi 20-150Hz, medi 400-2500Hz, alti 5000-15000Hz sui componenti del logo.
+      this.analyser.fftSize = 2048;
+      this.analyser.smoothingTimeConstant = 0.70;
       this.outputBus.connect(this.compressor);
       this.compressor.connect(this.analyser);
       this.analyser.connect(this.audioCtx.destination);

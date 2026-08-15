@@ -656,17 +656,17 @@ export default function PublicRadio() {
         />
       </section>
 
-      {/* ================ DJ ROSTER — Mic Bank ================ */}
-      <section className="max-w-7xl mx-auto px-6 py-10 relative z-10">
+      {/* ================ DJ ROSTER — DAY (Leo · Aria · Max) ================ */}
+      <section className="max-w-7xl mx-auto px-6 py-10 relative z-10" data-testid="dj-roster-day">
         <div className="flex items-end justify-between mb-6">
           <div>
-            <div className="label-mono flex items-center gap-2"><Mic className="w-3 h-3" /> STAFF · MIC BANK</div>
-            <h2 className="font-display font-bold text-2xl sm:text-3xl mt-1 text-glow-blue">Tre voci · tre cervelli</h2>
+            <div className="label-mono flex items-center gap-2"><Mic className="w-3 h-3" /> STAFF · MIC BANK · DAY</div>
+            <h2 className="font-display font-bold text-2xl sm:text-3xl mt-1 text-glow-blue" data-testid="day-djs-heading">3 VOCI. 3 CERVELLI.</h2>
           </div>
           <div className="hidden sm:block"><VuMeter /></div>
         </div>
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
-          {djs.map(dj => (
+          {djs.filter(d => !d.night_slot).map(dj => (
             <div
               key={dj.id}
               className="console-panel p-5 transition-all duration-300 hover:-translate-y-1 flex flex-col"
@@ -692,7 +692,6 @@ export default function PublicRadio() {
                     loading="lazy"
                   />
                 )}
-                {/* Overlay scanlines sull'avatar */}
                 <div
                   aria-hidden
                   className="absolute inset-0 pointer-events-none"
@@ -719,41 +718,108 @@ export default function PublicRadio() {
         </div>
       </section>
 
+      {/* ================ DJ ROSTER — NIGHT (Nyx · Hex · Luma) ================ */}
+      <section className="max-w-7xl mx-auto px-6 py-4 relative z-10" data-testid="dj-roster-night">
+        <div className="flex items-end justify-between mb-6">
+          <div>
+            <div className="label-mono flex items-center gap-2"><Disc3 className="w-3 h-3" /> STAFF · MIC BANK · CLUB NIGHT</div>
+            <h2 className="font-display font-bold text-2xl sm:text-3xl mt-1 text-glow-cyan" style={{ color: "var(--console-cyan)" }} data-testid="night-djs-heading">3 DJ. 3 RITMI. L'ANIMA DEL CLUB.</h2>
+          </div>
+          <div className="hidden sm:block"><VuMeter /></div>
+        </div>
+        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
+          {djs.filter(d => d.night_slot).sort((a,b) => a.night_slot - b.night_slot).map(dj => (
+            <div
+              key={dj.id}
+              className="console-panel p-5 transition-all duration-300 hover:-translate-y-1 flex flex-col"
+              data-testid={`dj-card-${dj.name}`}
+              style={{ boxShadow: `0 0 0 1px ${dj.accent_color}22, 0 12px 40px rgba(0,0,0,0.6), 0 0 30px ${dj.accent_color}22` }}
+            >
+              <CornerAccents />
+              <span className="module-tag" style={{ color: dj.accent_color, borderColor: `${dj.accent_color}66` }}>
+                <Mic className="w-2.5 h-2.5 inline mr-1" /> CH · {dj.name?.substring(0,3).toUpperCase()}
+              </span>
+              <div
+                className="w-full aspect-square rounded-lg bg-black overflow-hidden mb-4 mt-4 relative"
+                style={{
+                  border: `1px solid ${dj.accent_color}55`,
+                  boxShadow: `0 0 24px ${dj.accent_color}55, inset 0 0 20px ${dj.accent_color}22`,
+                }}
+              >
+                {dj.avatar_url && (
+                  <img
+                    src={dj.avatar_url}
+                    alt={dj.name}
+                    className="w-full h-full object-cover"
+                    loading="lazy"
+                  />
+                )}
+                <div
+                  aria-hidden
+                  className="absolute inset-0 pointer-events-none"
+                  style={{
+                    background: "repeating-linear-gradient(0deg, rgba(0,229,255,0.06) 0px, rgba(0,229,255,0.06) 1px, transparent 1px, transparent 3px)",
+                    mixBlendMode: "screen",
+                  }}
+                />
+              </div>
+              <div className="flex items-center justify-between">
+                <div className="font-display font-black text-2xl leading-none" style={{ color: dj.accent_color, textShadow: `0 0 12px ${dj.accent_color}` }}>
+                  {dj.name}
+                </div>
+                <VuMeter />
+              </div>
+              <div className="mt-2 text-[10px] font-mono uppercase tracking-widest text-zinc-500">
+                <Cpu className="w-2.5 h-2.5 inline mr-1" /> {dj.llm_provider} · {dj.llm_model} · {dj.night_slot === 1 ? "22:00-00:00" : dj.night_slot === 2 ? "00:00-02:00" : "02:00-04:00"}
+              </div>
+              <p className="mt-3 text-xs font-mono text-zinc-300 leading-relaxed">
+                {dj.personality}
+              </p>
+            </div>
+          ))}
+        </div>
+      </section>
+
       {/* ================ WALL COMMUNITY — brani approvati con play counter ================ */}
       <CommunityWallPublic />
 
-      {/* ================ TIMELINE ================ */}
-      <section className="max-w-7xl mx-auto px-6 py-10 relative z-10">
-        <div className="label-mono mb-2 flex items-center gap-2"><AudioWaveform className="w-3 h-3" /> TIMELINE · BROADCAST LOG</div>
-        <h2 className="font-display font-bold text-2xl sm:text-3xl mb-6 text-glow-blue">Ultimi segnali</h2>
+      {/* ================ RE-PLAY · Archivio Storico ================ */}
+      <section className="max-w-7xl mx-auto px-6 py-10 relative z-10" data-testid="replay-section">
+        <div className="label-mono mb-2 flex items-center gap-2"><AudioWaveform className="w-3 h-3" /> RE-PLAY · ARCHIVIO STORICO</div>
+        <h2 className="font-display font-bold text-2xl sm:text-3xl mb-2 text-glow-blue" data-testid="replay-heading">RE-PLAY (Archivio Storico)</h2>
+        <p className="text-xs font-mono text-zinc-400 mb-6 max-w-2xl">
+          Galleria per riascoltare i set dei DJ, i dischi del giorno e i momenti talk andati in onda.
+        </p>
         <RadioErrorBoundary>
           <div className="space-y-2">
             {segments.length === 0 && (
               <div className="console-panel p-6 text-zinc-500 text-sm font-mono">
-                <span className="text-cyan-400">▸</span> Nessun segmento trasmesso. Premi <span className="text-cyan-300">PLAY</span> per iniziare.
+                <span className="text-cyan-400">▸</span> Archivio vuoto. Premi <span className="text-cyan-300">PLAY</span> per iniziare la trasmissione.
               </div>
             )}
-            {segments.slice(-12).reverse().map((s, idx) => {
+            {segments.slice(-24).reverse().map((s, idx) => {
               const rowKey = s?.id ? `seg-${s.id}` : `seg-idx-${idx}`;
               const dj = djs.find(d => d.name === s.dj_name);
+              const replayUrl = s.speech_audio_url || s.music_audio_url || null;
               return (
                 <Dialog key={rowKey}>
                   <DialogTrigger asChild>
                     <button
                       className="console-panel p-4 flex items-start gap-4 w-full text-left hover:border-cyan-400/60 transition"
-                      data-testid={`timeline-segment-${s.id || idx}`}
+                      data-testid={`replay-segment-${s.id || idx}`}
                     >
                       <KindBadge kind={s.kind} />
                       <div className="min-w-0 flex-1">
                         <div className="font-display font-semibold truncate">{s.title}</div>
                         <div className="text-xs font-mono text-zinc-500 mt-1 uppercase tracking-widest">
                           <Mic className="w-2.5 h-2.5 inline mr-1" /> {s.dj_name} · <Cpu className="w-2.5 h-2.5 inline mx-1" /> {s.llm_provider}
+                          {replayUrl && <span className="ml-2 text-cyan-400">· ▶ RE-PLAY</span>}
                         </div>
                         {s.script && <p className="text-sm font-mono text-zinc-400 mt-2 line-clamp-2">{s.script}</p>}
                       </div>
                     </button>
                   </DialogTrigger>
-                  <DialogContent className="max-w-2xl bg-[#02040A] text-white" data-testid={`timeline-dialog-${s.id || idx}`}
+                  <DialogContent className="max-w-2xl bg-[#02040A] text-white" data-testid={`replay-dialog-${s.id || idx}`}
                     style={{ border: "1px solid rgba(0,191,255,0.4)", boxShadow: "0 0 40px rgba(0,191,255,0.25)" }}>
                     <DialogHeader>
                       <div className="flex items-center gap-4">
@@ -777,6 +843,16 @@ export default function PublicRadio() {
                     </DialogHeader>
                     <div className="mt-2">
                       <div className="text-sm font-semibold text-zinc-300 mb-2">{s.title}</div>
+                      {replayUrl && (
+                        <audio
+                          controls
+                          preload="none"
+                          src={replayUrl}
+                          className="w-full mb-3"
+                          style={{ height: 34 }}
+                          data-testid={`replay-audio-${s.id || idx}`}
+                        />
+                      )}
                       <div className="max-h-[50vh] overflow-y-auto rounded-lg bg-black/60 border border-cyan-500/20 p-4 text-sm font-mono text-zinc-300 leading-relaxed whitespace-pre-wrap">
                         {s.script || <span className="italic text-zinc-500">Nessun copione testuale disponibile per questo segmento.</span>}
                       </div>
@@ -1099,7 +1175,7 @@ function HomeCards({ djs, questionName, setQuestionName, questionText, setQuesti
         style={{ boxShadow: "0 0 0 1px rgba(0,191,255,0.28) inset, 0 14px 40px rgba(0,0,0,0.6), 0 0 32px rgba(0,191,255,0.22)" }}
       >
         <CornerAccents />
-        <span className="module-tag">MOD · E · LIVE FEED · CHAT</span>
+        <span className="module-tag">MOD · E · INTERAZIONE NEURALE LIVE</span>
 
         <div className="flex items-start gap-3 mt-3 mb-3">
           <div className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0"
@@ -1111,8 +1187,11 @@ function HomeCards({ djs, questionName, setQuestionName, questionText, setQuesti
             <MessageCircle className="w-5 h-5" style={{ color: "var(--console-cyan)", filter: "drop-shadow(0 0 6px rgba(0,229,255,0.8))" }} />
           </div>
           <div className="flex-1 min-w-0">
-            <div className="label-mono">◂ CHIEDI AI DJ · LIVE ▸</div>
-            <h3 className="font-display font-black text-xl mt-0.5 text-glow-blue">I DJ ascoltano.</h3>
+            <div className="label-mono">◂ INTERAZIONE NEURALE LIVE ▸</div>
+            <h3 className="font-display font-black text-xl mt-0.5 text-glow-blue" data-testid="interazione-neurale-title">INTERAZIONE NEURALE LIVE</h3>
+            <p className="text-[11px] font-mono text-zinc-400 leading-snug mt-1" data-testid="interazione-neurale-sub">
+              Dialoga in tempo reale con il cervello di R-A.I. Scrivi, sfida o chiedi: ti risponderemo a voce in diretta.
+            </p>
           </div>
           <div className="hidden sm:block"><VuMeter /></div>
         </div>
@@ -1162,7 +1241,7 @@ function HomeCards({ djs, questionName, setQuestionName, questionText, setQuesti
             data-testid="led-input-question"
             value={questionText}
             onChange={(e) => setQuestionText(e.target.value)}
-            placeholder="CHIEDI A LEO · ARIA · MAX…"
+            placeholder="Cosa vuoi dire a R-A.I.?"
             className="flex-1 rounded-md bg-black border outline-none px-3 py-2 text-xs font-mono text-white placeholder:text-cyan-800 uppercase tracking-widest"
             style={{ borderColor: "var(--console-line-strong)" }}
             required
@@ -1173,7 +1252,7 @@ function HomeCards({ djs, questionName, setQuestionName, questionText, setQuesti
             data-testid="led-input-send"
             className="btn-primary inline-flex items-center gap-1.5 !text-[10px] disabled:opacity-40 whitespace-nowrap !px-4 !py-2"
           >
-            <Send className="w-3 h-3" /> INVIA
+            <Send className="w-3 h-3" /> ENTRA IN ONDA
           </button>
         </form>
       </section>
