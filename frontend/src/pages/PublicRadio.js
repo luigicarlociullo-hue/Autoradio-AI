@@ -674,8 +674,8 @@ export default function PublicRadio() {
               <div className="grid md:grid-cols-5 gap-0">
                 <div className="md:col-span-3 relative aspect-[16/9] md:aspect-auto bg-black overflow-hidden">
                   <img
-                    src="/rai-visual-bg.png"
-                    alt="R-A.I. Virtual Studios · console con riflesso"
+                    src="/rai-studios.png"
+                    alt="R-A.I. Virtual Studios · ambiente radiofonico"
                     className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-[1.03]"
                     loading="lazy"
                     data-testid="virtual-studios-thumb"
@@ -746,7 +746,7 @@ export default function PublicRadio() {
                 }}
               >
                 <img
-                  src="/rai-visual-bg.png"
+                  src="/rai-studios.png"
                   alt="R-A.I. Virtual Studios · fullscreen"
                   className="w-full h-auto max-h-[75vh] object-contain bg-black"
                   data-testid="virtual-studios-fullscreen-img"
@@ -835,7 +835,7 @@ export default function PublicRadio() {
         <div className="flex items-end justify-between mb-6">
           <div>
             <div className="label-mono flex items-center gap-2"><Disc3 className="w-3 h-3" /> STAFF · MIC BANK · CLUB NIGHT</div>
-            <h2 className="font-display font-bold text-2xl sm:text-3xl mt-1 text-glow-cyan" style={{ color: "var(--console-cyan)" }} data-testid="night-djs-heading">3 DJ. 3 RITMI. L'ANIMA DEL CLUB.</h2>
+            <h2 className="font-display font-bold text-2xl sm:text-3xl mt-1 text-glow-cyan" style={{ color: "var(--console-cyan)" }} data-testid="night-djs-heading">3 DJ. 3 Beat. Un solo Club</h2>
           </div>
           <div className="hidden sm:block"><VuMeter /></div>
         </div>

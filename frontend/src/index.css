@@ -539,19 +539,27 @@ body {
 .powered-by-signature {
   position: absolute;
   top: 100%;
-  left: 55%;
-  transform: translate(-10%, 6%) rotate(-14deg);
+  left: 4%;
+  transform: translate(0%, 6%) rotate(-10deg);
   transform-origin: left top;
   display: inline-flex;
+  flex-wrap: wrap;
   align-items: baseline;
   gap: 2px;
+  /* FIX (ticket 220609, 2026-08-15): la firma era ancorata a left:55% con
+     white-space:nowrap, quindi il testo intero "Powered by L&C Project"
+     sporgeva ben oltre il box 56px del logo e finiva sopra il testo
+     "R-A.I." del BrandName nella colonna accanto. Ora e' ancorata a
+     sinistra (sotto il logo) e limitata in larghezza cosi' va a capo su
+     2-3 righe corte invece di allungarsi nella colonna vicina. */
+  max-width: 64px;
   font-family: 'Caveat', 'Kalam', 'Audiowide', cursive;
   font-weight: 400;
   font-style: italic;
   font-size: 11px;
   letter-spacing: 0.04em;
-  line-height: 1;
-  white-space: nowrap;
+  line-height: 1.05;
+  white-space: normal;
   color: rgba(230, 241, 255, 0.8);
   text-decoration: none;
   padding: 0;
@@ -562,7 +570,7 @@ body {
 a.powered-by-signature:hover {
   color: rgba(0, 229, 255, 0.95);
   filter: drop-shadow(0 0 4px rgba(0, 229, 255, 0.6));
-  transform: translate(-10%, 6%) rotate(-14deg) scale(1.05);
+  transform: translate(0%, 6%) rotate(-10deg) scale(1.05);
 }
 .powered-by-signature .lc-brand {
   font-family: 'Caveat', 'Kalam', cursive;
