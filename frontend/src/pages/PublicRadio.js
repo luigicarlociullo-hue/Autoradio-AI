@@ -657,7 +657,7 @@ export default function PublicRadio() {
       </section>
 
       {/* ================ VIRTUAL STUDIOS ================ */}
-      <section className="max-w-7xl mx-auto px-6 py-6 relative z-10" data-testid="virtual-studios-section">
+      <section className="max-w-7xl mx-auto px-6 py-3 relative z-10" data-testid="virtual-studios-section">
         <Dialog>
           <DialogTrigger asChild>
             <button
@@ -768,217 +768,155 @@ export default function PublicRadio() {
         </Dialog>
       </section>
 
-      {/* ================ DJ ROSTER — DAY (Leo · Aria · Max) ================ */}
-      <section className="max-w-7xl mx-auto px-6 py-10 relative z-10" data-testid="dj-roster-day">
-        <div className="flex items-end justify-between mb-6">
-          <div>
-            <div className="label-mono flex items-center gap-2"><Mic className="w-3 h-3" /> STAFF · MIC BANK · DAY</div>
-            <h2 className="font-display font-bold text-2xl sm:text-3xl mt-1 text-glow-blue" data-testid="day-djs-heading">3 VOCI. 3 CERVELLI.</h2>
-          </div>
-          <div className="hidden sm:block"><VuMeter /></div>
-        </div>
-        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
-          {djs.filter(d => !d.night_slot).map(dj => (
-            <div
-              key={dj.id}
-              className="console-panel p-5 transition-all duration-300 hover:-translate-y-1 flex flex-col"
-              data-testid={`dj-card-${dj.name}`}
-              style={{ boxShadow: `0 0 0 1px ${dj.accent_color}22, 0 12px 40px rgba(0,0,0,0.6), 0 0 30px ${dj.accent_color}22` }}
-            >
-              <CornerAccents />
-              <span className="module-tag" style={{ color: dj.accent_color, borderColor: `${dj.accent_color}66` }}>
-                <Mic className="w-2.5 h-2.5 inline mr-1" /> CH · {dj.name?.substring(0,3).toUpperCase()}
-              </span>
-              <div
-                className="w-full aspect-square rounded-lg bg-black overflow-hidden mb-4 mt-4 relative"
-                style={{
-                  border: `1px solid ${dj.accent_color}55`,
-                  boxShadow: `0 0 24px ${dj.accent_color}55, inset 0 0 20px ${dj.accent_color}22`,
-                }}
+      {/* ================ R-A.I. TEAM — 3 SPEAKER + 3 DJ CLUB, compatto orizzontale ================ */}
+      <section className="max-w-7xl mx-auto px-6 py-4 relative z-10" data-testid="rai-team-section">
+        <div className="console-panel p-4">
+          <CornerAccents />
+          <div className="flex items-end justify-between mb-3 flex-wrap gap-2">
+            <div>
+              <div className="label-mono flex items-center gap-2"><Mic className="w-3 h-3" /> R-A.I. · TEAM</div>
+              <h2
+                className="font-display font-bold text-xl sm:text-2xl mt-0.5 text-glow-blue"
+                data-testid="rai-team-heading"
+                style={{ fontFamily: '"Orbitron","Share Tech Mono",ui-monospace,monospace', letterSpacing: "0.06em" }}
               >
-                {dj.avatar_url && (
-                  <img
-                    src={dj.avatar_url}
-                    alt={dj.name}
-                    className="w-full h-full object-cover"
-                    loading="lazy"
-                  />
-                )}
-                <div
-                  aria-hidden
-                  className="absolute inset-0 pointer-events-none"
-                  style={{
-                    background: "repeating-linear-gradient(0deg, rgba(0,191,255,0.05) 0px, rgba(0,191,255,0.05) 1px, transparent 1px, transparent 3px)",
-                    mixBlendMode: "screen",
-                  }}
-                />
-              </div>
-              <div className="flex items-center justify-between">
-                <div className="font-display font-black text-2xl leading-none text-glow-blue" style={{ color: dj.accent_color, textShadow: `0 0 12px ${dj.accent_color}` }}>
-                  {dj.name}
-                </div>
-                <VuMeter />
-              </div>
-              <div className="mt-2 text-[10px] font-mono uppercase tracking-widest text-zinc-500">
-                <Cpu className="w-2.5 h-2.5 inline mr-1" /> {dj.llm_provider} · {dj.llm_model}
-              </div>
-              <p className="mt-3 text-xs font-mono text-zinc-300 leading-relaxed">
-                {dj.personality}
+                R-A.I. TEAM
+              </h2>
+              <p className="text-[10px] font-mono uppercase tracking-widest text-zinc-500 mt-0.5">
+                3 VOCI · 3 CERVELLI ▸ 3 DJ · 3 RITMI · L'ANIMA DEL CLUB
               </p>
             </div>
-          ))}
-        </div>
-      </section>
+            <div className="hidden sm:block"><VuMeter /></div>
+          </div>
 
-      {/* ================ DJ ROSTER — NIGHT (Nyx · Hex · Luma) ================ */}
-      <section className="max-w-7xl mx-auto px-6 py-4 relative z-10" data-testid="dj-roster-night">
-        <div className="flex items-end justify-between mb-6">
-          <div>
-            <div className="label-mono flex items-center gap-2"><Disc3 className="w-3 h-3" /> STAFF · MIC BANK · CLUB NIGHT</div>
-            <h2 className="font-display font-bold text-2xl sm:text-3xl mt-1 text-glow-cyan" style={{ color: "var(--console-cyan)" }} data-testid="night-djs-heading">3 DJ. 3 Beat. Un solo Club</h2>
+          <div className="grid grid-cols-3 md:grid-cols-6 gap-2">
+            {djs
+              .slice()
+              .sort((a, b) => (a.night_slot ? 1 : 0) - (b.night_slot ? 1 : 0) || (a.night_slot || 0) - (b.night_slot || 0))
+              .map(dj => (
+                <Dialog key={dj.id}>
+                  <DialogTrigger asChild>
+                    <button
+                      type="button"
+                      data-testid={`team-chip-${dj.name}`}
+                      className="flex flex-col items-center gap-1.5 p-2 rounded-lg transition-all hover:-translate-y-0.5 focusable"
+                      style={{
+                        background: "rgba(0,0,0,0.55)",
+                        border: `1px solid ${dj.accent_color || "#00BFFF"}55`,
+                        boxShadow: `0 0 12px ${dj.accent_color || "#00BFFF"}22, inset 0 0 8px ${dj.accent_color || "#00BFFF"}12`,
+                      }}
+                    >
+                      <div
+                        className="w-12 h-12 rounded-full overflow-hidden bg-black shrink-0"
+                        style={{
+                          border: `1px solid ${dj.accent_color || "#00BFFF"}77`,
+                          boxShadow: `0 0 16px ${dj.accent_color || "#00BFFF"}66`,
+                        }}
+                      >
+                        {dj.avatar_url && (
+                          <img src={dj.avatar_url} alt={dj.name} className="w-full h-full object-cover" loading="lazy" />
+                        )}
+                      </div>
+                      <div
+                        className="font-display font-black text-[13px] leading-none dj-name-force"
+                        style={{ color: dj.accent_color || "#00BFFF", textShadow: `0 0 8px ${dj.accent_color || "#00BFFF"}` }}
+                      >
+                        {dj.name}
+                      </div>
+                      <div className="text-[9px] font-mono uppercase tracking-widest text-zinc-500 leading-none">
+                        {dj.night_slot ? "CLUB NIGHT" : "SPEAKER"}
+                      </div>
+                    </button>
+                  </DialogTrigger>
+                  <DialogContent
+                    className="max-w-lg bg-[#02040A] text-white"
+                    data-testid={`team-dialog-${dj.name}`}
+                    style={{
+                      border: `1px solid ${dj.accent_color || "#00BFFF"}66`,
+                      boxShadow: `0 0 40px ${dj.accent_color || "#00BFFF"}44`,
+                    }}
+                  >
+                    <DialogHeader>
+                      <div className="flex items-center gap-4">
+                        {dj.avatar_url && (
+                          <img
+                            src={dj.avatar_url}
+                            alt={dj.name}
+                            className="w-20 h-20 rounded-lg object-cover"
+                            style={{
+                              border: `1px solid ${dj.accent_color || "#00BFFF"}77`,
+                              boxShadow: `0 0 24px ${dj.accent_color || "#00BFFF"}66`,
+                            }}
+                          />
+                        )}
+                        <div>
+                          <DialogTitle
+                            className="text-2xl font-display font-black"
+                            style={{ color: dj.accent_color || "#00BFFF", textShadow: `0 0 12px ${dj.accent_color || "#00BFFF"}` }}
+                          >
+                            {dj.name}
+                          </DialogTitle>
+                          <DialogDescription className="text-xs font-mono uppercase tracking-widest text-cyan-500 mt-1">
+                            {dj.llm_provider} · {dj.llm_model}
+                            {dj.night_slot ? ` · ${dj.night_slot === 1 ? "22:00-00:00" : dj.night_slot === 2 ? "00:00-02:00" : "02:00-04:00"}` : " · SPEAKER"}
+                          </DialogDescription>
+                        </div>
+                      </div>
+                    </DialogHeader>
+                    <p className="text-sm font-mono text-zinc-300 leading-relaxed mt-2">
+                      {dj.personality || "Nessuna bio disponibile."}
+                    </p>
+                  </DialogContent>
+                </Dialog>
+              ))}
           </div>
-          <div className="hidden sm:block"><VuMeter /></div>
-        </div>
-        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
-          {djs.filter(d => d.night_slot).sort((a,b) => a.night_slot - b.night_slot).map(dj => (
-            <div
-              key={dj.id}
-              className="console-panel p-5 transition-all duration-300 hover:-translate-y-1 flex flex-col"
-              data-testid={`dj-card-${dj.name}`}
-              style={{ boxShadow: `0 0 0 1px ${dj.accent_color}22, 0 12px 40px rgba(0,0,0,0.6), 0 0 30px ${dj.accent_color}22` }}
-            >
-              <CornerAccents />
-              <span className="module-tag" style={{ color: dj.accent_color, borderColor: `${dj.accent_color}66` }}>
-                <Mic className="w-2.5 h-2.5 inline mr-1" /> CH · {dj.name?.substring(0,3).toUpperCase()}
-              </span>
-              <div
-                className="w-full aspect-square rounded-lg bg-black overflow-hidden mb-4 mt-4 relative"
-                style={{
-                  border: `1px solid ${dj.accent_color}55`,
-                  boxShadow: `0 0 24px ${dj.accent_color}55, inset 0 0 20px ${dj.accent_color}22`,
-                }}
-              >
-                {dj.avatar_url && (
-                  <img
-                    src={dj.avatar_url}
-                    alt={dj.name}
-                    className="w-full h-full object-cover"
-                    loading="lazy"
-                  />
-                )}
-                <div
-                  aria-hidden
-                  className="absolute inset-0 pointer-events-none"
-                  style={{
-                    background: "repeating-linear-gradient(0deg, rgba(0,229,255,0.06) 0px, rgba(0,229,255,0.06) 1px, transparent 1px, transparent 3px)",
-                    mixBlendMode: "screen",
-                  }}
-                />
-              </div>
-              <div className="flex items-center justify-between">
-                <div className="font-display font-black text-2xl leading-none" style={{ color: dj.accent_color, textShadow: `0 0 12px ${dj.accent_color}` }}>
-                  {dj.name}
-                </div>
-                <VuMeter />
-              </div>
-              <div className="mt-2 text-[10px] font-mono uppercase tracking-widest text-zinc-500">
-                <Cpu className="w-2.5 h-2.5 inline mr-1" /> {dj.llm_provider} · {dj.llm_model} · {dj.night_slot === 1 ? "22:00-00:00" : dj.night_slot === 2 ? "00:00-02:00" : "02:00-04:00"}
-              </div>
-              <p className="mt-3 text-xs font-mono text-zinc-300 leading-relaxed">
-                {dj.personality}
-              </p>
-            </div>
-          ))}
         </div>
       </section>
 
       {/* ================ WALL COMMUNITY — brani approvati con play counter ================ */}
       <CommunityWallPublic />
 
-      {/* ================ RE-PLAY · Archivio Storico ================ */}
-      <section className="max-w-7xl mx-auto px-6 py-10 relative z-10" data-testid="replay-section">
-        <div className="label-mono mb-2 flex items-center gap-2"><AudioWaveform className="w-3 h-3" /> RE-PLAY · ARCHIVIO STORICO</div>
-        <h2 className="font-display font-bold text-2xl sm:text-3xl mb-2 text-glow-blue" data-testid="replay-heading">RE-PLAY (Archivio Storico)</h2>
-        <p className="text-xs font-mono text-zinc-400 mb-6 max-w-2xl">
-          Galleria per riascoltare i set dei DJ, i dischi del giorno e i momenti talk andati in onda.
-        </p>
-        <RadioErrorBoundary>
-          <div className="space-y-2">
-            {segments.length === 0 && (
-              <div className="console-panel p-6 text-zinc-500 text-sm font-mono">
-                <span className="text-cyan-400">▸</span> Archivio vuoto. Premi <span className="text-cyan-300">PLAY</span> per iniziare la trasmissione.
-              </div>
-            )}
-            {segments.slice(-24).reverse().map((s, idx) => {
-              const rowKey = s?.id ? `seg-${s.id}` : `seg-idx-${idx}`;
-              const dj = djs.find(d => d.name === s.dj_name);
-              const replayUrl = s.speech_audio_url || s.music_audio_url || null;
-              return (
-                <Dialog key={rowKey}>
-                  <DialogTrigger asChild>
-                    <button
-                      className="console-panel p-4 flex items-start gap-4 w-full text-left hover:border-cyan-400/60 transition"
-                      data-testid={`replay-segment-${s.id || idx}`}
-                    >
-                      <KindBadge kind={s.kind} />
-                      <div className="min-w-0 flex-1">
-                        <div className="font-display font-semibold truncate">{s.title}</div>
-                        <div className="text-xs font-mono text-zinc-500 mt-1 uppercase tracking-widest">
-                          <Mic className="w-2.5 h-2.5 inline mr-1" /> {s.dj_name} · <Cpu className="w-2.5 h-2.5 inline mx-1" /> {s.llm_provider}
-                          {replayUrl && <span className="ml-2 text-cyan-400">· ▶ RE-PLAY</span>}
-                        </div>
-                        {s.script && <p className="text-sm font-mono text-zinc-400 mt-2 line-clamp-2">{s.script}</p>}
-                      </div>
-                    </button>
-                  </DialogTrigger>
-                  <DialogContent className="max-w-2xl bg-[#02040A] text-white" data-testid={`replay-dialog-${s.id || idx}`}
-                    style={{ border: "1px solid rgba(0,191,255,0.4)", boxShadow: "0 0 40px rgba(0,191,255,0.25)" }}>
-                    <DialogHeader>
-                      <div className="flex items-center gap-4">
-                        {dj?.avatar_url && (
-                          <img
-                            src={dj.avatar_url}
-                            alt={dj.name}
-                            className="w-16 h-16 rounded-lg object-cover"
-                            style={{ border: `1px solid ${dj.accent_color || "#00BFFF"}55`, boxShadow: `0 0 24px ${dj.accent_color || "#00BFFF"}66` }}
-                          />
-                        )}
-                        <div>
-                          <DialogTitle className="text-2xl font-display font-black text-glow-blue" style={{ color: dj?.accent_color || "#00BFFF" }}>
-                            {s.dj_name || "DJ"}
-                          </DialogTitle>
-                          <DialogDescription className="text-xs font-mono uppercase tracking-widest text-cyan-500 mt-1">
-                            {s.kind} · {s.llm_provider}
-                          </DialogDescription>
-                        </div>
-                      </div>
-                    </DialogHeader>
-                    <div className="mt-2">
-                      <div className="text-sm font-semibold text-zinc-300 mb-2">{s.title}</div>
-                      {replayUrl && (
-                        <audio
-                          controls
-                          preload="none"
-                          src={replayUrl}
-                          className="w-full mb-3"
-                          style={{ height: 34 }}
-                          data-testid={`replay-audio-${s.id || idx}`}
-                        />
-                      )}
-                      <div className="max-h-[50vh] overflow-y-auto rounded-lg bg-black/60 border border-cyan-500/20 p-4 text-sm font-mono text-zinc-300 leading-relaxed whitespace-pre-wrap">
-                        {s.script || <span className="italic text-zinc-500">Nessun copione testuale disponibile per questo segmento.</span>}
-                      </div>
-                    </div>
-                  </DialogContent>
-                </Dialog>
-              );
-            })}
+      {/* ================ RE-PLAY · Bottone verso archivio ================ */}
+      <section className="max-w-7xl mx-auto px-6 py-4 relative z-10" data-testid="replay-section">
+        <Link
+          to="/replay"
+          data-testid="replay-cta"
+          className="console-panel p-4 sm:p-5 flex items-center gap-4 w-full group transition-all duration-200 hover:-translate-y-0.5 focusable"
+          style={{
+            boxShadow: "0 0 0 1px rgba(0,191,255,0.4) inset, 0 12px 32px rgba(0,0,0,0.7), 0 0 26px rgba(0,191,255,0.22)",
+          }}
+        >
+          <div
+            className="w-12 h-12 rounded-lg flex items-center justify-center shrink-0"
+            style={{
+              background: "rgba(0,191,255,0.08)",
+              border: "1px solid rgba(0,229,255,0.55)",
+              boxShadow: "0 0 14px rgba(0,229,255,0.45), inset 0 0 10px rgba(0,229,255,0.15)",
+            }}
+          >
+            <AudioWaveform className="w-6 h-6" style={{ color: "var(--console-cyan)", filter: "drop-shadow(0 0 8px rgba(0,229,255,0.9))" }} />
           </div>
-        </RadioErrorBoundary>
+          <div className="min-w-0 flex-1">
+            <div className="label-mono">◂ ARCHIVIO STORICO ▸</div>
+            <h2
+              className="font-display font-black text-xl sm:text-2xl text-glow-blue mt-0.5"
+              data-testid="replay-cta-title"
+              style={{ fontFamily: '"Orbitron","Share Tech Mono",ui-monospace,monospace', letterSpacing: "0.06em" }}
+            >
+              RE-PLAY (Archivio Storico)
+            </h2>
+            <p className="text-[11px] font-mono text-zinc-400 mt-0.5">
+              Riascolta set dei DJ, dischi del giorno e momenti talk.
+            </p>
+          </div>
+          <div className="text-cyan-300 text-[11px] font-mono uppercase tracking-widest shrink-0 group-hover:text-white">
+            APRI ▸
+          </div>
+        </Link>
       </section>
 
       {/* ================ COMUNICAZIONE UFFICIALE ================ */}
-      <section className="max-w-7xl mx-auto px-6 py-6 relative z-10" data-testid="comunicazione-section">
+      <section className="max-w-7xl mx-auto px-6 py-4 relative z-10" data-testid="comunicazione-section">
         <div className="label-mono mb-2 flex items-center gap-2"><Antenna className="w-3 h-3" /> HQ · CONTATTI</div>
         <h2
           className="font-display font-bold text-2xl sm:text-3xl mb-4 text-glow-blue"
@@ -1601,43 +1539,54 @@ function CommunityWallPublic() {
   if (!tracks || tracks.length === 0) return null;
 
   return (
-    <section className="max-w-7xl mx-auto px-6 py-10 relative z-10" data-testid="wall-community-public">
-      <div className="flex items-end justify-between mb-6">
+    <section className="max-w-7xl mx-auto px-6 py-4 relative z-10" data-testid="wall-community-public">
+      <div className="flex items-end justify-between mb-3">
         <div>
           <div className="label-mono flex items-center gap-2"><Users className="w-3 h-3" /> WALL · COMMUNITY BOARD</div>
-          <h2 className="font-display font-bold text-2xl sm:text-3xl mt-1 text-glow-blue">Brani umani in onda</h2>
-          <p className="text-xs font-mono text-zinc-400 mt-2 max-w-xl">Chi ha caricato la sua musica e sta girando nella rotazione R-A.I. — contatore ascolti live.</p>
+          <h2 className="font-display font-bold text-xl sm:text-2xl mt-0.5 text-glow-blue">Brani umani in onda</h2>
+          <p className="text-[11px] font-mono text-zinc-400 mt-1 max-w-xl">Chi ha caricato la sua musica e sta girando nella rotazione R-A.I. — contatore ascolti live.</p>
         </div>
       </div>
-      <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-        {tracks.slice(0, 12).map(t => (
-          <div
-            key={t.id}
-            className="console-panel p-4 flex items-center gap-4"
-            data-testid={`wall-card-${t.id}`}
-            style={{
-              boxShadow: t.is_night
-                ? "0 0 0 1px rgba(0,229,255,0.35) inset, 0 0 24px rgba(0,229,255,0.2)"
-                : "0 0 0 1px rgba(255,255,255,0.06) inset",
-            }}
-          >
-            <div className="flex-1 min-w-0">
-              <div className="font-display font-bold text-base truncate flex items-center gap-1.5">
-                {t.is_night && <span title="Club Night">🌙</span>}
-                {t.title}
+      <div
+        className="rounded-xl p-3"
+        style={{
+          background: "rgba(0,0,0,0.35)",
+          border: "1px solid rgba(0,191,255,0.18)",
+          maxHeight: "22rem",
+          overflowY: "auto",
+        }}
+        data-testid="wall-community-scroll"
+      >
+        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2">
+          {tracks.map(t => (
+            <div
+              key={t.id}
+              className="console-panel p-3 flex items-center gap-3"
+              data-testid={`wall-card-${t.id}`}
+              style={{
+                boxShadow: t.is_night
+                  ? "0 0 0 1px rgba(0,229,255,0.35) inset, 0 0 18px rgba(0,229,255,0.16)"
+                  : "0 0 0 1px rgba(255,255,255,0.06) inset",
+              }}
+            >
+              <div className="flex-1 min-w-0">
+                <div className="font-display font-bold text-sm truncate flex items-center gap-1.5">
+                  {t.is_night && <span title="Club Night">🌙</span>}
+                  {t.title}
+                </div>
+                <div className="text-[10px] font-mono uppercase tracking-widest text-zinc-500 mt-0.5 truncate">
+                  ▸ {t.author}
+                </div>
               </div>
-              <div className="text-[10px] font-mono uppercase tracking-widest text-zinc-500 mt-1 truncate">
-                ▸ {t.author}
+              <div className="text-right shrink-0">
+                <div className="font-mono text-xl font-black text-glow-cyan" style={{ color: "var(--console-cyan)" }}>
+                  {String(t.play_count || 0).padStart(3, "0")}
+                </div>
+                <div className="text-[9px] font-mono text-zinc-500 uppercase tracking-widest">plays</div>
               </div>
             </div>
-            <div className="text-right shrink-0">
-              <div className="font-mono text-2xl font-black text-glow-cyan" style={{ color: "var(--console-cyan)" }}>
-                {String(t.play_count || 0).padStart(3, "0")}
-              </div>
-              <div className="text-[9px] font-mono text-zinc-500 uppercase tracking-widest">plays</div>
-            </div>
-          </div>
-        ))}
+          ))}
+        </div>
       </div>
     </section>
   );

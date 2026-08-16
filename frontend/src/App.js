@@ -7,6 +7,7 @@ import AuthCallback from "@/pages/AuthCallback";
 import Advertise from "@/pages/Advertise";
 import AdReturn from "@/pages/AdReturn";
 import Submit from "@/pages/Submit";
+import ReplayArchive from "@/pages/ReplayArchive";
 import LogoWatermark from "@/components/LogoWatermark";
 import "@/App.css";
 
@@ -24,6 +25,7 @@ function AppRouter() {
       <Route path="/advertise" element={<Advertise />} />
       <Route path="/ads/return" element={<AdReturn />} />
       <Route path="/submit" element={<Submit />} />
+      <Route path="/replay" element={<ReplayArchive />} />
       <Route path="*" element={<PublicRadio />} />
     </Routes>
   );

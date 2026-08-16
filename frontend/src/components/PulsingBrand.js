@@ -57,7 +57,7 @@ export default function PulsingBrand({
       data-testid="pulsing-brand"
       className="relative w-full rounded-2xl overflow-hidden focusable"
       style={{
-        aspectRatio: "16 / 9",
+        aspectRatio: "16 / 6.75",
         background: "#000",
         border: "1px solid rgba(0,191,255,0.35)",
         boxShadow: "0 0 24px rgba(0,191,255,0.25), 0 0 60px rgba(0,191,255,0.10), inset 0 0 20px rgba(0,191,255,0.08)",
