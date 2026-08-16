@@ -520,7 +520,7 @@ export default function PublicRadio() {
               target="_blank"
               rel="noopener noreferrer"
               data-testid="admin-link"
-              className="btn-outline focusable !py-1.5 !px-3 !text-[11px] hidden sm:inline-flex"
+              className="btn-outline focusable !py-1.5 !px-2.5 !text-[11px] inline-flex items-center"
             >
               <Cpu className="w-3.5 h-3.5 mr-1.5" /> Regia
             </a>
