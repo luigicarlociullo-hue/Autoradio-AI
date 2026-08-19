@@ -114,20 +114,34 @@ export default function LedWall({
         bgRef.current.style.opacity = String(Math.max(0, Math.min(1, desired)));
       }
 
+      // === STANDBY assoluto: canvas VUOTO e IMMOBILE ===
+      // Evita qualsiasi lampeggio quando la radio è ferma: nessun trail, nessuna
+      // grid, nessuna onda residua. L'immagine console PNG resta nitida al 100%.
+      if (target === "standby" && alphas.standby > 0.98) {
+        ctx.clearRect(0, 0, W, H);
+        rafRef.current = requestAnimationFrame(draw);
+        return;
+      }
+
       // --- Trail overlay sul canvas (per stelle cadenti a scia) ---
       // Alpha basso su music/talk = coda; su clock/standby copre più forte
       const trailA =
         0.12 * alphas.music +   // stelle cadenti a scia
         0.20 * alphas.talk +    // sfera con leggero motion blur
-        0.55 * alphas.clock +   // pulizia più forte per orologio
-        0.75 * alphas.standby;  // standby: canvas quasi vuoto
-      ctx.fillStyle = `rgba(2,4,10,${trailA})`;
-      ctx.fillRect(0, 0, W, H);
+        0.55 * alphas.clock;    // pulizia più forte per orologio
+      // Standby: NON dipingere overlay opaco → altrimenti l'immagine PNG
+      // sotto sembrerebbe "lampeggiare" quando le α di transizione si assestano.
+      if (trailA > 0.01) {
+        ctx.fillStyle = `rgba(2,4,10,${trailA})`;
+        ctx.fillRect(0, 0, W, H);
+      } else {
+        ctx.clearRect(0, 0, W, H);
+      }
 
-      // Grid (leggero, always on tranne standby)
-      const gridA = 1 - alphas.standby * 0.9;
-      if (gridA > 0.05) {
-        ctx.globalAlpha = gridA;
+      // Grid (leggero, solo quando siamo in modi attivi)
+      const gridA = (alphas.music + alphas.talk + alphas.clock);
+      if (gridA > 0.10) {
+        ctx.globalAlpha = Math.min(1, gridA);
         ctx.strokeStyle = palette.grid;
         ctx.lineWidth = 1;
         const step = 32 * dpr;
