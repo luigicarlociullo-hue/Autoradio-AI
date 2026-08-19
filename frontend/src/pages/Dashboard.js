@@ -1641,6 +1641,7 @@ function TrackManagerPanel() {
       anthem: { bg: "bg-yellow-500/15", txt: "text-yellow-300", label: "Inno" },
       loop:   { bg: "bg-indigo-500/15", txt: "text-indigo-300", label: "🌀 Loop" },
       spot:   { bg: "bg-amber-500/15",  txt: "text-amber-300",  label: "💰 Spot" },
+      fx:     { bg: "bg-fuchsia-500/15", txt: "text-fuchsia-300", label: "⚡ FX" },
     };
     const s = styles[kind] || { bg: "bg-white/10", txt: "text-white", label: kind };
     return (
@@ -1686,6 +1687,7 @@ function TrackManagerPanel() {
             { k: "jingle",  label: "Jingle" },
             { k: "loop",    label: "🌀 Loop" },
             { k: "spot",    label: "💰 Spot" },
+            { k: "fx",      label: "⚡ FX" },
             { k: "anthem",  label: "Inno" },
             { k: "pending", label: "⏳ Approvazione" },
           ].map(f => (
@@ -1775,18 +1777,34 @@ function TrackManagerPanel() {
                 </td>
                 <td className="px-3 py-2">{typeBadge(t.kind)}</td>
                 <td className="px-3 py-2 text-center">
-                  <button
-                    data-testid={`preview-${t.id.slice(0,8)}`}
-                    onClick={() => togglePreview(t.id)}
-                    className={`inline-flex items-center justify-center w-8 h-8 rounded-full border transition ${
-                      isPreviewing
-                        ? "bg-emerald-500/25 border-emerald-400 text-emerald-300"
-                        : "bg-white/5 border-white/15 text-white hover:bg-white/10"
-                    }`}
-                    title={isPreviewing ? "Stop preview" : "Ascolta"}
-                  >
-                    {isPreviewing ? <PauseCircle className="w-4 h-4"/> : <PlayCircle className="w-4 h-4"/>}
-                  </button>
+                  {t.kind === "fx" ? (
+                    <button
+                      data-testid={`play-live-${t.id.slice(0,8)}`}
+                      onClick={async () => {
+                        try {
+                          await api.post(`/admin/fx/${t.id}/play-live`);
+                          toast.success(`⚡ FX in onda: ${t.title}`);
+                        } catch { toast.error("Errore PLAY LIVE"); }
+                      }}
+                      className="inline-flex items-center gap-1 px-3 py-1 rounded bg-fuchsia-500/15 border border-fuchsia-400/60 text-fuchsia-200 text-xs font-mono uppercase hover:bg-fuchsia-500/30 transition"
+                      title="Spara subito questo FX su tutti i player pubblici"
+                    >
+                      ⚡ PLAY LIVE
+                    </button>
+                  ) : (
+                    <button
+                      data-testid={`preview-${t.id.slice(0,8)}`}
+                      onClick={() => togglePreview(t.id)}
+                      className={`inline-flex items-center justify-center w-8 h-8 rounded-full border transition ${
+                        isPreviewing
+                          ? "bg-emerald-500/25 border-emerald-400 text-emerald-300"
+                          : "bg-white/5 border-white/15 text-white hover:bg-white/10"
+                      }`}
+                      title={isPreviewing ? "Stop preview" : "Ascolta"}
+                    >
+                      {isPreviewing ? <PauseCircle className="w-4 h-4"/> : <PlayCircle className="w-4 h-4"/>}
+                    </button>
+                  )}
                 </td>
                 <td className="px-3 py-2 text-center">
                   <button
@@ -2078,6 +2096,17 @@ function TrackModal({ mode, target, onClose, onDone }) {
                   }`}
                 >
                   💰 Spot Pubblicitario
+                </button>
+                <button
+                  data-testid="modal-kind-fx"
+                  onClick={() => setKind("fx")}
+                  className={`col-span-2 py-2 rounded border font-mono text-xs uppercase transition ${
+                    kind === "fx"
+                      ? "border-fuchsia-400 text-fuchsia-300 bg-fuchsia-500/10"
+                      : "border-white/10 text-zinc-400"
+                  }`}
+                >
+                  ⚡ Transizione / FX
                 </button>
               </div>
             </div>

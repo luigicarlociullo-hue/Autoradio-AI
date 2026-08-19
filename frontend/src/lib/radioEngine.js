@@ -131,6 +131,42 @@ class RadioEngine {
   }
 
   /**
+   * injectFx(url) — spara un file audio "one-shot" (FX/transizione) al di sopra
+   * dello stream corrente, con ducking automatico della musica per la durata
+   * dell'FX. Non altera code né stato playback.
+   */
+  injectFx(url) {
+    if (!url) return;
+    try {
+      const a = new Audio(url);
+      a.crossOrigin = "anonymous";
+      a.preload = "auto";
+      a.volume = 0.95;
+      // Duck della musica: memorizza volume attuale e riabbassalo temporaneamente.
+      const prevMusicVol = (this.musicGain && this.musicGain.gain)
+        ? this.musicGain.gain.value : null;
+      if (this.musicGain && this.musicGain.gain) {
+        try { this.musicGain.gain.value = Math.max(0.15, prevMusicVol * 0.35); } catch (e) {}
+      }
+      a.addEventListener("ended", () => {
+        if (this.musicGain && this.musicGain.gain && prevMusicVol !== null) {
+          try { this.musicGain.gain.value = prevMusicVol; } catch (e) {}
+        }
+      }, { once: true });
+      a.addEventListener("error", () => {
+        if (this.musicGain && this.musicGain.gain && prevMusicVol !== null) {
+          try { this.musicGain.gain.value = prevMusicVol; } catch (e) {}
+        }
+      }, { once: true });
+      a.play().catch(() => {
+        if (this.musicGain && this.musicGain.gain && prevMusicVol !== null) {
+          try { this.musicGain.gain.value = prevMusicVol; } catch (e) {}
+        }
+      });
+    } catch (e) { /* ignore */ }
+  }
+
+  /**
    * setNightMixing(enabled) — Club Night crossfade ritmico.
    * Quando ci troviamo nella fascia 22-04, alziamo il crossfade a ~2500ms
    * e usiamo un fade "equal-power" per ottenere passaggi fluidi in stile

@@ -172,6 +172,8 @@ class Track(BaseModel):
     is_night_jingle: bool = False         # jingle notturno (Club Night 22-04) — set separato
     is_loop: bool = False                 # loop/bed sottofondo (fissabile su speaker/rubrica)
     is_spot: bool = False                 # spot pubblicitario (sponsor) con scheduling
+    is_fx: bool = False                   # FX / transizione (rotatore casuale + PLAY LIVE)
+    include_in_rotation: bool = True      # se False (per FX/loop): fuori dal rotatore automatico
     is_pending_approval: bool = False     # richiesta esterna in attesa di OK admin
     submitted_by: Optional[str] = None    # nome / email di chi ha inviato (partner form)
     loop_bind_speaker: Optional[str] = None  # se is_loop: nome DJ/Rubrica a cui è agganciato
@@ -1120,7 +1122,8 @@ async def admin_tracks_searchable():
     cursor = db.tracks.find(
         {"status": {"$ne": "retired"}, "deleted_at": None},
         {"_id": 0, "id": 1, "title": 1, "artist": 1, "is_jingle": 1, "is_anthem": 1,
-         "is_loop": 1, "is_spot": 1, "is_pending_approval": 1,
+         "is_loop": 1, "is_spot": 1, "is_fx": 1, "include_in_rotation": 1,
+         "is_pending_approval": 1,
          "loop_bind_speaker": 1, "submitted_by": 1,
          "spot_start_date": 1, "spot_end_date": 1, "spot_frequency_per_hour": 1,
          "duration_sec": 1, "on_air": 1, "genre_category": 1, "bpm": 1, "bpm_source": 1,
@@ -1132,6 +1135,7 @@ async def admin_tracks_searchable():
         elif t.get("is_jingle"): kind = "jingle"
         elif t.get("is_loop"): kind = "loop"
         elif t.get("is_spot"): kind = "spot"
+        elif t.get("is_fx"): kind = "fx"
         else: kind = "song"
         items.append({
             "id": t.get("id"),
@@ -1140,6 +1144,7 @@ async def admin_tracks_searchable():
             "kind": kind,
             "duration_sec": t.get("duration_sec") or 0,
             "on_air": t.get("on_air") if t.get("on_air") is not None else True,
+            "include_in_rotation": t.get("include_in_rotation") if t.get("include_in_rotation") is not None else True,
             "genre_category": t.get("genre_category"),
             "bpm": t.get("bpm"),
             "bpm_source": t.get("bpm_source"),
@@ -1161,7 +1166,7 @@ async def admin_tracks_upload(
     target_id: Optional[str] = Form(None),
     title: str = Form(...),
     artist: Optional[str] = Form("R-A.I."),
-    kind: str = Form("song"),           # "song" | "jingle" | "anthem" | "loop" | "spot"
+    kind: str = Form("song"),           # "song" | "jingle" | "anthem" | "loop" | "spot" | "fx"
     tags: Optional[str] = Form(""),     # comma-separated
     # Spot-only scheduling
     spot_start_date: Optional[str] = Form(None),
@@ -1182,8 +1187,8 @@ async def admin_tracks_upload(
         raise HTTPException(400, "Solo file .mp3 sono accettati")
     if mode not in ("new", "replace"):
         raise HTTPException(400, "mode deve essere 'new' o 'replace'")
-    if kind not in ("song", "jingle", "anthem", "loop", "spot"):
-        raise HTTPException(400, "kind deve essere song|jingle|anthem|loop|spot")
+    if kind not in ("song", "jingle", "anthem", "loop", "spot", "fx"):
+        raise HTTPException(400, "kind deve essere song|jingle|anthem|loop|spot|fx")
 
     data = await file.read()
     if not data or len(data) < 5_000:
@@ -1251,6 +1256,7 @@ async def admin_tracks_upload(
                 "is_anthem": kind == "anthem",
                 "is_loop": kind == "loop",
                 "is_spot": kind == "spot",
+                "is_fx": kind == "fx",
                 "tags": merged_tags,
                 "updated_at": now,
             }},
@@ -1286,6 +1292,7 @@ async def admin_tracks_upload(
             is_anthem=(kind == "anthem"),
             is_loop=(kind == "loop"),
             is_spot=(kind == "spot"),
+            is_fx=(kind == "fx"),
             is_pending_approval=pending,
             submitted_by=(submitted_by or None),
             loop_bind_speaker=(loop_bind_speaker or None) if kind == "loop" else None,
@@ -4139,7 +4146,45 @@ async def community_wall():
     return {"tracks": docs}
 
 
-# ---- CODA DI APPROVAZIONE (spot/jingle esterni) ----
+# ---- FX / TRANSIZIONE — PLAY LIVE + toggle rotazione ----
+@api_router.post("/admin/fx/{track_id}/play-live")
+async def admin_fx_play_live(track_id: str):
+    """Pubblica su station.pending_fx la traccia FX da sparare subito su tutti i player pubblici.
+    I client pubblici pollano state e iniettano il file audio nella pipeline (ducking musica)."""
+    t = await db.tracks.find_one({"id": track_id, "is_fx": True, "deleted_at": None})
+    if not t:
+        raise HTTPException(404, "FX non trovato")
+    payload = {
+        "id": track_id,
+        "title": t.get("title") or "FX",
+        "audio_url": t.get("audio_url") or f"/api/suno_audio/track_{track_id}.mp3",
+        "ts": now_iso(),
+    }
+    await db.station.update_one({"_id": "state"}, {"$set": {"pending_fx": payload}}, upsert=True)
+    return {"ok": True, "fx": payload}
+
+
+@api_router.post("/admin/fx/consume")
+async def admin_fx_consume():
+    """Chiamato dal client dopo aver riprodotto l'FX per pulire lo slot pending."""
+    await db.station.update_one({"_id": "state"}, {"$set": {"pending_fx": None}})
+    return {"ok": True}
+
+
+@api_router.patch("/admin/tracks/{track_id}/rotation")
+async def admin_toggle_rotation(track_id: str, payload: dict):
+    """Include/escludi la traccia (tipicamente un FX/loop) dalla rotazione automatica."""
+    val = bool(payload.get("include", True))
+    r = await db.tracks.update_one(
+        {"id": track_id},
+        {"$set": {"include_in_rotation": val, "updated_at": now_iso()}},
+    )
+    if r.matched_count == 0:
+        raise HTTPException(404, "Traccia non trovata")
+    return {"ok": True, "id": track_id, "include_in_rotation": val}
+
+
+
 @api_router.get("/admin/approval-queue")
 async def admin_approval_queue():
     """Elenco tracce inviate esternamente in attesa di OK admin."""

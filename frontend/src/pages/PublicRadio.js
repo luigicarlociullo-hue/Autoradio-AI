@@ -10,6 +10,7 @@ import { endpoints } from "@/lib/api";
 import radioEngine from "@/lib/radioEngine";
 import { toast } from "sonner";
 import PulsingBrand from "@/components/PulsingBrand";
+import LedWall from "@/components/LedWall";
 import RadioErrorBoundary from "@/components/RadioErrorBoundary";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogTrigger } from "@/components/ui/dialog";
 import BrandName from "@/components/BrandName";
@@ -157,6 +158,7 @@ function KindBadge({ kind }) {
 
 export default function PublicRadio() {
   const [station, setStation] = useState({ is_live: false, listeners: 0, total_segments: 0 });
+  const fxLastRef = useRef(null);
   const [segments, setSegments] = useState([]);
   const [current, setCurrent] = useState(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -199,6 +201,21 @@ export default function PublicRadio() {
       setStation(s);
       setSegments(prev => mergeSegments(prev, seg || []));
       setDjs(d || []);
+      // ⚡ PLAY LIVE FX: se admin ha pubblicato uno slot pending_fx e non è già stato consumato in questa sessione, riproducilo con ducking.
+      const fx = s?.pending_fx;
+      if (fx && fx.ts && fx.ts !== fxLastRef.current) {
+        fxLastRef.current = fx.ts;
+        try {
+          const audioUrl = (fx.audio_url && fx.audio_url.startsWith("/api/"))
+            ? endpoints.audioUrl(fx.audio_url)
+            : fx.audio_url;
+          if (audioUrl && radioEngine.injectFx) {
+            radioEngine.injectFx(audioUrl);
+          }
+          // Consuma lo slot (best-effort)
+          await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/admin/fx/consume`, { method: "POST" }).catch(() => {});
+        } catch (e) {}
+      }
     } catch (e) { /* noop */ }
   };
 
@@ -610,15 +627,16 @@ export default function PublicRadio() {
       <section className="max-w-7xl mx-auto px-4 pt-4 pb-4 relative z-10">
         {/* Layout compatto: visual + now-playing affiancati su desktop */}
         <div className="grid lg:grid-cols-5 gap-4 items-stretch">
-          {/* Visual centrale — Console PNG originale con riflesso + reattività musicale */}
+          {/* Visual centrale — LEDWALL Canvas 60fps (Resolume-style) */}
           <div className="lg:col-span-2 relative">
             <div className="absolute -top-2 right-3 z-20">
               <VuMeter />
             </div>
-            <PulsingBrand
+            <LedWall
               isPlaying={isPlaying || broadcastMode === "live_external"}
               current={current}
               trackOverlay={trackOverlay}
+              djs={djs}
             />
           </div>
 
