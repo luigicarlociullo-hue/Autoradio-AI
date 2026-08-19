@@ -189,21 +189,21 @@ export default function LedWall({
         ctx.globalAlpha = 1;
       }
 
-      // ============ STELLE CADENTI (full-screen, trail, cross-particles) ============
+      // ============ STELLE CADENTI (rare, sottili, dai bordi random) ============
       if (alphas.music > 0.15) {
         const kick = bass - prevBass;
-        // Spawn intenso su ogni kick da direzioni diverse (cross-particles)
-        if (kick > 0.10 && bass > 0.30) {
-          const count = nightMode ? 22 : 16;   // +80% rispetto a prima
+        // Solo su kick FORTI: eventi rari, discreti (era count 16-22 su ogni piccolo kick)
+        if (kick > 0.22 && bass > 0.45) {
+          const count = nightMode ? 3 : 2;
           for (let i = 0; i < count; i++) {
-            spawnShootingStar(particlesRef.current, W, H, dpr, palette.particle);
+            spawnShootingStar(particlesRef.current, W, H, dpr);
           }
         }
-        // Ambient spawn continuo (raddoppiato)
-        if (Math.random() < 0.7 * bass) {
-          spawnShootingStar(particlesRef.current, W, H, dpr, palette.particle);
+        // Ambient rarissimo (era 0.7*bass → ora ~0.02*bass)
+        if (Math.random() < 0.020 * bass) {
+          spawnShootingStar(particlesRef.current, W, H, dpr);
         }
-        // Draw + update — gradient bianco (nascita) → BLU ELETTRICO (fine corsa)
+        // Draw + update — scia sottile bianco → blu
         const pList = particlesRef.current;
         for (let i = pList.length - 1; i >= 0; i--) {
           const p = pList[i];
@@ -213,26 +213,25 @@ export default function LedWall({
           p.life -= p.decay;
           if (
             p.life <= 0 ||
-            p.x < -50 || p.x > W + 50 ||
-            p.y < -50 || p.y > H + 50
+            p.x < -80 || p.x > W + 80 ||
+            p.y < -80 || p.y > H + 80
           ) { pList.splice(i, 1); continue; }
-          // Gradient scia: dalla coda (blu elettrico dissolto) alla testa (bianco pieno)
           const grad = ctx.createLinearGradient(p.prevX, p.prevY, p.x, p.y);
-          grad.addColorStop(0, "rgba(30,144,255,0)");                       // coda invisibile
-          grad.addColorStop(0.5, `rgba(30,144,255,${0.55 * p.life * alphas.music})`);  // metà: blu elettrico
-          grad.addColorStop(1, `rgba(255,255,255,${p.life * alphas.music})`); // testa: bianca
+          grad.addColorStop(0, "rgba(30,144,255,0)");
+          grad.addColorStop(0.55, `rgba(30,144,255,${0.40 * p.life * alphas.music})`);
+          grad.addColorStop(1, `rgba(255,255,255,${0.85 * p.life * alphas.music})`);
           ctx.strokeStyle = grad;
           ctx.lineWidth = p.size;
-          ctx.shadowColor = "rgba(80,180,255,1)";
-          ctx.shadowBlur = 10 * dpr;
+          ctx.shadowColor = "rgba(120,200,255,0.9)";
+          ctx.shadowBlur = 6 * dpr;
           ctx.beginPath();
           ctx.moveTo(p.prevX, p.prevY);
           ctx.lineTo(p.x, p.y);
           ctx.stroke();
-          // Testa lucente bianca
+          // Testa piccola, discreta
           ctx.beginPath();
           ctx.fillStyle = `rgba(255,255,255,${p.life * alphas.music})`;
-          ctx.arc(p.x, p.y, p.size * 0.9, 0, Math.PI * 2);
+          ctx.arc(p.x, p.y, p.size * 0.7, 0, Math.PI * 2);
           ctx.fill();
         }
         ctx.shadowBlur = 0;
@@ -396,6 +395,27 @@ export default function LedWall({
         boxShadow: "0 0 0 1px rgba(0,229,255,0.25) inset, 0 0 40px rgba(0,191,255,0.25)",
       }}
     >
+      {/* L-1 · NEBULOSA profondità (CSS gradient, opacità 0.12) — dietro tutto */}
+      <div
+        aria-hidden
+        data-testid="ledwall-nebula"
+        className="absolute inset-0 pointer-events-none"
+        style={{
+          opacity: 0.12,
+          background: [
+            "radial-gradient(ellipse 60% 55% at 22% 32%, rgba(90,50,200,0.55) 0%, transparent 60%)",
+            "radial-gradient(ellipse 55% 45% at 78% 68%, rgba(30,100,200,0.55) 0%, transparent 60%)",
+            "radial-gradient(ellipse 40% 50% at 55% 20%, rgba(160,60,220,0.35) 0%, transparent 55%)",
+            "radial-gradient(circle at 12% 78%, rgba(255,255,255,0.9) 0px, transparent 1.2px)",
+            "radial-gradient(circle at 88% 22%, rgba(255,255,255,0.9) 0px, transparent 1.2px)",
+            "radial-gradient(circle at 45% 88%, rgba(200,220,255,0.8) 0px, transparent 1.4px)",
+            "radial-gradient(circle at 68% 44%, rgba(255,255,255,0.7) 0px, transparent 1.0px)",
+            "radial-gradient(circle at 30% 15%, rgba(220,230,255,0.7) 0px, transparent 1.1px)",
+            "linear-gradient(180deg, #030418 0%, #01020C 100%)",
+          ].join(", "),
+          filter: "blur(0.4px)",
+        }}
+      />
       {/* L0 · console PNG nitida in background (opacità animata dal canvas) */}
       <img
         ref={bgRef}
@@ -424,44 +444,37 @@ export default function LedWall({
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
-function spawnShootingStar(list, W, H, dpr, colorRGB) {
-  // Cross-particles: spawn da 4 direzioni diverse per far incrociare le scie
-  // 0 = top-left → bottom-right   (classica)
-  // 1 = top-right → bottom-left
-  // 2 = bottom-left → top-right   (contromano dal basso)
-  // 3 = mid-left → mid-right      (orizzontale)
-  const dir = Math.floor(Math.random() * 4);
-  const sp = (4 + Math.random() * 8) * dpr;
+function spawnShootingStar(list, W, H, dpr) {
+  // Nasce da un punto random di UNO dei 4 bordi e attraversa lo schermo
+  // in direzione del lato opposto (con jitter angolare). Scia sottile.
+  const edge = Math.floor(Math.random() * 4); // 0=top 1=right 2=bottom 3=left
+  const sp = (3.5 + Math.random() * 5) * dpr;   // velocità moderata
   let x, y, angle;
-  if (dir === 0) {
-    // top → bottom-right
-    x = Math.random() * W * 0.6;
-    y = -20;
-    angle = Math.PI * 0.20 + Math.random() * 0.35;   // 11-31° verso destra-basso
-  } else if (dir === 1) {
-    // top-right → bottom-left
-    x = W * 0.4 + Math.random() * W * 0.6;
-    y = -20;
-    angle = Math.PI - (Math.PI * 0.20 + Math.random() * 0.35); // specchiato
-  } else if (dir === 2) {
-    // bottom-left → top-right (upward)
-    x = -20 + Math.random() * W * 0.3;
-    y = H + 20;
-    angle = -Math.PI * 0.25 - Math.random() * 0.30;  // verso alto-destra
+  const jitter = (Math.random() - 0.5) * 0.55; // ~±16°
+  if (edge === 0) {
+    x = Math.random() * W;
+    y = -25;
+    angle = Math.PI * 0.5 + jitter;  // verso il basso
+  } else if (edge === 1) {
+    x = W + 25;
+    y = Math.random() * H;
+    angle = Math.PI + jitter;        // verso sinistra
+  } else if (edge === 2) {
+    x = Math.random() * W;
+    y = H + 25;
+    angle = -Math.PI * 0.5 + jitter; // verso l'alto
   } else {
-    // orizzontale sinistra→destra a mezza altezza
-    x = -20;
-    y = H * (0.25 + Math.random() * 0.5);
-    angle = Math.random() * 0.30 - 0.15;             // ~±8° attorno all'orizzontale
+    x = -25;
+    y = Math.random() * H;
+    angle = 0 + jitter;              // verso destra
   }
   list.push({
     x, y, prevX: x, prevY: y,
     vx: Math.cos(angle) * sp,
     vy: Math.sin(angle) * sp,
     life: 1.0,
-    decay: 0.008 + Math.random() * 0.010,
-    size: (1 + Math.random() * 2) * dpr,
-    color: colorRGB,
+    decay: 0.006 + Math.random() * 0.006, // vita lunga → scia lunga e delicata
+    size: (0.7 + Math.random() * 0.6) * dpr, // sottile: 0.7-1.3 dpr (era 1-3)
   });
 }
 
