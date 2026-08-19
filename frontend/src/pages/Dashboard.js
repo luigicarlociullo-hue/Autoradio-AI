@@ -198,6 +198,12 @@ export default function Dashboard() {
         {/* Unified track manager — clean table with search, upload, replace */}
         <TrackManagerPanel />
 
+        {/* Cestino — soft-deleted tracks (spostato SOTTO la lista MP3) */}
+        <TrashPanel />
+
+        {/* Coda di Approvazione — richieste esterne partner in attesa OK admin */}
+        <ApprovalQueuePanel />
+
         {/* Regia Audio: mixer real-time + crossfade + sottofondi */}
         <RegiaAudioPanel />
 
@@ -205,8 +211,6 @@ export default function Dashboard() {
         <CommunityPanel />
         {/* Wall Community pubblico — vetrina brani approvati con contatori */}
         <CommunityWallPanel />
-        {/* Cestino — soft-deleted tracks con undo + auto-clean */}
-        <TrashPanel />
         {/* Main Partner / Sponsor slot */}
         <PartnersPanel />
         {/* Manual Mode & Line-In Mixer */}
@@ -1563,11 +1567,13 @@ function TrackManagerPanel() {
   const filtered = React.useMemo(() => {
     const q = search.trim().toLowerCase();
     return tracks.filter(t => {
-      if (filter !== "all" && t.kind !== filter) return false;
+      if (filter === "pending") {
+        if (!t.is_pending_approval) return false;
+      } else if (filter !== "all") {
+        if (t.kind !== filter) return false;
+      }
       // Filtro genere / Night Mix
       if (genreFilter === "night-mix") {
-        // "Night Mix (Umani)" — solo comunità notturna, gestita dal CommunityPanel.
-        // Nel TrackManager (magazzino AI) mostriamo qui solo tracce marcate is_night_jingle
         if (!t.is_night_jingle) return false;
       } else if (genreFilter !== "all") {
         if ((t.genre_category || "").toLowerCase() !== genreFilter) return false;
@@ -1580,6 +1586,8 @@ function TrackManagerPanel() {
 
   const backend = process.env.REACT_APP_BACKEND_URL;
   const downloadUrl = (id) => `${backend}/api/suno_audio/track_${id}.mp3`;
+  // Cache-busted URL: usato solo per preascolto/replace, così il browser non serve mai il file MP3 vecchio dopo un upload.
+  const freshUrl = (id) => `${downloadUrl(id)}?t=${Date.now()}`;
 
   const togglePreview = (id) => {
     if (previewId === id) {
@@ -1596,7 +1604,7 @@ function TrackManagerPanel() {
       previewAudioRef.current.pause();
       previewAudioRef.current = null;
     }
-    const a = new Audio(downloadUrl(id));
+    const a = new Audio(freshUrl(id));
     a.volume = 0.9;
     a.play().catch(() => toast.error("Preview: impossibile riprodurre"));
     a.addEventListener("ended", () => setPreviewId(null));
@@ -1628,9 +1636,11 @@ function TrackManagerPanel() {
 
   const typeBadge = (kind) => {
     const styles = {
-      song:   { bg: "bg-pink-500/15", txt: "text-pink-300",  label: "Song" },
-      jingle: { bg: "bg-cyan-500/15", txt: "text-cyan-300",  label: "Jingle" },
+      song:   { bg: "bg-pink-500/15",   txt: "text-pink-300",   label: "Song" },
+      jingle: { bg: "bg-cyan-500/15",   txt: "text-cyan-300",   label: "Jingle" },
       anthem: { bg: "bg-yellow-500/15", txt: "text-yellow-300", label: "Inno" },
+      loop:   { bg: "bg-indigo-500/15", txt: "text-indigo-300", label: "🌀 Loop" },
+      spot:   { bg: "bg-amber-500/15",  txt: "text-amber-300",  label: "💰 Spot" },
     };
     const s = styles[kind] || { bg: "bg-white/10", txt: "text-white", label: kind };
     return (
@@ -1669,12 +1679,15 @@ function TrackManagerPanel() {
           onChange={(e) => setSearch(e.target.value)}
           className="flex-1 min-w-[220px] bg-zinc-900 border border-white/10 rounded px-3 py-2 text-sm text-white"
         />
-        <div className="flex gap-1">
+        <div className="flex gap-1 flex-wrap">
           {[
-            { k: "all",    label: "Tutti" },
-            { k: "song",   label: "Song" },
-            { k: "jingle", label: "Jingle" },
-            { k: "anthem", label: "Inno" },
+            { k: "all",     label: "Tutti" },
+            { k: "song",    label: "Canzoni" },
+            { k: "jingle",  label: "Jingle" },
+            { k: "loop",    label: "🌀 Loop" },
+            { k: "spot",    label: "💰 Spot" },
+            { k: "anthem",  label: "Inno" },
+            { k: "pending", label: "⏳ Approvazione" },
           ].map(f => (
             <button
               key={f.k}
@@ -1911,6 +1924,12 @@ function TrackModal({ mode, target, onClose, onDone }) {
   const [file, setFile] = useState(null);
   const [title, setTitle] = useState("");
   const [kind, setKind] = useState(target?.kind === "jingle" ? "jingle" : "song");
+  // Spot scheduling
+  const [spotStart, setSpotStart] = useState("");
+  const [spotEnd, setSpotEnd] = useState("");
+  const [spotFreq, setSpotFreq] = useState(2);
+  // Loop binding
+  const [loopBind, setLoopBind] = useState("");
   const [busy, setBusy] = useState(false);
 
   const isReplace = mode === "replace";
@@ -1928,6 +1947,14 @@ function TrackModal({ mode, target, onClose, onDone }) {
       // Replace preserves original kind; new upload uses user-selected kind.
       fd.append("kind", isReplace ? (target?.kind || "song") : kind);
       if (isReplace) fd.append("target_id", target.id);
+      if (!isReplace && kind === "spot") {
+        if (spotStart) fd.append("spot_start_date", spotStart);
+        if (spotEnd) fd.append("spot_end_date", spotEnd);
+        if (spotFreq) fd.append("spot_frequency_per_hour", String(spotFreq));
+      }
+      if (!isReplace && kind === "loop" && loopBind) {
+        fd.append("loop_bind_speaker", loopBind);
+      }
       const backend = process.env.REACT_APP_BACKEND_URL;
       const resp = await fetch(`${backend}/api/admin/tracks/upload`, { method: "POST", body: fd });
       if (!resp.ok) {
@@ -2007,22 +2034,22 @@ function TrackModal({ mode, target, onClose, onDone }) {
           {!isReplace && (
             <div>
               <label className="label-mono mb-1 block">Tipo</label>
-              <div className="flex gap-2">
+              <div className="grid grid-cols-2 gap-2">
                 <button
                   data-testid="modal-kind-song"
                   onClick={() => setKind("song")}
-                  className={`flex-1 py-2 rounded border font-mono text-xs uppercase transition ${
+                  className={`py-2 rounded border font-mono text-xs uppercase transition ${
                     kind === "song"
                       ? "border-pink-500 text-pink-300 bg-pink-500/10"
                       : "border-white/10 text-zinc-400"
                   }`}
                 >
-                  🎵 Song
+                  🎵 Canzone
                 </button>
                 <button
                   data-testid="modal-kind-jingle"
                   onClick={() => setKind("jingle")}
-                  className={`flex-1 py-2 rounded border font-mono text-xs uppercase transition ${
+                  className={`py-2 rounded border font-mono text-xs uppercase transition ${
                     kind === "jingle"
                       ? "border-cyan-400 text-cyan-300 bg-cyan-500/10"
                       : "border-white/10 text-zinc-400"
@@ -2030,6 +2057,81 @@ function TrackModal({ mode, target, onClose, onDone }) {
                 >
                   📣 Jingle
                 </button>
+                <button
+                  data-testid="modal-kind-loop"
+                  onClick={() => setKind("loop")}
+                  className={`py-2 rounded border font-mono text-xs uppercase transition ${
+                    kind === "loop"
+                      ? "border-indigo-400 text-indigo-300 bg-indigo-500/10"
+                      : "border-white/10 text-zinc-400"
+                  }`}
+                >
+                  🌀 Loop / Sottofondo
+                </button>
+                <button
+                  data-testid="modal-kind-spot"
+                  onClick={() => setKind("spot")}
+                  className={`py-2 rounded border font-mono text-xs uppercase transition ${
+                    kind === "spot"
+                      ? "border-amber-400 text-amber-300 bg-amber-500/10"
+                      : "border-white/10 text-zinc-400"
+                  }`}
+                >
+                  💰 Spot Pubblicitario
+                </button>
+              </div>
+            </div>
+          )}
+
+          {!isReplace && kind === "loop" && (
+            <div data-testid="loop-bind-field">
+              <label className="label-mono mb-1 block">Aggancia a Speaker / Rubrica (opzionale)</label>
+              <input
+                type="text"
+                placeholder="es. Leo, Aria, Max, Nyx, Meteo, Oroscopo…"
+                value={loopBind}
+                onChange={(e) => setLoopBind(e.target.value)}
+                className="w-full bg-zinc-900 border border-white/10 rounded px-3 py-2 text-white text-sm"
+              />
+              <p className="text-[10px] text-zinc-500 mt-1 font-mono">
+                Se compilato, questo loop diventerà il sottofondo fisso di quello speaker/rubrica.
+              </p>
+            </div>
+          )}
+
+          {!isReplace && kind === "spot" && (
+            <div className="grid grid-cols-3 gap-2" data-testid="spot-fields">
+              <div>
+                <label className="label-mono mb-1 block">Data Inizio</label>
+                <input
+                  type="date"
+                  data-testid="spot-start"
+                  value={spotStart}
+                  onChange={(e) => setSpotStart(e.target.value)}
+                  className="w-full bg-zinc-900 border border-white/10 rounded px-2 py-2 text-white text-sm"
+                />
+              </div>
+              <div>
+                <label className="label-mono mb-1 block">Data Fine</label>
+                <input
+                  type="date"
+                  data-testid="spot-end"
+                  value={spotEnd}
+                  onChange={(e) => setSpotEnd(e.target.value)}
+                  className="w-full bg-zinc-900 border border-white/10 rounded px-2 py-2 text-white text-sm"
+                />
+              </div>
+              <div>
+                <label className="label-mono mb-1 block">Passaggi/ora</label>
+                <input
+                  type="number"
+                  min="1"
+                  max="12"
+                  data-testid="spot-freq"
+                  value={spotFreq}
+                  onChange={(e) => setSpotFreq(parseInt(e.target.value) || 1)}
+                  className="w-full bg-zinc-900 border border-white/10 rounded px-2 py-2 text-white text-sm"
+                />
               </div>
             </div>
           )}
@@ -3420,6 +3522,113 @@ function NightDJsPanel() {
 
 
 // ==================== TrashPanel — Cestino con Undo + Auto-clean ====================
+// ==================== ApprovalQueuePanel — richieste partner esterne ====================
+function ApprovalQueuePanel() {
+  const [items, setItems] = useState([]);
+  const [busy, setBusy] = useState(false);
+
+  const load = async () => {
+    try {
+      const r = await api.get("/admin/approval-queue");
+      setItems(r?.data?.items || []);
+    } catch (e) {}
+  };
+  useEffect(() => { load(); const iv = setInterval(load, 20000); return () => clearInterval(iv); }, []);
+
+  const approve = async (id) => {
+    setBusy(true);
+    try { await api.post(`/admin/approval-queue/${id}/approve`); toast.success("Richiesta approvata → ON AIR"); load(); }
+    catch { toast.error("Errore approvazione"); }
+    finally { setBusy(false); }
+  };
+  const reject = async (id) => {
+    if (!window.confirm("Rifiutare definitivamente questa richiesta?")) return;
+    setBusy(true);
+    try { await api.post(`/admin/approval-queue/${id}/reject`); toast.success("Richiesta rifiutata"); load(); }
+    catch { toast.error("Errore rifiuto"); }
+    finally { setBusy(false); }
+  };
+
+  const backend = process.env.REACT_APP_BACKEND_URL;
+
+  return (
+    <section
+      className="lg:col-span-4 card-surface p-6"
+      data-testid="approval-queue-panel"
+      style={{
+        boxShadow: "0 0 0 1px rgba(255,184,77,0.25) inset, 0 12px 40px rgba(0,0,0,0.55), 0 0 32px rgba(255,184,77,0.10)",
+        background: "linear-gradient(180deg, rgba(255,184,77,0.03) 0%, rgba(0,0,0,0.4) 100%)",
+      }}
+    >
+      <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+        <div>
+          <div className="label-mono flex items-center gap-2 text-amber-300">
+            <Megaphone className="w-4 h-4" /> Coda di Approvazione · Richieste Partner
+          </div>
+          <h3 className="font-display font-black text-xl mt-1">
+            {items.length === 0 ? "Nessuna richiesta in attesa" : `${items.length} in attesa di OK`}
+          </h3>
+        </div>
+        <button onClick={load} className="btn-outline text-xs" data-testid="approval-refresh">Aggiorna</button>
+      </div>
+
+      {items.length === 0 ? (
+        <div className="text-sm font-mono text-zinc-500 border border-white/5 rounded p-4">
+          ▸ La coda è vuota. Le richieste inviate da <code className="text-cyan-300">/partner</code> compariranno qui.
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {items.map(t => (
+            <div key={t.id} className="border border-amber-500/25 rounded-lg p-3 flex flex-col md:flex-row gap-3 md:items-center"
+                 data-testid={`approval-item-${t.id.slice(0,8)}`}
+                 style={{ background: "rgba(255,184,77,0.05)" }}>
+              <div className="flex-1 min-w-0">
+                <div className="font-bold text-sm truncate flex items-center gap-2">
+                  <span className="px-2 py-0.5 rounded text-[10px] font-mono uppercase bg-amber-500/20 text-amber-300">
+                    {t.is_spot ? "💰 SPOT" : t.is_loop ? "🌀 LOOP" : t.is_jingle ? "📣 JINGLE" : "🎵"}
+                  </span>
+                  {t.title}
+                </div>
+                <div className="text-[11px] font-mono text-zinc-400 mt-0.5 truncate">
+                  ▸ {t.artist} · Inviato da: <span className="text-amber-200">{t.submitted_by || "anonimo"}</span>
+                </div>
+                {t.is_spot && (t.spot_start_date || t.spot_end_date) && (
+                  <div className="text-[10px] font-mono text-zinc-500 mt-0.5">
+                    Periodo: {t.spot_start_date || "—"} → {t.spot_end_date || "—"}
+                    {t.spot_frequency_per_hour ? ` · ${t.spot_frequency_per_hour}/h` : ""}
+                  </div>
+                )}
+              </div>
+              <audio
+                controls preload="none"
+                src={`${backend}/api/suno_audio/track_${t.id}.mp3?t=${Date.now()}`}
+                style={{ height: 32, maxWidth: 260 }}
+                data-testid={`approval-preview-${t.id.slice(0,8)}`}
+              />
+              <div className="flex gap-2 shrink-0">
+                <button
+                  disabled={busy}
+                  onClick={() => approve(t.id)}
+                  data-testid={`approve-${t.id.slice(0,8)}`}
+                  className="px-3 py-1.5 rounded bg-emerald-500/20 border border-emerald-400/50 text-emerald-300 text-xs font-mono uppercase hover:bg-emerald-500/30"
+                >Approva</button>
+                <button
+                  disabled={busy}
+                  onClick={() => reject(t.id)}
+                  data-testid={`reject-${t.id.slice(0,8)}`}
+                  className="px-3 py-1.5 rounded bg-rose-500/15 border border-rose-400/40 text-rose-300 text-xs font-mono uppercase hover:bg-rose-500/25"
+                >Rifiuta</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+
+
 function TrashPanel() {
   const [items, setItems] = useState([]);
   const [busy, setBusy] = useState(false);

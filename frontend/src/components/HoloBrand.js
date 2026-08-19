@@ -21,12 +21,20 @@ export default function HoloBrand({ isPlaying = false, current = null, trackOver
   const infoRef = useRef(null);
   const rafRef = useRef(null);
   const state = useRef({ bass: 0, midHigh: 0, phase: 0 });
+  const freqBufRef = useRef(null);
 
   useEffect(() => {
     const tick = () => {
       const analyser = radioEngine.getAnalyser();
       const binCount = analyser ? analyser.frequencyBinCount : 128;
-      const freq = new Uint8Array(binCount);
+      // Riusa lo stesso buffer invece di allocarne uno nuovo ad ogni frame (60/s):
+      // con 4 visualizer indipendenti che girano in parallelo, le allocazioni
+      // ripetute alimentano la garbage collection e contribuiscono al jank sul
+      // thread principale.
+      if (!freqBufRef.current || freqBufRef.current.length !== binCount) {
+        freqBufRef.current = new Uint8Array(binCount);
+      }
+      const freq = freqBufRef.current;
       if (analyser) analyser.getByteFrequencyData(freq);
 
       state.current.phase += 0.02;

@@ -10,6 +10,8 @@ export default function AudioVisualizer({ isPlaying, currentKind = "", currentTi
   const canvasRef = useRef(null);
   const rafRef = useRef(null);
   const rotationRef = useRef(0);
+  const freqBufRef = useRef(null);
+  const timeBufRef = useRef(null);
 
   useEffect(() => {
     const cvs = canvasRef.current;
@@ -36,8 +38,13 @@ export default function AudioVisualizer({ isPlaying, currentKind = "", currentTi
 
       const analyser = radioEngine.getAnalyser();
       const binCount = analyser ? analyser.frequencyBinCount : 128;
-      const freq = new Uint8Array(binCount);
-      const time = new Uint8Array(binCount);
+      // Riusa gli stessi buffer invece di allocarne di nuovi ad ogni frame (60/s).
+      if (!freqBufRef.current || freqBufRef.current.length !== binCount) {
+        freqBufRef.current = new Uint8Array(binCount);
+        timeBufRef.current = new Uint8Array(binCount);
+      }
+      const freq = freqBufRef.current;
+      const time = timeBufRef.current;
       if (analyser) {
         analyser.getByteFrequencyData(freq);
         analyser.getByteTimeDomainData(time);

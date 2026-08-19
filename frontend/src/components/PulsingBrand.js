@@ -14,12 +14,17 @@ export default function PulsingBrand({
   const imgRef = useRef(null);
   const rafRef = useRef(null);
   const beatState = useRef({ prevBass: 0 });
+  const freqBufRef = useRef(null);
 
   useEffect(() => {
     const tick = () => {
       const analyser = radioEngine.getAnalyser();
       const binCount = analyser ? analyser.frequencyBinCount : 128;
-      const freq = new Uint8Array(binCount);
+      // Riusa lo stesso buffer invece di allocarne uno nuovo ad ogni frame (60/s).
+      if (!freqBufRef.current || freqBufRef.current.length !== binCount) {
+        freqBufRef.current = new Uint8Array(binCount);
+      }
+      const freq = freqBufRef.current;
       if (analyser) analyser.getByteFrequencyData(freq);
 
       const now = performance.now() * 0.001;

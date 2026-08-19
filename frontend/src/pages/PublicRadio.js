@@ -14,6 +14,80 @@ import RadioErrorBoundary from "@/components/RadioErrorBoundary";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogTrigger } from "@/components/ui/dialog";
 import BrandName from "@/components/BrandName";
 
+// SineWaveVisualizer — 3 onde sinusoidali blu neon, reattive all'audio (AnalyserNode).
+// Piccolo canvas leggero sopra il feed della CHAT NEURALE.
+function SineWaveVisualizer() {
+  const canvasRef = React.useRef(null);
+  const rafRef = React.useRef(null);
+  React.useEffect(() => {
+    const cvs = canvasRef.current;
+    if (!cvs) return;
+    const ctx = cvs.getContext("2d");
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const resize = () => {
+      const r = cvs.getBoundingClientRect();
+      cvs.width = Math.floor(r.width * dpr);
+      cvs.height = Math.floor(r.height * dpr);
+    };
+    resize();
+    const ro = new ResizeObserver(resize);
+    ro.observe(cvs);
+    const draw = () => {
+      const analyser = radioEngine.getAnalyser();
+      const bins = analyser ? analyser.frequencyBinCount : 128;
+      const freq = new Uint8Array(bins);
+      if (analyser) analyser.getByteFrequencyData(freq);
+      let bass = 0, mid = 0, high = 0;
+      if (analyser) {
+        for (let i = 2; i < 14; i++) bass += freq[i];
+        for (let i = 14; i < 60; i++) mid += freq[i];
+        for (let i = 60; i < Math.min(120, bins); i++) high += freq[i];
+        bass /= (12 * 255); mid /= (46 * 255); high /= (60 * 255);
+      }
+      const t = performance.now() * 0.001;
+      const w = cvs.width, h = cvs.height;
+      ctx.clearRect(0, 0, w, h);
+      const draws = [
+        { amp: 0.30 + bass * 0.55, freq: 1.6, speed: 1.3, color: "rgba(0,229,255,0.95)",  glow: 12 },
+        { amp: 0.18 + mid  * 0.45, freq: 2.8, speed: 1.9, color: "rgba(0,150,255,0.75)",  glow: 8  },
+        { amp: 0.10 + high * 0.55, freq: 4.4, speed: 2.6, color: "rgba(180,236,255,0.65)", glow: 6  },
+      ];
+      draws.forEach(({ amp, freq: f, speed, color, glow }) => {
+        ctx.beginPath();
+        ctx.lineWidth = 1.5 * dpr;
+        ctx.strokeStyle = color;
+        ctx.shadowColor = color;
+        ctx.shadowBlur = glow;
+        for (let x = 0; x <= w; x += 2 * dpr) {
+          const phase = (x / w) * Math.PI * 2 * f + t * speed;
+          const y = h / 2 + Math.sin(phase) * (h * 0.32 * amp);
+          if (x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+      });
+      ctx.shadowBlur = 0;
+      rafRef.current = requestAnimationFrame(draw);
+    };
+    rafRef.current = requestAnimationFrame(draw);
+    return () => { cancelAnimationFrame(rafRef.current); ro.disconnect(); };
+  }, []);
+  return (
+    <div
+      data-testid="chat-sine-visualizer"
+      className="rounded-lg mb-3 overflow-hidden"
+      style={{
+        background: "linear-gradient(180deg, rgba(0,20,30,0.55) 0%, rgba(0,10,20,0.85) 100%)",
+        border: "1px solid rgba(0,229,255,0.28)",
+        boxShadow: "inset 0 0 20px rgba(0,229,255,0.10), 0 0 12px rgba(0,229,255,0.15)",
+        height: 44,
+      }}
+    >
+      <canvas ref={canvasRef} className="block w-full h-full" />
+    </div>
+  );
+}
+
+
 function Waveform({ active }) {
   const bars = 24;
   return (
@@ -1087,6 +1161,8 @@ function HomeCards({ djs, questionName, setQuestionName, questionText, setQuesti
   const [messages, setMessages] = React.useState([]);
   const [openId, setOpenId] = React.useState(null); // id della card espansa
   const scrollRef = React.useRef(null);
+  // Chat Neurale: pulisci messaggi all'avvio → mostra solo i nuovi arrivati dopo il mount.
+  const sessionStartRef = React.useRef(new Date().toISOString());
 
   React.useEffect(() => {
     let live = true;
@@ -1095,7 +1171,9 @@ function HomeCards({ djs, questionName, setQuestionName, questionText, setQuesti
         const [d, q] = await Promise.all([endpoints.dailyTrack(), endpoints.questionsRecent(30)]);
         if (!live) return;
         setDaily(d?.track || null);
-        setMessages(q?.messages || []);
+        const startedAt = sessionStartRef.current;
+        const fresh = (q?.messages || []).filter(m => (m.created_at || "") >= startedAt);
+        setMessages(fresh);
       } catch (e) {}
     };
     load();
@@ -1274,13 +1352,63 @@ function HomeCards({ djs, questionName, setQuestionName, questionText, setQuesti
           Manda il tuo brano techno/house
         </Link>
       </CoverCard>
+
+      {/* ====== DIVENTA PARTNER — Sponsor CTA ====== */}
+      <Link
+        to="/partner"
+        data-testid="card-diventa-partner"
+        className="console-panel p-5 flex flex-col justify-between group transition-all duration-200 hover:-translate-y-0.5 focusable"
+        style={{
+          boxShadow: "0 0 0 1px rgba(255,184,77,0.35) inset, 0 14px 40px rgba(0,0,0,0.6), 0 0 32px rgba(255,184,77,0.20)",
+          background: "linear-gradient(180deg, rgba(255,184,77,0.06) 0%, rgba(0,0,0,0.6) 100%)",
+          backdropFilter: "blur(6px)",
+          WebkitBackdropFilter: "blur(6px)",
+        }}
+      >
+        <div>
+          <CornerAccents />
+          <span className="module-tag" style={{ color: "#FFB84D", borderColor: "rgba(255,184,77,0.6)" }}>MOD · H · SPONSOR</span>
+          <div className="flex items-center gap-3 mt-3">
+            <div
+              className="w-12 h-12 rounded-lg flex items-center justify-center shrink-0"
+              style={{
+                background: "rgba(255,184,77,0.10)",
+                border: "1px solid rgba(255,184,77,0.55)",
+                boxShadow: "0 0 14px rgba(255,184,77,0.55)",
+              }}
+            >
+              <Building2 className="w-6 h-6" style={{ color: "#FFB84D", filter: "drop-shadow(0 0 6px rgba(255,184,77,0.9))" }} />
+            </div>
+            <div className="min-w-0">
+              <div className="label-mono" style={{ color: "#FFB84D" }}>◂ SPONSOR PARTNER ▸</div>
+              <h3
+                className="font-display font-black text-xl mt-0.5"
+                data-testid="diventa-partner-title"
+                style={{ color: "#FFD79A", textShadow: "0 0 10px rgba(255,184,77,0.7)" }}
+              >
+                DIVENTA PARTNER
+              </h3>
+            </div>
+          </div>
+          <p className="text-sm font-mono text-zinc-200 leading-relaxed mt-3">
+            <span style={{ color: "#FFB84D" }}>▸</span> Carica il tuo spot MP3.<br />
+            <span style={{ color: "#FFB84D" }}>▸</span> Oppure fallo generare all'AI.<br />
+            <span style={{ color: "#FFB84D" }}>▸</span> Va in onda solo dopo approvazione.
+          </p>
+        </div>
+        <div className="mt-4 flex items-center gap-2 self-start px-3 py-2 rounded-md text-[11px] font-mono uppercase tracking-widest"
+             style={{ border: "1px solid rgba(255,184,77,0.55)", color: "#FFD79A" }}>
+          <Send className="w-3.5 h-3.5" /> Invia richiesta →
+        </div>
+      </Link>
+
       <section
         data-testid="card-chat-led"
         className="console-panel p-5 md:col-span-2"
         style={{ boxShadow: "0 0 0 1px rgba(0,191,255,0.28) inset, 0 14px 40px rgba(0,0,0,0.6), 0 0 32px rgba(0,191,255,0.22)" }}
       >
         <CornerAccents />
-        <span className="module-tag">MOD · E · INTERAZIONE NEURALE LIVE</span>
+        <span className="module-tag">MOD · E · CHAT NEURALE</span>
 
         <div className="flex items-start gap-3 mt-3 mb-3">
           <div className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0"
@@ -1292,14 +1420,17 @@ function HomeCards({ djs, questionName, setQuestionName, questionText, setQuesti
             <MessageCircle className="w-5 h-5" style={{ color: "var(--console-cyan)", filter: "drop-shadow(0 0 6px rgba(0,229,255,0.8))" }} />
           </div>
           <div className="flex-1 min-w-0">
-            <div className="label-mono">◂ INTERAZIONE NEURALE LIVE ▸</div>
-            <h3 className="font-display font-black text-xl mt-0.5 text-glow-blue" data-testid="interazione-neurale-title">INTERAZIONE NEURALE LIVE</h3>
-            <p className="text-[11px] font-mono text-zinc-400 leading-snug mt-1" data-testid="interazione-neurale-sub">
+            <div className="label-mono">◂ CHAT NEURALE ▸</div>
+            <h3 className="font-display font-black text-xl mt-0.5 text-glow-blue" data-testid="chat-neurale-title">CHAT NEURALE</h3>
+            <p className="text-[11px] font-mono text-zinc-400 leading-snug mt-1" data-testid="chat-neurale-sub">
               Dialoga in tempo reale con il cervello di R-A.I. Scrivi, sfida o chiedi: ti risponderemo a voce in diretta.
             </p>
           </div>
           <div className="hidden sm:block"><VuMeter /></div>
         </div>
+
+        {/* Visualizzatore ad onde sinusoidali sopra il feed */}
+        <SineWaveVisualizer />
 
         {/* Display LED */}
         <div

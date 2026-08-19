@@ -17,16 +17,32 @@ class RadioEngine {
   ensureAudioCtx() {
     if (!this.audioCtx) {
       const AC = window.AudioContext || window.webkitAudioContext;
-      if (AC) this.audioCtx = new AC();
+      if (AC) {
+        try {
+          // Frequenza fissa: senza questo l'AudioContext prende il default del
+          // dispositivo, che alcuni telefoni cambiano quando si connette un
+          // altoparlante/auto Bluetooth — la conversione al volo tra frequenze
+          // diverse è una delle cause degli scatti/interruzioni segnalati in auto.
+          this.audioCtx = new AC({ sampleRate: 48000 });
+        } catch (e) {
+          this.audioCtx = new AC();
+        }
+      }
     }
     if (this.audioCtx?.state === "suspended") this.audioCtx.resume();
     // Ensure a shared analyser + output bus
     if (this.audioCtx && !this.outputBus) {
-      // Output chain: source → mix bus (music/voice/bed) → outputBus (master) → compressor → analyser → destination
+      // Output chain: source → mix bus (music/voice/bed) → outputBus (master) → compressor → limiter → analyser → destination
       // Web Audio permette gain > 1.0 (a differenza di HTMLAudio.volume che è capped a 1.0),
       // così il volume finale è realmente più alto anche a max volume dispositivo.
+      // FIX (ticket 220609, audio gracchiante su Bluetooth in auto): con gain 2.4x e
+      // un solo compressore 4:1, i transienti (kick, hit dei jingle) superavano 0dBFS
+      // e andavano in clipping digitale — udibile ovunque ma molto più evidente su
+      // Bluetooth (codec lossy + limiter del telefono che reagisce a un segnale già
+      // "caldo"). Gain abbassato a un livello sicuro e aggiunto un limiter vero sotto,
+      // che taglia i picchi residui invece di limitarsi ad attenuarli.
       this.outputBus = this.audioCtx.createGain();
-      this.outputBus.gain.value = 2.4;
+      this.outputBus.gain.value = 1.7;
       // === REGIA AUDIO: 3 bus di mix tra source e master ===
       // I loro gain sono aggiornati in tempo reale dal poller `_startMixPoller()`
       // leggendo /api/station/mix — così l'admin può alzare/abbassare i canali
@@ -37,20 +53,29 @@ class RadioEngine {
       this.musicBus.connect(this.outputBus);
       this.voiceBus.connect(this.outputBus);
       this.bedBus.connect(this.outputBus);
-      // Compressor per evitare clipping quando il gain sale
+      // Compressor per il leveling morbido (invariato)
       this.compressor = this.audioCtx.createDynamicsCompressor();
       this.compressor.threshold.value = -14;
       this.compressor.knee.value = 8;
       this.compressor.ratio.value = 4;
       this.compressor.attack.value = 0.003;
       this.compressor.release.value = 0.15;
+      // Limiter (ceiling) a valle: ratio molto alto e attacco quasi istantaneo, così
+      // i picchi residui non superano mai gli 0dBFS invece di essere solo ridotti.
+      this.limiter = this.audioCtx.createDynamicsCompressor();
+      this.limiter.threshold.value = -1;
+      this.limiter.knee.value = 0;
+      this.limiter.ratio.value = 20;
+      this.limiter.attack.value = 0.001;
+      this.limiter.release.value = 0.05;
       this.analyser = this.audioCtx.createAnalyser();
       // v12.15 · CAPITOLATO: 1024 bande di frequenza per mapping chirurgico
       // bassi 20-150Hz, medi 400-2500Hz, alti 5000-15000Hz sui componenti del logo.
       this.analyser.fftSize = 2048;
       this.analyser.smoothingTimeConstant = 0.70;
       this.outputBus.connect(this.compressor);
-      this.compressor.connect(this.analyser);
+      this.compressor.connect(this.limiter);
+      this.limiter.connect(this.analyser);
       this.analyser.connect(this.audioCtx.destination);
       // Avvia il poller del mixer una sola volta
       this._startMixPoller();
@@ -474,10 +499,18 @@ class RadioEngine {
           // L'elemento è già collegato al grafo Web Audio dal preload — ripristina il gain.
           try { a._voiceGain.gain.value = 1.0; } catch (e) {}
         }
-        a.onended = () => { this.currentAudio = null; resolve(); };
-        a.onerror = () => { console.warn("playAudioUrl error/404:", url); this.currentAudio = null; resolve(); };
+        const cleanup = () => {
+          try { a._srcNode && a._srcNode.disconnect(); } catch (e) {}
+          try { a._voiceGain && a._voiceGain.disconnect(); } catch (e) {}
+          a._srcNode = null;
+          a._voiceGain = null;
+          try { a.src = ""; } catch (e) {}
+          if (this.currentAudio === a) this.currentAudio = null;
+        };
+        a.onended = () => { cleanup(); resolve(); };
+        a.onerror = () => { console.warn("playAudioUrl error/404:", url); cleanup(); resolve(); };
         a.onplaying = () => { if (typeof onStart === "function") { try { onStart(); } catch (e) {} } };
-        a.play().catch((err) => { console.warn("play() rejected:", err); this.currentAudio = null; resolve(); });
+        a.play().catch((err) => { console.warn("play() rejected:", err); cleanup(); resolve(); });
       } catch (e) {
         resolve();
       }
@@ -553,7 +586,13 @@ class RadioEngine {
 
   stopAudio() {
     if (this.currentAudio) {
-      try { this.currentAudio.pause(); this.currentAudio.src = ""; } catch (e) {}
+      const a = this.currentAudio;
+      try { a.pause(); } catch (e) {}
+      try { a._srcNode && a._srcNode.disconnect(); } catch (e) {}
+      try { a._voiceGain && a._voiceGain.disconnect(); } catch (e) {}
+      a._srcNode = null;
+      a._voiceGain = null;
+      try { a.src = ""; } catch (e) {}
       this.currentAudio = null;
     }
   }
@@ -588,6 +627,11 @@ class RadioEngine {
     }
     // Tutti i segmenti PARLATI (talk, joke, weather, history, interview, motivation,
     // news, ad_spot, time_signal, horoscope, ...): SOLO VOCE, zero sottofondo.
+    // FIX (ticket 220609, voce sovrapposta alla musica): hardStopMusic() veniva
+    // atteso solo prima di un jingle. Una transizione musica->parlato non lo
+    // chiamava mai, quindi la dissolvenza finale del brano precedente
+    // (_pendingMusicFadeOut, fino a ~2.5s) restava udibile sotto la voce nuova.
+    try { await this.hardStopMusic(); } catch (e) {}
     return this._playVoiceOnly(segment);
   }
 
@@ -722,17 +766,22 @@ class RadioEngine {
           });
         };
 
-        if (alreadyLoaded && audio.readyState >= 3) {
-          // Già bufferizzato dal preload: "canplaythrough" potrebbe essere già
-          // scattato prima di arrivare qui — non riattenderlo o si resta appesi
-          // fino al safety timeout. Parti subito.
+        if (alreadyLoaded) {
+          // FIX (ticket 220609, silenzi peggiorati): il controllo precedente
+          // (readyState >= 3) NON basta — "canplaythrough" può essere già
+          // scattato durante l'attesa del preload e poi il readyState può
+          // REGREDIRE (es. buffer svuotato) senza che l'evento si ripeta.
+          // In quel caso restavamo appesi ad ascoltare un evento che non
+          // sarebbe mai arrivato, fino al safety timeout di 60-180s — un
+          // silenzio molto peggiore di quello originale. Un elemento riusato
+          // dal preload parte sempre subito, esattamente come già fa
+          // `playAudioUrl` più sopra in questo stesso file: il browser
+          // continua a bufferizzare da solo durante la riproduzione.
           startPlayback();
         } else {
           audio.addEventListener("canplaythrough", startPlayback, { once: true });
-          if (!alreadyLoaded) {
-            audio.src = segment.speech_audio_url;
-            try { audio.load(); } catch (e) {}
-          }
+          audio.src = segment.speech_audio_url;
+          try { audio.load(); } catch (e) {}
         }
       });
     }
@@ -1044,6 +1093,7 @@ class RadioEngine {
     let stopped = false;
     let audio = null;
     let gainNode = null;
+    let srcNode = null;
     try {
       audio = new Audio(url);
       audio.crossOrigin = "anonymous";
@@ -1058,11 +1108,11 @@ class RadioEngine {
           }
         } catch (e) {}
       });
-      const src = ctx.createMediaElementSource(audio);
+      srcNode = ctx.createMediaElementSource(audio);
       gainNode = ctx.createGain();
       gainNode.gain.setValueAtTime(0.001, ctx.currentTime);
       gainNode.gain.exponentialRampToValueAtTime(Math.max(0.01, volume), ctx.currentTime + 0.8);
-      src.connect(gainNode);
+      srcNode.connect(gainNode);
       gainNode.connect(this.voiceBus || ctx.destination);
       audio.play().catch(() => {});
     } catch (e) {
@@ -1078,6 +1128,8 @@ class RadioEngine {
       } catch (e) {}
       setTimeout(() => {
         try { if (audio) { audio.pause(); audio.src = ""; } } catch (e) {}
+        try { srcNode && srcNode.disconnect(); } catch (e) {}
+        try { gainNode && gainNode.disconnect(); } catch (e) {}
       }, 600);
     };
   }

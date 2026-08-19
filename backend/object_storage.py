@@ -146,18 +146,55 @@ async def upload_local_file(local_path: str, sub_path: str) -> Optional[str]:
         return None
 
 
-async def stream_mp3(sub_path: str, cache_to: Optional[str] = None):
+def _parse_range(range_header: str, total: Optional[int]) -> Tuple[int, int]:
+    """Parsa un header `Range: bytes=START-END` (START o END possono mancare).
+    Ritorna (start, end) inclusivi. Se `total` è ignoto e manca END, usa una
+    finestra di 256KB invece di leggere all'infinito."""
+    try:
+        spec = range_header.split("=", 1)[1].split(",")[0].strip()
+        s, _, e = spec.partition("-")
+        if s == "" and e != "":
+            length = int(e)
+            if total is not None:
+                start = max(0, total - length)
+                end = total - 1
+            else:
+                start, end = 0, length - 1
+        else:
+            start = int(s)
+            end = int(e) if e != "" else (total - 1 if total is not None else start + 262144 - 1)
+        if total is not None:
+            end = min(end, total - 1)
+        return start, end
+    except Exception:
+        return 0, (total - 1 if total is not None else 262143)
+
+
+async def stream_mp3(sub_path: str, cache_to: Optional[str] = None, range_header: Optional[str] = None):
     """Streaming immediato da Object Storage al client.
 
-    Restituisce (async_generator, content_length_str_or_None) oppure None se
-    disabilitato/errore.  I chunk vengono pushati al browser NON APPENA
-    arrivano dal bucket (nessun download completo in memoria), permettendo
-    latenza tipo TTFB ~200ms invece di 3-8s per un MP3 da qualche MB.
+    Restituisce (async_generator, content_length_str_or_None, status_code,
+    content_range_str_or_None) oppure None se disabilitato/errore. I chunk
+    vengono pushati al browser NON APPENA arrivano dal bucket (nessun
+    download completo in memoria), permettendo latenza tipo TTFB ~200ms
+    invece di 3-8s per un MP3 da qualche MB.
 
-    Se `cache_to` è fornito, i chunk vengono anche scritti in un file
-    temporaneo che al termine viene rinominato in `cache_to` (populamento
-    lazy della cache locale — tutte le richieste successive saranno servite
-    da disco con supporto Range nativo di FileResponse).
+    FIX (ticket 220609, audio a scatti su cellulare): questa funzione NON
+    gestiva mai `Range` — rispondeva sempre 200 con il file intero. I browser
+    mobile bufferizzano l'audio a piccole porzioni proprio tramite richieste
+    Range: ricevendo sempre il file intero invece del pezzo richiesto, il
+    buffer del dispositivo si svuota a metà riproduzione → scatti/interruzioni
+    (più evidenti su Bluetooth, sempre presenti in produzione perché lì la
+    cache locale è quasi sempre vuota — vedi `cache_to`). Ora, se il client
+    manda un header Range, lo inoltriamo all'Object Storage upstream; se
+    risponde 206 lo ripassiamo così com'è, altrimenti tagliamo noi lo stream
+    ai byte richiesti e rispondiamo comunque 206 corretto.
+
+    Se `cache_to` è fornito, i chunk INTERI (non tagliati) vengono comunque
+    scritti in un file temporaneo che al termine viene rinominato in
+    `cache_to` (populamento lazy della cache locale — tutte le richieste
+    successive saranno servite da disco con supporto Range nativo di
+    FileResponse).
     """
     if not is_enabled():
         return None
@@ -165,47 +202,88 @@ async def stream_mp3(sub_path: str, cache_to: Optional[str] = None):
     full_path = f"{APP_NAME}/{sub_path.lstrip('/')}"
     import httpx
     client = httpx.AsyncClient(timeout=httpx.Timeout(30.0, read=120.0))
+    req_headers = {"X-Storage-Key": key}
+    if range_header:
+        req_headers["Range"] = range_header
     try:
         req = client.build_request(
             "GET",
             f"{STORAGE_URL}/objects/{full_path}",
-            headers={"X-Storage-Key": key},
+            headers=req_headers,
         )
         response = await client.send(req, stream=True)
-        if response.status_code != 200:
+        if response.status_code not in (200, 206):
             await response.aclose()
             await client.aclose()
             logger.warning(f"objstore stream: got {response.status_code} for {full_path}")
             return None
         content_length = response.headers.get("Content-Length")
+        content_range = response.headers.get("Content-Range")
+        upstream_status = response.status_code
     except Exception as e:  # noqa: BLE001
         try: await client.aclose()
         except Exception: pass
         logger.warning(f"objstore stream open failed for {full_path}: {e}")
         return None
 
+    # Upstream ha ignorato il Range (200 invece di 206): tagliamo noi lo
+    # stream ai byte richiesti e calcoliamo Content-Range/Content-Length.
+    slice_start = slice_end = total_size = None
+    if range_header and upstream_status == 200:
+        total_size = int(content_length) if content_length else None
+        slice_start, slice_end = _parse_range(range_header, total_size)
+
     async def _generator():
         import os as _os
         tmp_path = None
         f = None
-        if cache_to:
+        # FIX (ticket 220609, audio che peggiora progressivamente durante
+        # l'ascolto): questa funzione popolava SEMPRE la cache locale, anche
+        # per una richiesta Range parziale — il che significava continuare a
+        # scaricare TUTTO il resto del file dall'upstream anche dopo aver già
+        # inviato al client i byte richiesti. Durante la riproduzione di un
+        # brano il browser manda molte richieste Range in sequenza via via
+        # che avanza; ognuna lasciava un download "fantasma" in background
+        # che continuava fino a fine file, e questi si accumulavano
+        # contendendosi CPU/rete del processo — esattamente il sintomo
+        # "parte fluido poi peggiora sempre di più". Ora una richiesta Range
+        # NON popola la cache e si chiude non appena ha ricevuto i byte
+        # richiesti; la cache locale si popola solo con una richiesta intera
+        # (non-Range), che comunque avviene per i brani pre-caricati.
+        if cache_to and slice_start is None:
             try:
                 tmp_path = cache_to + ".part"
                 f = open(tmp_path, "wb")
             except Exception:
                 f = None
                 tmp_path = None
+        pos = 0
         try:
             async for chunk in response.aiter_bytes(chunk_size=64 * 1024):
-                if chunk:
-                    if f is not None:
-                        try:
-                            f.write(chunk)
-                        except Exception:
-                            try: f.close()
-                            except Exception: pass
-                            f = None
+                if not chunk:
+                    continue
+                if f is not None:
+                    try:
+                        f.write(chunk)
+                    except Exception:
+                        try: f.close()
+                        except Exception: pass
+                        f = None
+                if slice_start is None:
                     yield chunk
+                else:
+                    chunk_start = pos
+                    chunk_end = pos + len(chunk)
+                    pos = chunk_end
+                    if chunk_end > slice_start and chunk_start <= slice_end:
+                        lo = max(0, slice_start - chunk_start)
+                        hi = min(len(chunk), slice_end - chunk_start + 1)
+                        if lo < hi:
+                            yield chunk[lo:hi]
+                    if chunk_start > slice_end:
+                        # Range già soddisfatto per intero: chiudi subito
+                        # invece di continuare a scaricare inutilmente.
+                        break
         finally:
             try: await response.aclose()
             except Exception: pass
@@ -220,4 +298,13 @@ async def stream_mp3(sub_path: str, cache_to: Optional[str] = None):
                 except Exception as e:  # noqa: BLE001
                     logger.debug(f"cache write finalize failed: {e}")
 
-    return _generator(), content_length
+    if slice_start is not None:
+        out_status = 206
+        out_content_length = str(slice_end - slice_start + 1)
+        out_content_range = f"bytes {slice_start}-{slice_end}/{total_size if total_size is not None else '*'}"
+    else:
+        out_status = upstream_status
+        out_content_length = content_length
+        out_content_range = content_range
+
+    return _generator(), out_content_length, out_status, out_content_range

@@ -70,13 +70,15 @@ body {
 .console-panel {
   position: relative;
   background:
-    linear-gradient(180deg, rgba(10,14,26,0.92) 0%, rgba(5,7,15,0.96) 100%);
+    linear-gradient(180deg, rgba(10,14,26,0.55) 0%, rgba(5,7,15,0.70) 100%);
   border: 1px solid var(--console-line);
   border-radius: 14px;
+  backdrop-filter: blur(14px) saturate(1.2);
+  -webkit-backdrop-filter: blur(14px) saturate(1.2);
   box-shadow:
-    0 0 0 1px rgba(0,191,255,0.06) inset,
-    0 12px 40px rgba(0,0,0,0.6),
-    0 0 24px rgba(0,191,255,0.08);
+    0 0 0 1px rgba(0,191,255,0.10) inset,
+    0 12px 40px rgba(0,0,0,0.65),
+    0 0 26px rgba(0,191,255,0.14);
 }
 .console-panel::before {
   content: '';

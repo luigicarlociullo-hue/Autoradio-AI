@@ -170,6 +170,14 @@ class Track(BaseModel):
     is_daily: bool = False                # "Disco del giorno" — rotazione mattutina
     is_jingle: bool = False               # short R-A.I. station jingle — played between segments
     is_night_jingle: bool = False         # jingle notturno (Club Night 22-04) — set separato
+    is_loop: bool = False                 # loop/bed sottofondo (fissabile su speaker/rubrica)
+    is_spot: bool = False                 # spot pubblicitario (sponsor) con scheduling
+    is_pending_approval: bool = False     # richiesta esterna in attesa di OK admin
+    submitted_by: Optional[str] = None    # nome / email di chi ha inviato (partner form)
+    loop_bind_speaker: Optional[str] = None  # se is_loop: nome DJ/Rubrica a cui è agganciato
+    spot_start_date: Optional[str] = None    # ISO date inizio spot
+    spot_end_date: Optional[str] = None      # ISO date fine spot
+    spot_frequency_per_hour: Optional[int] = None  # passaggi/ora desiderati (1..12)
     on_air: bool = True                   # admin toggle: if False, excluded from rotation
     # v12.14 · Archivio Pro + Beat Detection
     # NOTE: this is intentionally a SEPARATE field from `genre` above — `genre`
@@ -1110,14 +1118,20 @@ async def admin_tracks_searchable():
     """
     items = []
     cursor = db.tracks.find(
-        {"status": {"$ne": "retired"}},
+        {"status": {"$ne": "retired"}, "deleted_at": None},
         {"_id": 0, "id": 1, "title": 1, "artist": 1, "is_jingle": 1, "is_anthem": 1,
-         "duration_sec": 1, "on_air": 1},
+         "is_loop": 1, "is_spot": 1, "is_pending_approval": 1,
+         "loop_bind_speaker": 1, "submitted_by": 1,
+         "spot_start_date": 1, "spot_end_date": 1, "spot_frequency_per_hour": 1,
+         "duration_sec": 1, "on_air": 1, "genre_category": 1, "bpm": 1, "bpm_source": 1,
+         "audio_url": 1, "created_at": 1},
     ).sort("created_at", -1)
     docs = await cursor.to_list(length=2000)
     for t in docs:
         if t.get("is_anthem"): kind = "anthem"
         elif t.get("is_jingle"): kind = "jingle"
+        elif t.get("is_loop"): kind = "loop"
+        elif t.get("is_spot"): kind = "spot"
         else: kind = "song"
         items.append({
             "id": t.get("id"),
@@ -1126,6 +1140,16 @@ async def admin_tracks_searchable():
             "kind": kind,
             "duration_sec": t.get("duration_sec") or 0,
             "on_air": t.get("on_air") if t.get("on_air") is not None else True,
+            "genre_category": t.get("genre_category"),
+            "bpm": t.get("bpm"),
+            "bpm_source": t.get("bpm_source"),
+            "audio_url": t.get("audio_url"),
+            "is_pending_approval": bool(t.get("is_pending_approval")),
+            "submitted_by": t.get("submitted_by"),
+            "loop_bind_speaker": t.get("loop_bind_speaker"),
+            "spot_start_date": t.get("spot_start_date"),
+            "spot_end_date": t.get("spot_end_date"),
+            "spot_frequency_per_hour": t.get("spot_frequency_per_hour"),
         })
     return {"tracks": items, "total": len(items)}
 
@@ -1137,23 +1161,29 @@ async def admin_tracks_upload(
     target_id: Optional[str] = Form(None),
     title: str = Form(...),
     artist: Optional[str] = Form("R-A.I."),
-    kind: str = Form("song"),           # "song" | "jingle" | "anthem"
+    kind: str = Form("song"),           # "song" | "jingle" | "anthem" | "loop" | "spot"
     tags: Optional[str] = Form(""),     # comma-separated
+    # Spot-only scheduling
+    spot_start_date: Optional[str] = Form(None),
+    spot_end_date: Optional[str] = Form(None),
+    spot_frequency_per_hour: Optional[int] = Form(None),
+    # Loop-only binding
+    loop_bind_speaker: Optional[str] = Form(None),
+    # Partner submission (marks pending_approval)
+    submitted_by: Optional[str] = Form(None),
+    pending_approval: Optional[str] = Form(None),  # "1"/"true" → is_pending_approval
 ):
-    """Upload di un MP3 caricato dall'admin.
-    - mode='new'     → crea una nuova track e la mette subito in rotazione.
-    - mode='replace' → sostituisce il file audio di una track esistente
-                       (identificata da target_id), aggiornandone anche il titolo.
-    Il file viene salvato in /app/backend/static/suno/track_<id>.mp3 e (se
-    USE_OBJECT_STORAGE=true) pushato anche sul bucket Emergent condiviso.
+    """Upload di un MP3 caricato dall'admin o inviato da un partner.
+    - kind ∈ {song, jingle, anthem, loop, spot}
+    - Se pending_approval è truthy o kind=spot con submitted_by, va in Coda di Approvazione (on_air=False, is_pending_approval=True).
     """
     fname_lower = (file.filename or "").lower()
     if not (fname_lower.endswith(".mp3") or (file.content_type or "").startswith("audio/")):
         raise HTTPException(400, "Solo file .mp3 sono accettati")
     if mode not in ("new", "replace"):
         raise HTTPException(400, "mode deve essere 'new' o 'replace'")
-    if kind not in ("song", "jingle", "anthem"):
-        raise HTTPException(400, "kind deve essere song|jingle|anthem")
+    if kind not in ("song", "jingle", "anthem", "loop", "spot"):
+        raise HTTPException(400, "kind deve essere song|jingle|anthem|loop|spot")
 
     data = await file.read()
     if not data or len(data) < 5_000:
@@ -1219,6 +1249,8 @@ async def admin_tracks_upload(
                 "status": "ready",
                 "is_jingle": kind == "jingle",
                 "is_anthem": kind == "anthem",
+                "is_loop": kind == "loop",
+                "is_spot": kind == "spot",
                 "tags": merged_tags,
                 "updated_at": now,
             }},
@@ -1234,13 +1266,14 @@ async def admin_tracks_upload(
             f"Replace: track {track_id} title→'{title}', segments updated: {seg_res.modified_count}"
         )
     else:
+        pending = str(pending_approval or "").lower() in ("1", "true", "yes", "on")
         # Build a Track-model-compatible document so downstream code
         # (GET /api/tracks response_model, rotation pools, etc.) keeps working.
         track = Track(
             id=track_id,
             title=title,
             artist=artist,
-            genre="admin_upload",
+            genre="admin_upload" if kind != "spot" else "sponsor_spot",
             mood="uploaded",
             lyrics_excerpt="(uploaded via admin panel)",
             duration_sec=0,   # calcolato al primo play dal frontend
@@ -1251,6 +1284,15 @@ async def admin_tracks_upload(
             source="admin_upload",
             is_jingle=(kind == "jingle"),
             is_anthem=(kind == "anthem"),
+            is_loop=(kind == "loop"),
+            is_spot=(kind == "spot"),
+            is_pending_approval=pending,
+            submitted_by=(submitted_by or None),
+            loop_bind_speaker=(loop_bind_speaker or None) if kind == "loop" else None,
+            spot_start_date=(spot_start_date or None) if kind == "spot" else None,
+            spot_end_date=(spot_end_date or None) if kind == "spot" else None,
+            spot_frequency_per_hour=(int(spot_frequency_per_hour) if (kind == "spot" and spot_frequency_per_hour) else None),
+            on_air=not pending,  # se in attesa di approvazione → off-air
             status="ready",
         )
         doc = track.model_dump()
@@ -3304,33 +3346,88 @@ async def get_audio(filename: str):
     return FileResponse(str(p), media_type="audio/wav")
 
 
+async def _serve_local_audio(path: Path, media_type: str, range_header: Optional[str], extra_headers: dict):
+    """Serve un file audio locale, onorando le richieste Range.
+
+    FIX (ticket 220609, audio a scatti su cellulare): Starlette 0.37 (versione
+    installata) NON implementa affatto il supporto Range in `FileResponse`,
+    nonostante l'header `Accept-Ranges: bytes` dichiarato — ogni richiesta,
+    con o senza header Range, riceve sempre il file intero con status 200
+    (verificato dal vivo con curl). I browser mobile bufferizzano l'audio a
+    piccole porzioni proprio tramite richieste Range: ricevendo sempre il
+    file intero il buffer del dispositivo si svuota a metà riproduzione,
+    causando gli scatti/interruzioni segnalati (più evidenti su Bluetooth).
+    Qui implementiamo Range/206 a mano per i file già in cache locale — il
+    percorso di gran lunga più comune, dato che quasi tutti i brani finiscono
+    per essere cachati su disco dopo la prima riproduzione.
+    """
+    size = path.stat().st_size
+    if not range_header:
+        return FileResponse(str(path), media_type=media_type, headers=extra_headers)
+    start, end = object_storage._parse_range(range_header, size)
+    start = max(0, start)
+    end = min(end, size - 1)
+    if start > end or start >= size:
+        headers = dict(extra_headers)
+        headers["Content-Range"] = f"bytes */{size}"
+        return Response(status_code=416, headers=headers)
+    length = end - start + 1
+
+    async def _gen():
+        # Letture su thread separato: un read() bloccante nel loop asyncio
+        # ritarda tutte le altre richieste in corso sullo stesso worker (altri
+        # brani in preload, il poller del mixer, ecc.) — con più richieste
+        # Range concorrenti (normali durante l'ascolto) questo si somma e
+        # contribuisce ai micro-scatti.
+        def _open_and_seek():
+            fh = open(path, "rb")
+            fh.seek(start)
+            return fh
+        f = await asyncio.to_thread(_open_and_seek)
+        try:
+            remaining = length
+            while remaining > 0:
+                chunk = await asyncio.to_thread(f.read, min(65536, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+                yield chunk
+        finally:
+            f.close()
+
+    headers = dict(extra_headers)
+    headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+    headers["Content-Length"] = str(length)
+    return StreamingResponse(_gen(), status_code=206, media_type=media_type, headers=headers)
+
+
 @api_router.get("/tts/{filename}")
-async def get_tts_audio(filename: str):
+async def get_tts_audio(filename: str, request: Request):
     p = elevenlabs_service.tts_path(filename)
     if p:
-        return FileResponse(
-            str(p),
-            media_type="audio/mpeg",
-            headers={
-                "Cache-Control": "public, max-age=604800",
-                "Accept-Ranges": "bytes",
-            },
+        return await _serve_local_audio(
+            p, "audio/mpeg", request.headers.get("range"),
+            {"Cache-Control": "public, max-age=604800", "Accept-Ranges": "bytes"},
         )
     # Local miss → STREAM immediato dall'Object Storage con cache lazy locale.
     if object_storage.is_enabled():
         # Determina dove salvare la cache locale (best-effort)
         cache_dir = elevenlabs_service.tts_dir()
         cache_to = str(cache_dir / filename) if cache_dir else None
-        streamed = await object_storage.stream_mp3(f"tts/{filename}", cache_to=cache_to)
+        streamed = await object_storage.stream_mp3(
+            f"tts/{filename}", cache_to=cache_to, range_header=request.headers.get("range")
+        )
         if streamed:
-            gen, content_length = streamed
+            gen, content_length, status_code, content_range = streamed
             headers = {
                 "Cache-Control": "public, max-age=604800",
                 "Accept-Ranges": "bytes",
             }
             if content_length:
                 headers["Content-Length"] = content_length
-            return StreamingResponse(gen, media_type="audio/mpeg", headers=headers)
+            if content_range:
+                headers["Content-Range"] = content_range
+            return StreamingResponse(gen, status_code=status_code, media_type="audio/mpeg", headers=headers)
     raise HTTPException(404, "TTS audio not found")
 
 
@@ -3421,7 +3518,7 @@ async def community_submit(
 
 
 @api_router.get("/community_audio/{filename}")
-async def get_community_audio(filename: str):
+async def get_community_audio(filename: str, request: Request):
     """Serve gli MP3 caricati dalla community (con range requests).
     Verifica PRIMA che esista un record DB corrispondente — se il brano è
     stato eliminato dall'admin, restituisce 404 anche se il file è ancora
@@ -3437,25 +3534,25 @@ async def get_community_audio(filename: str):
         raise HTTPException(404, "Community track not found (removed or never existed)")
     p = COMMUNITY_AUDIO_DIR / filename
     if p.exists():
-        return FileResponse(
-            str(p),
-            media_type="audio/mpeg",
-            headers={
-                "Cache-Control": "public, max-age=604800",
-                "Accept-Ranges": "bytes",
-            },
+        return await _serve_local_audio(
+            p, "audio/mpeg", request.headers.get("range"),
+            {"Cache-Control": "public, max-age=604800", "Accept-Ranges": "bytes"},
         )
     if object_storage.is_enabled():
-        streamed = await object_storage.stream_mp3(f"community/{filename}", cache_to=str(p))
+        streamed = await object_storage.stream_mp3(
+            f"community/{filename}", cache_to=str(p), range_header=request.headers.get("range")
+        )
         if streamed:
-            gen, content_length = streamed
+            gen, content_length, status_code, content_range = streamed
             headers = {
                 "Cache-Control": "public, max-age=604800",
                 "Accept-Ranges": "bytes",
             }
             if content_length:
                 headers["Content-Length"] = content_length
-            return StreamingResponse(gen, media_type="audio/mpeg", headers=headers)
+            if content_range:
+                headers["Content-Range"] = content_range
+            return StreamingResponse(gen, status_code=status_code, media_type="audio/mpeg", headers=headers)
     raise HTTPException(404, "Community audio not found")
 
 
@@ -3584,7 +3681,7 @@ async def admin_community_upload_outro_jingle(file: UploadFile = File(...)):
 
 
 @api_router.get("/community_jingle/{filename}")
-async def get_community_jingle_public(filename: str):
+async def get_community_jingle_public(filename: str, request: Request):
     """Endpoint speciale per servire i jingle community — bypass del check DB
     di /community_audio/ (che è per i brani utente). I jingle sono hardcoded
     per nome (community_jingle_intro.mp3, community_jingle_outro.mp3)."""
@@ -3592,18 +3689,22 @@ async def get_community_jingle_public(filename: str):
         raise HTTPException(404, "Not found")
     p = COMMUNITY_AUDIO_DIR / filename
     if p.exists():
-        return FileResponse(
-            str(p), media_type="audio/mpeg",
-            headers={"Cache-Control": "public, max-age=604800", "Accept-Ranges": "bytes"},
+        return await _serve_local_audio(
+            p, "audio/mpeg", request.headers.get("range"),
+            {"Cache-Control": "public, max-age=604800", "Accept-Ranges": "bytes"},
         )
     if object_storage.is_enabled():
-        streamed = await object_storage.stream_mp3(f"community/{filename}", cache_to=str(p))
+        streamed = await object_storage.stream_mp3(
+            f"community/{filename}", cache_to=str(p), range_header=request.headers.get("range")
+        )
         if streamed:
-            gen, content_length = streamed
+            gen, content_length, status_code, content_range = streamed
             headers = {"Cache-Control": "public, max-age=604800", "Accept-Ranges": "bytes"}
             if content_length:
                 headers["Content-Length"] = content_length
-            return StreamingResponse(gen, media_type="audio/mpeg", headers=headers)
+            if content_range:
+                headers["Content-Range"] = content_range
+            return StreamingResponse(gen, status_code=status_code, media_type="audio/mpeg", headers=headers)
     raise HTTPException(404, "Community jingle not found")
 
 
@@ -3760,28 +3861,32 @@ async def deactivate_bed():
 
 
 @api_router.get("/beds/{filename}")
-async def get_bed(filename: str):
+async def get_bed(filename: str, request: Request):
     if "/" in filename or ".." in filename or not filename.endswith(".mp3"):
         raise HTTPException(400, "Invalid filename")
     p = BEDS_DIR / filename
     if p.exists():
-        return FileResponse(
-            str(p), media_type="audio/mpeg",
-            headers={"Cache-Control": "public, max-age=604800", "Accept-Ranges": "bytes"},
+        return await _serve_local_audio(
+            p, "audio/mpeg", request.headers.get("range"),
+            {"Cache-Control": "public, max-age=604800", "Accept-Ranges": "bytes"},
         )
     if object_storage.is_enabled():
-        streamed = await object_storage.stream_mp3(f"beds/{filename}", cache_to=str(p))
+        streamed = await object_storage.stream_mp3(
+            f"beds/{filename}", cache_to=str(p), range_header=request.headers.get("range")
+        )
         if streamed:
-            gen, content_length = streamed
+            gen, content_length, status_code, content_range = streamed
             headers = {"Cache-Control": "public, max-age=604800", "Accept-Ranges": "bytes"}
             if content_length:
                 headers["Content-Length"] = content_length
-            return StreamingResponse(gen, media_type="audio/mpeg", headers=headers)
+            if content_range:
+                headers["Content-Range"] = content_range
+            return StreamingResponse(gen, status_code=status_code, media_type="audio/mpeg", headers=headers)
     raise HTTPException(404, "Bed audio not found")
 
 
 @api_router.get("/suno_audio/{filename}")
-async def get_suno_audio(filename: str):
+async def get_suno_audio(filename: str, request: Request):
     """Serve Suno MP3s. Local cache priority; on miss stream direttamente dal
     bucket con populamento lazy della cache — nessun download completo prima
     di rispondere (latenza tipo TTFB ~200ms invece di 3-8s)."""
@@ -3790,27 +3895,27 @@ async def get_suno_audio(filename: str):
         raise HTTPException(400, "Invalid filename")
     p = SUNO_AUDIO_DIR / filename
     if p.exists():
-        return FileResponse(
-            str(p),
-            media_type="audio/mpeg",
-            headers={
-                "Cache-Control": "public, max-age=604800",  # 7 days
-                "Accept-Ranges": "bytes",
-            },
+        return await _serve_local_audio(
+            p, "audio/mpeg", request.headers.get("range"),
+            {"Cache-Control": "public, max-age=604800", "Accept-Ranges": "bytes"},  # 7 days
         )
     # Local miss → STREAM direttamente dall'Object Storage senza aspettare
     # il download completo. La cache locale viene popolata in background.
     if object_storage.is_enabled():
-        streamed = await object_storage.stream_mp3(f"suno/{filename}", cache_to=str(p))
+        streamed = await object_storage.stream_mp3(
+            f"suno/{filename}", cache_to=str(p), range_header=request.headers.get("range")
+        )
         if streamed:
-            gen, content_length = streamed
+            gen, content_length, status_code, content_range = streamed
             headers = {
                 "Cache-Control": "public, max-age=604800",
                 "Accept-Ranges": "bytes",
             }
             if content_length:
                 headers["Content-Length"] = content_length
-            return StreamingResponse(gen, media_type="audio/mpeg", headers=headers)
+            if content_range:
+                headers["Content-Range"] = content_range
+            return StreamingResponse(gen, status_code=status_code, media_type="audio/mpeg", headers=headers)
     raise HTTPException(404, "Suno audio not found")
 
 
@@ -4032,6 +4137,54 @@ async def community_wall():
         sort=[("play_count", -1), ("submitted_at", -1)]
     ).to_list(50)
     return {"tracks": docs}
+
+
+# ---- CODA DI APPROVAZIONE (spot/jingle esterni) ----
+@api_router.get("/admin/approval-queue")
+async def admin_approval_queue():
+    """Elenco tracce inviate esternamente in attesa di OK admin."""
+    docs = await db.tracks.find(
+        {"is_pending_approval": True, "deleted_at": None},
+        {"_id": 0},
+        sort=[("created_at", -1)],
+    ).to_list(200)
+    return {"items": docs, "count": len(docs)}
+
+
+@api_router.post("/admin/approval-queue/{track_id}/approve")
+async def admin_approval_approve(track_id: str):
+    r = await db.tracks.update_one(
+        {"id": track_id, "is_pending_approval": True},
+        {"$set": {"is_pending_approval": False, "on_air": True, "updated_at": now_iso()}},
+    )
+    if r.matched_count == 0:
+        raise HTTPException(404, "Richiesta non trovata")
+    return {"ok": True, "id": track_id, "approved": True}
+
+
+@api_router.post("/admin/approval-queue/{track_id}/reject")
+async def admin_approval_reject(track_id: str):
+    r = await db.tracks.update_one(
+        {"id": track_id, "is_pending_approval": True},
+        {"$set": {"is_pending_approval": False, "on_air": False, "status": "retired",
+                  "deleted_at": now_iso(), "updated_at": now_iso()}},
+    )
+    if r.matched_count == 0:
+        raise HTTPException(404, "Richiesta non trovata")
+    return {"ok": True, "id": track_id, "rejected": True}
+
+
+@api_router.patch("/admin/tracks/{track_id}/loop-bind")
+async def admin_loop_bind(track_id: str, payload: dict):
+    """Aggancia un loop a uno speaker/rubrica (o rimuove il binding se null)."""
+    bind = payload.get("speaker")
+    r = await db.tracks.update_one(
+        {"id": track_id, "is_loop": True},
+        {"$set": {"loop_bind_speaker": (bind or None), "updated_at": now_iso()}},
+    )
+    if r.matched_count == 0:
+        raise HTTPException(404, "Loop non trovato")
+    return {"ok": True, "id": track_id, "loop_bind_speaker": bind}
 
 
 @api_router.post("/community/tracks/{track_id}/play")

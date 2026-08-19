@@ -14,6 +14,7 @@ import radioEngine from "@/lib/radioEngine";
 export default function BottomWaveform({ isPlaying = false }) {
   const canvasRef = useRef(null);
   const rafRef = useRef(null);
+  const freqBufRef = useRef(null);
 
   useEffect(() => {
     const cvs = canvasRef.current;
@@ -41,7 +42,11 @@ export default function BottomWaveform({ isPlaying = false }) {
 
       const analyser = radioEngine.getAnalyser();
       const binCount = analyser ? analyser.frequencyBinCount : 128;
-      const freq = new Uint8Array(binCount);
+      // Riusa lo stesso buffer invece di allocarne uno nuovo ad ogni frame (60/s).
+      if (!freqBufRef.current || freqBufRef.current.length !== binCount) {
+        freqBufRef.current = new Uint8Array(binCount);
+      }
+      const freq = freqBufRef.current;
       if (analyser) analyser.getByteFrequencyData(freq);
 
       const bars = 96;
