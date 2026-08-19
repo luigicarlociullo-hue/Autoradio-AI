@@ -105,12 +105,14 @@ export default function LedWall({
       });
 
       // --- Opacità immagine console in background (HTML img) ---
+      // In MUSIC/TALK/CLOCK: base semi-trasparente + spike sui bassi (kick riemerge la console).
       if (bgRef.current) {
+        const bassPulse = Math.max(0, bass - 0.25) * 1.6; // 0..1 quando bass > 0.25
         const desired =
           1.0 * alphas.standby +
-          0.30 * alphas.music +
-          0.35 * alphas.talk +
-          0.20 * alphas.clock;
+          (0.30 + bassPulse * 0.45) * alphas.music +   // 0.30 → ~0.75 sui kick
+          (0.35 + bassPulse * 0.35) * alphas.talk +
+          (0.20 + bassPulse * 0.25) * alphas.clock;
         bgRef.current.style.opacity = String(Math.max(0, Math.min(1, desired)));
       }
 
@@ -187,21 +189,21 @@ export default function LedWall({
         ctx.globalAlpha = 1;
       }
 
-      // ============ STELLE CADENTI (full-screen, trail, solo music) ============
+      // ============ STELLE CADENTI (full-screen, trail, cross-particles) ============
       if (alphas.music > 0.15) {
         const kick = bass - prevBass;
-        // Spawn intenso su ogni kick + spawn continuo di background stars
+        // Spawn intenso su ogni kick da direzioni diverse (cross-particles)
         if (kick > 0.10 && bass > 0.30) {
-          const count = nightMode ? 12 : 8;
+          const count = nightMode ? 22 : 16;   // +80% rispetto a prima
           for (let i = 0; i < count; i++) {
             spawnShootingStar(particlesRef.current, W, H, dpr, palette.particle);
           }
         }
-        // Base spawn continuo (ambient)
-        if (Math.random() < 0.35 * bass) {
+        // Ambient spawn continuo (raddoppiato)
+        if (Math.random() < 0.7 * bass) {
           spawnShootingStar(particlesRef.current, W, H, dpr, palette.particle);
         }
-        // Draw + update
+        // Draw + update — gradient bianco (nascita) → BLU ELETTRICO (fine corsa)
         const pList = particlesRef.current;
         for (let i = pList.length - 1; i >= 0; i--) {
           const p = pList[i];
@@ -209,20 +211,25 @@ export default function LedWall({
           p.x += p.vx; p.y += p.vy;
           p.vx *= 0.995; p.vy *= 0.995;
           p.life -= p.decay;
-          if (p.life <= 0 || p.x < -50 || p.x > W + 50 || p.y > H + 50) { pList.splice(i, 1); continue; }
-          // Line trail dalla posizione precedente
+          if (
+            p.life <= 0 ||
+            p.x < -50 || p.x > W + 50 ||
+            p.y < -50 || p.y > H + 50
+          ) { pList.splice(i, 1); continue; }
+          // Gradient scia: dalla coda (blu elettrico dissolto) alla testa (bianco pieno)
           const grad = ctx.createLinearGradient(p.prevX, p.prevY, p.x, p.y);
-          grad.addColorStop(0, `rgba(${p.color},0)`);
-          grad.addColorStop(1, `rgba(${p.color},${p.life * alphas.music})`);
+          grad.addColorStop(0, "rgba(30,144,255,0)");                       // coda invisibile
+          grad.addColorStop(0.5, `rgba(30,144,255,${0.55 * p.life * alphas.music})`);  // metà: blu elettrico
+          grad.addColorStop(1, `rgba(255,255,255,${p.life * alphas.music})`); // testa: bianca
           ctx.strokeStyle = grad;
           ctx.lineWidth = p.size;
-          ctx.shadowColor = `rgba(${p.color},1)`;
-          ctx.shadowBlur = 8 * dpr;
+          ctx.shadowColor = "rgba(80,180,255,1)";
+          ctx.shadowBlur = 10 * dpr;
           ctx.beginPath();
           ctx.moveTo(p.prevX, p.prevY);
           ctx.lineTo(p.x, p.y);
           ctx.stroke();
-          // Testa lucente
+          // Testa lucente bianca
           ctx.beginPath();
           ctx.fillStyle = `rgba(255,255,255,${p.life * alphas.music})`;
           ctx.arc(p.x, p.y, p.size * 0.9, 0, Math.PI * 2);
@@ -397,7 +404,7 @@ export default function LedWall({
         aria-hidden
         data-testid="ledwall-bg"
         className="absolute inset-0 w-full h-full object-cover pointer-events-none"
-        style={{ opacity: 1, transition: "opacity 120ms linear" }}
+        style={{ opacity: 1, transition: "opacity 60ms linear" }}
       />
       {/* L1 · canvas grafica generata */}
       <canvas ref={canvasRef} className="relative block w-full h-full" />
@@ -418,12 +425,35 @@ export default function LedWall({
 // helpers
 // ---------------------------------------------------------------------------
 function spawnShootingStar(list, W, H, dpr, colorRGB) {
-  // Angolo diagonale (top-left → bottom-right), con jitter
-  const angle = Math.PI * 0.20 + Math.random() * 0.35;   // ~11-31°
+  // Cross-particles: spawn da 4 direzioni diverse per far incrociare le scie
+  // 0 = top-left → bottom-right   (classica)
+  // 1 = top-right → bottom-left
+  // 2 = bottom-left → top-right   (contromano dal basso)
+  // 3 = mid-left → mid-right      (orizzontale)
+  const dir = Math.floor(Math.random() * 4);
   const sp = (4 + Math.random() * 8) * dpr;
-  const startFromTop = Math.random() < 0.7;
-  const x = startFromTop ? Math.random() * W : -20;
-  const y = startFromTop ? -20 : Math.random() * H * 0.5;
+  let x, y, angle;
+  if (dir === 0) {
+    // top → bottom-right
+    x = Math.random() * W * 0.6;
+    y = -20;
+    angle = Math.PI * 0.20 + Math.random() * 0.35;   // 11-31° verso destra-basso
+  } else if (dir === 1) {
+    // top-right → bottom-left
+    x = W * 0.4 + Math.random() * W * 0.6;
+    y = -20;
+    angle = Math.PI - (Math.PI * 0.20 + Math.random() * 0.35); // specchiato
+  } else if (dir === 2) {
+    // bottom-left → top-right (upward)
+    x = -20 + Math.random() * W * 0.3;
+    y = H + 20;
+    angle = -Math.PI * 0.25 - Math.random() * 0.30;  // verso alto-destra
+  } else {
+    // orizzontale sinistra→destra a mezza altezza
+    x = -20;
+    y = H * (0.25 + Math.random() * 0.5);
+    angle = Math.random() * 0.30 - 0.15;             // ~±8° attorno all'orizzontale
+  }
   list.push({
     x, y, prevX: x, prevY: y,
     vx: Math.cos(angle) * sp,
