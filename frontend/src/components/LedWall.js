@@ -104,16 +104,27 @@ export default function LedWall({
         alphas[m] += (goal - alphas[m]) * FADE;
       });
 
-      // --- Opacità immagine console in background (HTML img) ---
-      // In MUSIC/TALK/CLOCK: base semi-trasparente + spike sui bassi (kick riemerge la console).
+      // --- Opacità immagine console: RESPIRO ATMOSFERICO (ciclo 40s) ---
+      //  0-20s   → 10%  (quasi invisibile, riposo)
+      //  20-30s  → 10% → 30% (ease-in-out, "inspiro")
+      //  30-40s  → 30% → 10% (ease-in-out, "espiro")
+      // Ripete all'infinito, indipendente dal modo (standby / music / talk / clock).
       if (bgRef.current) {
-        const bassPulse = Math.max(0, bass - 0.25) * 1.6; // 0..1 quando bass > 0.25
-        const desired =
-          1.0 * alphas.standby +
-          (0.30 + bassPulse * 0.45) * alphas.music +   // 0.30 → ~0.75 sui kick
-          (0.35 + bassPulse * 0.35) * alphas.talk +
-          (0.20 + bassPulse * 0.25) * alphas.clock;
-        bgRef.current.style.opacity = String(Math.max(0, Math.min(1, desired)));
+        const CYCLE = 40;
+        const phase = (performance.now() / 1000) % CYCLE;
+        let bgOpacity;
+        if (phase < 20) {
+          bgOpacity = 0.10;                                    // riposo
+        } else if (phase < 30) {
+          const k = (phase - 20) / 10;                         // 0..1
+          const eased = 0.5 - 0.5 * Math.cos(k * Math.PI);     // ease-in-out sin
+          bgOpacity = 0.10 + eased * 0.20;                     // 0.10 → 0.30
+        } else {
+          const k = (phase - 30) / 10;                         // 0..1
+          const eased = 0.5 - 0.5 * Math.cos(k * Math.PI);
+          bgOpacity = 0.30 - eased * 0.20;                     // 0.30 → 0.10
+        }
+        bgRef.current.style.opacity = String(bgOpacity);
       }
 
       // === STANDBY assoluto: canvas VUOTO e IMMOBILE ===
@@ -189,18 +200,18 @@ export default function LedWall({
         ctx.globalAlpha = 1;
       }
 
-      // ============ STELLE CADENTI (rare, sottili, dai bordi random) ============
+      // ============ STELLE CADENTI (evento raro, magico) ============
       if (alphas.music > 0.15) {
         const kick = bass - prevBass;
-        // Solo su kick FORTI: eventi rari, discreti (era count 16-22 su ogni piccolo kick)
-        if (kick > 0.22 && bass > 0.45) {
-          const count = nightMode ? 3 : 2;
+        // Solo su kick MOLTO forti: evento magico, dimezzato ulteriormente
+        if (kick > 0.30 && bass > 0.55) {
+          const count = nightMode ? 2 : 1;
           for (let i = 0; i < count; i++) {
             spawnShootingStar(particlesRef.current, W, H, dpr);
           }
         }
-        // Ambient rarissimo (era 0.7*bass → ora ~0.02*bass)
-        if (Math.random() < 0.020 * bass) {
+        // Ambient rarissimo (~1 stella ogni 15-20s a volume medio)
+        if (Math.random() < 0.008 * bass) {
           spawnShootingStar(particlesRef.current, W, H, dpr);
         }
         // Draw + update — scia sottile bianco → blu
@@ -424,7 +435,7 @@ export default function LedWall({
         aria-hidden
         data-testid="ledwall-bg"
         className="absolute inset-0 w-full h-full object-cover pointer-events-none"
-        style={{ opacity: 1, transition: "opacity 60ms linear" }}
+        style={{ opacity: 0.10 }}
       />
       {/* L1 · canvas grafica generata */}
       <canvas ref={canvasRef} className="relative block w-full h-full" />
