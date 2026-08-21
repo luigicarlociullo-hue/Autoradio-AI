@@ -2694,22 +2694,34 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
             hour_it = it_now.hour
             min_it = it_now.minute
             time_str = f"{hour_it:02d}:{min_it:02d}"
-            worlds = [
-                "Marte", "Giove", "una galassia parallela", "il futuro anteriore",
-                "il metaverso di Ferrara", "Alpha Centauri", "un satellite in orbita bassa",
-                "un data center segreto in Islanda", "la Luna", "un browser aperto ieri sera",
-                "un buco nero curioso", "una playlist dimenticata"
-            ]
-            world = random.choice(worlds)
-            prompt = (
-                f"Segnale orario radiofonico in MAX 25 parole. In Italia sono le {time_str} in punto. "
-                f"Devi dire ESATTAMENTE 'Sono le {time_str} su R-A.I. Radio' come prima frase, "
-                f"poi aggiungi UNA battuta cosmica dicendo che anche su {world} è la stessa ora. "
-                "Tono altissimo, sorridente, esagerato. Italiano."
-            )
-            script = await llm_generate(provider, model, system_prompt, prompt)
-            if not script.strip():
-                script = f"Sono le {time_str} su R-A.I. Radio! Anche su {world} è la stessa ora, ma solo qui la festa non finisce mai!"
+            # FIX (v12.15 · silenzio dopo segnale orario): usa lo script+audio
+            # PRE-GENERATI da _time_signal_pregenerator() (~60-90s prima dello
+            # scoccare dell'ora) invece di chiamare LLM+TTS qui in-request —
+            # è quell'attesa sincrona (3-25s misurati) a creare il silenzio
+            # udibile. Cache-miss (es. riavvio pod proprio sull'ora) ricade
+            # sul percorso sincrono originale, invariato, come rete di sicurezza.
+            _ts_hour_key = it_now.strftime("%Y-%m-%d %H")
+            _cached_ts = await db.time_signal_cache.find_one_and_delete({"_id": _ts_hour_key})
+            if _cached_ts and _cached_ts.get("speech_audio_url"):
+                script = _cached_ts.get("script") or f"Sono le {time_str} su R-A.I. Radio!"
+                segment.speech_audio_url = _cached_ts["speech_audio_url"]
+            else:
+                worlds = [
+                    "Marte", "Giove", "una galassia parallela", "il futuro anteriore",
+                    "il metaverso di Ferrara", "Alpha Centauri", "un satellite in orbita bassa",
+                    "un data center segreto in Islanda", "la Luna", "un browser aperto ieri sera",
+                    "un buco nero curioso", "una playlist dimenticata"
+                ]
+                world = random.choice(worlds)
+                prompt = (
+                    f"Segnale orario radiofonico in MAX 25 parole. In Italia sono le {time_str} in punto. "
+                    f"Devi dire ESATTAMENTE 'Sono le {time_str} su R-A.I. Radio' come prima frase, "
+                    f"poi aggiungi UNA battuta cosmica dicendo che anche su {world} è la stessa ora. "
+                    "Tono altissimo, sorridente, esagerato. Italiano."
+                )
+                script = await llm_generate(provider, model, system_prompt, prompt)
+                if not script.strip():
+                    script = f"Sono le {time_str} su R-A.I. Radio! Anche su {world} è la stessa ora, ma solo qui la festa non finisce mai!"
             segment.title = f"Segnale orario · {time_str}"
             segment.duration_sec = 15
         elif kind == "weather":
@@ -2878,7 +2890,8 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
 
     # Always render speech via ElevenLabs (or Bark fallback) so voices are consistent
     # HD quality across every segment, not only when hd=true is explicitly requested.
-    if elevenlabs_service.is_enabled() and segment.script:
+    # (v12.15: skip if already pre-rendered, e.g. time_signal served from cache.)
+    if elevenlabs_service.is_enabled() and segment.script and not segment.speech_audio_url:
         try:
             fn, subpath = await synth_speech(segment.script, segment.voice_key or "female-1", kind=segment.kind or "")
             if fn:
@@ -3106,6 +3119,15 @@ async def _enqueue_hourly_sponsored_sequence(it_now):
                 llm_provider="community",
             ).model_dump()
             comm_seg["created_at"] = _next_ts()
+            # FIX (v12.15): pre-render TTS ORA, non a consumo — senza questo
+            # il segmento arriva in coda senza speech_audio_url e va in onda
+            # muto (nessuna voce DJ, solo il brano musicale sotto).
+            try:
+                _fn, _subpath = await synth_speech(script, voice_key, kind="community")
+                if _fn:
+                    comm_seg["speech_audio_url"] = f"/api/{_subpath}/{_fn}"
+            except Exception as _e:
+                logger.warning(f"[palinsesto] TTS pregen failed for community seg: {_e}")
             await _push_priority_segment(comm_seg)
             # Reset contatore community per non doppiare il blocco a breve
             await db.station.update_one(
@@ -3143,6 +3165,14 @@ async def _enqueue_hourly_sponsored_sequence(it_now):
                 llm_provider="daily_disc",
             ).model_dump()
             daily_seg["created_at"] = _next_ts()
+            # FIX (v12.15): pre-render TTS ORA — senza questo il segmento va
+            # in coda senza speech_audio_url e va in onda muto.
+            try:
+                _fn, _subpath = await synth_speech(script, voice_key, kind="talk")
+                if _fn:
+                    daily_seg["speech_audio_url"] = f"/api/{_subpath}/{_fn}"
+            except Exception as _e:
+                logger.warning(f"[palinsesto] TTS pregen failed for daily seg: {_e}")
             await _push_priority_segment(daily_seg)
     logger.info(f"[palinsesto] hourly sponsored sequence enqueued (hour={hour}, items pushed after time_signal)")
 
@@ -4320,6 +4350,53 @@ async def admin_set_track_bpm(track_id: str, payload: dict):
     return {"ok": True, **updates}
 
 
+# ---- WHISPER · Trascrizione vocale (chat neurale mic) ----
+@api_router.post("/voice/transcribe")
+async def voice_transcribe(file: UploadFile = File(...), lang: Optional[str] = Form("it")):
+    """Trascrive un vocale (webm/wav/mp3/m4a…) via OpenAI Whisper (whisper-1).
+    Usa la Emergent LLM Universal Key. Ritorna {text: str}. Max 25 MB."""
+    if not file:
+        raise HTTPException(400, "File mancante")
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "File vuoto")
+    if len(data) > 25 * 1024 * 1024:
+        raise HTTPException(413, "File > 25MB")
+    try:
+        from emergentintegrations.llm.openai import OpenAISpeechToText  # type: ignore
+    except Exception:
+        raise HTTPException(500, "STT provider non disponibile")
+    api_key = os.environ.get("EMERGENT_LLM_KEY")
+    if not api_key:
+        raise HTTPException(500, "EMERGENT_LLM_KEY mancante")
+    # Salva in tmp per passare un file-like reale a Whisper
+    import tempfile
+    suffix = "." + (file.filename.rsplit(".", 1)[-1].lower() if "." in (file.filename or "") else "webm")
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tf:
+        tf.write(data)
+        tf_path = tf.name
+    try:
+        stt = OpenAISpeechToText(api_key=api_key)
+        with open(tf_path, "rb") as f:
+            resp = await stt.transcribe(
+                file=f,
+                model="whisper-1",
+                response_format="json",
+                language=(lang or "it")[:2],
+            )
+        text = getattr(resp, "text", None) or (resp.get("text") if isinstance(resp, dict) else "")
+        return {"text": (text or "").strip()}
+    except Exception as e:
+        logger.warning(f"[whisper] transcribe failed: {e}")
+        raise HTTPException(502, f"Trascrizione fallita: {e}")
+    finally:
+        try:
+            import os as _os
+            _os.unlink(tf_path)
+        except Exception:
+            pass
+
+
 # ---- WALL COMMUNITY (pubblico) ----
 @api_router.get("/community/wall")
 async def community_wall():
@@ -4543,6 +4620,9 @@ async def on_startup():
     asyncio.create_task(_suno_library_filler())
     # Kick off weekly integrity check for local Suno mp3s
     asyncio.create_task(_suno_integrity_check())
+    # FIX (v12.15): pre-genera il segnale orario ~60-90s prima di ogni ora
+    # per eliminare il silenzio da attesa LLM/TTS in-request.
+    asyncio.create_task(_time_signal_pregenerator())
 
 
 async def _suno_integrity_check():
@@ -4621,6 +4701,78 @@ async def _suno_library_filler():
         except Exception as e:
             logger.warning(f"Suno filler error: {e}")
             await asyncio.sleep(60)
+
+
+async def _time_signal_pregenerator():
+    """FIX (v12.15 · silenzio dopo segnale orario): pre-genera script + audio
+    del segnale orario ~60-90s PRIMA che scocchi l'ora, scrivendoli in
+    time_signal_cache. Quando generate_segment rileva il cambio d'ora trova
+    il segmento già pronto (script + speech_audio_url) e lo serve all'istante,
+    senza attendere LLM+TTS in-request (misurati 3-25s a chiamata, fino a 37s
+    in sequenza — la causa reale del silenzio riportato dopo segnale orario).
+    Cache-miss (es. pod riavviato proprio sull'ora) → nessun impatto: il
+    percorso sincrono originale in generate_segment resta invariato come
+    rete di sicurezza.
+    """
+    await asyncio.sleep(10)
+    while True:
+        try:
+            from zoneinfo import ZoneInfo
+            it_now = datetime.now(ZoneInfo("Europe/Rome"))
+            seconds_left = 3600 - (it_now.minute * 60 + it_now.second)
+            if seconds_left <= 90:
+                upcoming = it_now + timedelta(seconds=seconds_left)
+                hour_key = upcoming.strftime("%Y-%m-%d %H")
+                exists = await db.time_signal_cache.find_one({"_id": hour_key})
+                if not exists:
+                    djs = await db.djs.find({}, {"_id": 0}).to_list(20)
+                    dj = random.choice(djs) if djs else {}
+                    provider = dj.get("llm_provider", "openai")
+                    model = dj.get("llm_model", "gpt-5.2")
+                    voice_key = dj.get("voice_key", "nova")
+                    time_str = f"{upcoming.hour:02d}:00"
+                    worlds = [
+                        "Marte", "Giove", "una galassia parallela", "il futuro anteriore",
+                        "il metaverso di Ferrara", "Alpha Centauri", "un satellite in orbita bassa",
+                        "un data center segreto in Islanda", "la Luna", "un browser aperto ieri sera",
+                        "un buco nero curioso", "una playlist dimenticata"
+                    ]
+                    world = random.choice(worlds)
+                    system_prompt = (
+                        "Sei uno speaker AI radiofonico ITALIANO di R-A.I. (radio dance/elettronica "
+                        "del FUTURO). Energico, sorridente, mai robotico."
+                    )
+                    prompt = (
+                        f"Segnale orario radiofonico in MAX 25 parole. In Italia stanno per scoccare "
+                        f"le {time_str}. Devi dire ESATTAMENTE 'Sono le {time_str} su R-A.I. Radio' "
+                        f"come prima frase, poi aggiungi UNA battuta cosmica dicendo che anche su "
+                        f"{world} è la stessa ora. Tono altissimo, sorridente, esagerato. Italiano."
+                    )
+                    try:
+                        script = await llm_generate(provider, model, system_prompt, prompt)
+                    except Exception:
+                        script = ""
+                    if not script or not script.strip():
+                        script = (
+                            f"Sono le {time_str} su R-A.I. Radio! Anche su {world} è la stessa ora, "
+                            "ma solo qui la festa non finisce mai!"
+                        )
+                    fn, subpath = await synth_speech(script, voice_key, kind="time_signal")
+                    if fn:
+                        await db.time_signal_cache.update_one(
+                            {"_id": hour_key},
+                            {"$set": {
+                                "script": script,
+                                "speech_audio_url": f"/api/{subpath}/{fn}",
+                                "created_at": now_iso(),
+                            }},
+                            upsert=True,
+                        )
+                        logger.info(f"[time_signal_pregen] cached hour={hour_key}")
+            await asyncio.sleep(15)
+        except Exception as e:
+            logger.warning(f"[time_signal_pregen] error: {e}")
+            await asyncio.sleep(30)
 
 
 @app.on_event("shutdown")

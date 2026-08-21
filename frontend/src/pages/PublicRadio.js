@@ -14,6 +14,9 @@ import LedWall from "@/components/LedWall";
 import RadioErrorBoundary from "@/components/RadioErrorBoundary";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogTrigger } from "@/components/ui/dialog";
 import BrandName from "@/components/BrandName";
+import MicButton from "@/components/MicButton";
+import Cue from "@/components/Cue";
+import LiveBrain from "@/components/LiveBrain";
 
 // SineWaveVisualizer — 3 onde sinusoidali blu neon, reattive all'audio (AnalyserNode).
 // Piccolo canvas leggero sopra il feed della CHAT NEURALE.
@@ -878,7 +881,20 @@ export default function PublicRadio() {
                 3 VOCI · 3 CERVELLI ▸ 3 DJ · 3 RITMI · L'ANIMA DEL CLUB
               </p>
             </div>
-            <div className="hidden sm:block"><VuMeter /></div>
+            <div className="flex items-center gap-3">
+              <Cue
+                mode={(function () {
+                  const k = (current?.kind || "").toLowerCase();
+                  if (!isPlaying) return "idle";
+                  if (["talk","joke","weather","horoscope","interview","motivation","history","news","answer","community"].includes(k)) return "speaking";
+                  if (k === "music") return "happy";
+                  if (k === "time_signal") return "alert";
+                  if (k === "jingle") return "listen";
+                  return "thinking";
+                })()}
+              />
+              <div className="hidden sm:block"><VuMeter /></div>
+            </div>
           </div>
 
           <div className="grid grid-cols-3 md:grid-cols-6 gap-2">
@@ -961,6 +977,10 @@ export default function PublicRadio() {
                   </DialogContent>
                 </Dialog>
               ))}
+          </div>
+          {/* LIVE BRAIN · terminale operazioni AI in tempo reale */}
+          <div className="mt-3">
+            <LiveBrain current={current} segments={segments} />
           </div>
         </div>
       </section>
@@ -1499,6 +1519,26 @@ function HomeCards({ djs, questionName, setQuestionName, questionText, setQuesti
             className="flex-1 rounded-md bg-black border outline-none px-3 py-2 text-xs font-mono text-white placeholder:text-cyan-800 uppercase tracking-widest"
             style={{ borderColor: "var(--console-line-strong)" }}
             required
+          />
+          <MicButton
+            disabled={busy}
+            onTranscribed={async (text) => {
+              const clean = (text || "").trim();
+              if (!clean) return;
+              setQuestionText(clean);
+              // Submit direttamente come vocale: prefissa nome con emoji mic per differenziare in chat
+              try {
+                await endpoints.submitQuestion({
+                  name: (questionName || "Ascoltatore") + " 🎙️",
+                  question: clean,
+                  source: "voice",
+                });
+                setQuestionText("");
+                toast.success("Vocale trascritto e inviato in onda");
+              } catch (e) {
+                toast.error("Invio vocale fallito");
+              }
+            }}
           />
           <button
             type="submit"
