@@ -44,7 +44,38 @@ function Eye({ shape, cx, cy, color = "#00E5FF" }) {
 export default function BigCue({ mode = "idle", size = 96 }) {
   const eyes = EYES[mode] || EYES.idle;
   const mouth = MOUTH[mode] || MOUTH.idle;
-  const accent = mode === "alert" ? "#FF6B00" : mode === "speaking" ? "#FF8A00" : "#00E5FF";
+  // Palette arancione acceso "viva" — variazioni per stato
+  const accent = mode === "alert" ? "#FF3D00" : mode === "speaking" ? "#FF8A00" : "#FFA034";
+
+  // Blink casuale ogni 8-16s (occhi che si chiudono per ~140ms)
+  const [blink, setBlink] = React.useState(false);
+  React.useEffect(() => {
+    let alive = true;
+    let closeTid, openTid;
+    const schedule = () => {
+      const nextIn = 8000 + Math.random() * 8000; // 8-16s
+      closeTid = setTimeout(() => {
+        if (!alive) return;
+        setBlink(true);
+        openTid = setTimeout(() => {
+          if (!alive) return;
+          setBlink(false);
+          // Doppio blink occasionale (20%)
+          if (Math.random() < 0.20) {
+            closeTid = setTimeout(() => {
+              if (!alive) return;
+              setBlink(true);
+              openTid = setTimeout(() => { if (alive) { setBlink(false); schedule(); } }, 130);
+            }, 160);
+          } else {
+            schedule();
+          }
+        }, 140);
+      }, nextIn);
+    };
+    schedule();
+    return () => { alive = false; clearTimeout(closeTid); clearTimeout(openTid); };
+  }, []);
 
   return (
     <div
@@ -86,9 +117,18 @@ export default function BigCue({ mode = "idle", size = 96 }) {
         {/* Glow behind eyes */}
         <ellipse cx="60" cy="59" rx="14" ry="10" fill="url(#cueEyeGlow)" />
         <ellipse cx="100" cy="59" rx="14" ry="10" fill="url(#cueEyeGlow)" />
-        {/* Eyes */}
-        <Eye shape={eyes.l} cx={60} cy={59} color={accent} />
-        <Eye shape={eyes.r} cx={100} cy={59} color={accent} />
+        {/* Eyes — palpebra chiusa durante blink (linea orizzontale) */}
+        {blink ? (
+          <g stroke={accent} strokeWidth="2.8" strokeLinecap="round">
+            <line x1="52" y1="59" x2="68" y2="59" />
+            <line x1="92" y1="59" x2="108" y2="59" />
+          </g>
+        ) : (
+          <>
+            <Eye shape={eyes.l} cx={60} cy={59} color={accent} />
+            <Eye shape={eyes.r} cx={100} cy={59} color={accent} />
+          </>
+        )}
         {/* Blush cheeks */}
         <circle cx={42} cy={72} r="3" fill="#FF6BA6" opacity="0.55" />
         <circle cx={118} cy={72} r="3" fill="#FF6BA6" opacity="0.55" />
