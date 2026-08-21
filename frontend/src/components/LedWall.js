@@ -104,33 +104,43 @@ export default function LedWall({
         alphas[m] += (goal - alphas[m]) * FADE;
       });
 
-      // --- Opacità immagine console: RESPIRO ATMOSFERICO (ciclo 40s) ---
-      //  0-20s   → 10%  (quasi invisibile, riposo)
-      //  20-30s  → 10% → 30% (ease-in-out, "inspiro")
-      //  30-40s  → 30% → 10% (ease-in-out, "espiro")
-      // Ripete all'infinito, indipendente dal modo (standby / music / talk / clock).
+      // Standby assoluto = prima del PLAY: nessuna transizione in corso verso
+      // un altro modo. Usata sia per l'immagine statica sotto, sia per il
+      // canvas vuoto/immobile qui sotto.
+      const isAbsoluteStandby = target === "standby" && alphas.standby > 0.98;
+
+      // --- Opacità immagine console ---
+      //  Prima del PLAY (standby assoluto): immagine statica, nitida al 100%.
+      //  Durante la riproduzione: RESPIRO ATMOSFERICO, ciclo 40s.
+      //    0-20s   → 10%  (quasi invisibile, riposo)
+      //    20-30s  → 10% → 30% (ease-in-out, "inspiro")
+      //    30-40s  → 30% → 10% (ease-in-out, "espiro")
       if (bgRef.current) {
-        const CYCLE = 40;
-        const phase = (performance.now() / 1000) % CYCLE;
-        let bgOpacity;
-        if (phase < 20) {
-          bgOpacity = 0.10;                                    // riposo
-        } else if (phase < 30) {
-          const k = (phase - 20) / 10;                         // 0..1
-          const eased = 0.5 - 0.5 * Math.cos(k * Math.PI);     // ease-in-out sin
-          bgOpacity = 0.10 + eased * 0.20;                     // 0.10 → 0.30
+        if (isAbsoluteStandby) {
+          bgRef.current.style.opacity = "1";
         } else {
-          const k = (phase - 30) / 10;                         // 0..1
-          const eased = 0.5 - 0.5 * Math.cos(k * Math.PI);
-          bgOpacity = 0.30 - eased * 0.20;                     // 0.30 → 0.10
+          const CYCLE = 40;
+          const phase = (performance.now() / 1000) % CYCLE;
+          let bgOpacity;
+          if (phase < 20) {
+            bgOpacity = 0.10;                                    // riposo
+          } else if (phase < 30) {
+            const k = (phase - 20) / 10;                         // 0..1
+            const eased = 0.5 - 0.5 * Math.cos(k * Math.PI);     // ease-in-out sin
+            bgOpacity = 0.10 + eased * 0.20;                     // 0.10 → 0.30
+          } else {
+            const k = (phase - 30) / 10;                         // 0..1
+            const eased = 0.5 - 0.5 * Math.cos(k * Math.PI);
+            bgOpacity = 0.30 - eased * 0.20;                     // 0.30 → 0.10
+          }
+          bgRef.current.style.opacity = String(bgOpacity);
         }
-        bgRef.current.style.opacity = String(bgOpacity);
       }
 
       // === STANDBY assoluto: canvas VUOTO e IMMOBILE ===
       // Evita qualsiasi lampeggio quando la radio è ferma: nessun trail, nessuna
-      // grid, nessuna onda residua. L'immagine console PNG resta nitida al 100%.
-      if (target === "standby" && alphas.standby > 0.98) {
+      // grid, nessuna onda residua.
+      if (isAbsoluteStandby) {
         ctx.clearRect(0, 0, W, H);
         rafRef.current = requestAnimationFrame(draw);
         return;
@@ -435,7 +445,6 @@ export default function LedWall({
         aria-hidden
         data-testid="ledwall-bg"
         className="absolute inset-0 w-full h-full object-cover pointer-events-none"
-        style={{ opacity: 0.10 }}
       />
       {/* L1 · canvas grafica generata */}
       <canvas ref={canvasRef} className="relative block w-full h-full" />

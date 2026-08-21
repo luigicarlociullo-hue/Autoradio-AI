@@ -173,6 +173,7 @@ class Track(BaseModel):
     is_loop: bool = False                 # loop/bed sottofondo (fissabile su speaker/rubrica)
     is_spot: bool = False                 # spot pubblicitario (sponsor) con scheduling
     is_fx: bool = False                   # FX / transizione (rotatore casuale + PLAY LIVE)
+    is_sponsor_intro: bool = False        # jingle "Il segnale orario è offerto da..." (pre-spot orario)
     include_in_rotation: bool = True      # se False (per FX/loop): fuori dal rotatore automatico
     is_pending_approval: bool = False     # richiesta esterna in attesa di OK admin
     submitted_by: Optional[str] = None    # nome / email di chi ha inviato (partner form)
@@ -2186,6 +2187,21 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
                 }},
                 upsert=True,
             )
+            # =========================================================
+            # SEQUENZA ORARIA SPONSORIZZATA (allo scoccare di ogni ora)
+            #   1. time_signal   (emesso subito qui)
+            #   2. sponsor_intro "Il segnale orario è offerto da..."
+            #   3. ad_spot       spot attivo (LRP fra quelli in periodo)
+            #   4. rubrica oraria
+            #        · ORE PARI    → "Umani Versus Algoritmo" (community LRP)
+            #        · ORE DISPARI → "Il Disco del Giorno"
+            # I punti 2-4 vengono spinti nella priority_queue e riprodotti
+            # in ordine ai poll successivi (chain sponsorizzata).
+            # =========================================================
+            try:
+                await _enqueue_hourly_sponsored_sequence(it_now)
+            except Exception as _e:
+                logger.warning(f"[palinsesto] hourly sponsored sequence enqueue failed: {_e}")
         elif community_freq > 0 and songs_since_community >= community_freq:
             # === Community block "A.I. Vs Umani" ===
             # Rispetto Club Night: se ora ∈ [22-04] preferisco brani is_night=true,
@@ -2960,6 +2976,175 @@ async def _push_priority_segment(seg_dict: dict):
     """Aggiunge un segmento alla coda prioritaria. Il palinsesto lo emette
     PRIMA di qualsiasi altra decisione (community, jingle, dj_talk, music)."""
     await db.priority_queue.insert_one(seg_dict)
+
+
+async def _enqueue_hourly_sponsored_sequence(it_now):
+    """Allo scoccare dell'ora esatta, dopo il time_signal, mette in coda
+    prioritaria (in ordine): sponsor_intro jingle → ad_spot attivo →
+    rubrica oraria (ore pari: Umani Vs Algoritmo LRP; ore dispari:
+    Il Disco del Giorno). Ogni doc ha created_at incrementale per
+    preservare l'ordine di consumo in find_one_and_delete asc.
+    """
+    hour = it_now.hour
+    today_iso = it_now.date().isoformat()
+    base_ts = it_now
+    seq_i = 0
+
+    def _next_ts():
+        nonlocal seq_i
+        seq_i += 1
+        return (base_ts + timedelta(microseconds=seq_i)).isoformat()
+
+    # ---- 1. Sponsor intro jingle ("Il segnale orario è offerto da...") ----
+    sponsor_intro = await db.tracks.find_one(
+        {
+            "is_sponsor_intro": True,
+            "status": "ready",
+            "audio_url": {"$ne": None},
+            "on_air": {"$ne": False},
+            "deleted_at": None,
+        },
+        {"_id": 0},
+        sort=[("last_played_at", 1)],
+    )
+    if sponsor_intro:
+        await db.tracks.update_one(
+            {"id": sponsor_intro["id"]},
+            {"$set": {"last_played_at": datetime.now(timezone.utc).isoformat()}},
+        )
+        intro_seg = Segment(
+            kind="jingle",
+            title=f"♪ {sponsor_intro.get('title','Sponsor intro')} — {sponsor_intro.get('artist','R-A.I.')}",
+            dj_name="R-A.I.",
+            script="",
+            music_audio_url=sponsor_intro["audio_url"],
+            duration_sec=sponsor_intro.get("duration_sec") or 12,
+            track_meta={"is_sponsor_intro": True, **sponsor_intro},
+            llm_provider="jingle",
+        ).model_dump()
+        intro_seg["created_at"] = _next_ts()
+        await _push_priority_segment(intro_seg)
+
+    # ---- 2. Spot pubblicitario attivo (LRP fra quelli in periodo) ----
+    spot_query = {
+        "is_spot": True,
+        "is_pending_approval": {"$ne": True},
+        "status": "ready",
+        "audio_url": {"$ne": None},
+        "on_air": {"$ne": False},
+        "deleted_at": None,
+        "$and": [
+            {"$or": [{"spot_start_date": {"$exists": False}}, {"spot_start_date": None},
+                     {"spot_start_date": {"$lte": today_iso}}]},
+            {"$or": [{"spot_end_date": {"$exists": False}}, {"spot_end_date": None},
+                     {"spot_end_date": {"$gte": today_iso}}]},
+        ],
+    }
+    spot = await db.tracks.find_one(spot_query, {"_id": 0}, sort=[("last_played_at", 1)])
+    if spot:
+        await db.tracks.update_one(
+            {"id": spot["id"]},
+            {"$set": {"last_played_at": datetime.now(timezone.utc).isoformat()}},
+        )
+        spot_seg = Segment(
+            kind="ad_spot",
+            title=f"■ {spot.get('title','Sponsor Spot')} — {spot.get('artist','')}",
+            dj_name="R-A.I.",
+            script="",
+            music_audio_url=spot["audio_url"],
+            duration_sec=spot.get("duration_sec") or 30,
+            track_meta={"is_spot": True, **spot},
+            llm_provider="ad_spot",
+        ).model_dump()
+        spot_seg["created_at"] = _next_ts()
+        await _push_priority_segment(spot_seg)
+
+    # ---- 3. Rubrica oraria: PARI → Umani Vs Algoritmo; DISPARI → Disco del Giorno ----
+    if hour % 2 == 0:
+        # === "Umani Versus Algoritmo" — community LRP (least recently played) ===
+        # 1) sort by last_played_at asc (mai riprodotti hanno None → primi)
+        comm = await db.community_tracks.find_one(
+            {"status": "on"},
+            {"_id": 0},
+            sort=[("last_played_at", 1), ("submitted_at", -1)],
+        )
+        if comm:
+            # marca timestamp per rotazione LRP futura
+            await db.community_tracks.update_one(
+                {"id": comm["id"]},
+                {"$set": {"last_played_at": datetime.now(timezone.utc).isoformat()}},
+            )
+            state = await db.station.find_one({"_id": "state"}) or {}
+            intro_url = state.get("community_intro_jingle_url") or None
+            outro_url = state.get("community_outro_jingle_url") or None
+            dj_name = random.choice(["Leo", "Aria", "Max"])
+            voice_map = {"Leo": "onyx", "Aria": "nova", "Max": "echo"}
+            voice_key = voice_map.get(dj_name, "nova")
+            artist = comm.get("author") or "Artista"
+            title = comm.get("title") or "Brano senza titolo"
+            script = (
+                f"E ora un momento speciale su R-A-I: la sfida A-I contro Umani! "
+                f"Sto per farvi ascoltare {title}, di {artist}, un artista in carne e ossa "
+                f"che si mette in gioco contro le nostre intelligenze artificiali. Ascoltate, e giudicate voi."
+            )
+            comm_seg = Segment(
+                kind="community",
+                dj_name=dj_name,
+                voice_key=voice_key,
+                title=f"♥ {title} — {artist} (community LRP)",
+                script=script,
+                music_audio_url=comm.get("audio_url"),
+                pre_jingle_url=intro_url,
+                post_jingle_url=outro_url,
+                duration_sec=210,
+                track_meta={
+                    "is_community": True,
+                    "artist": artist,
+                    "title": title,
+                    "id": comm.get("id"),
+                },
+                llm_provider="community",
+            ).model_dump()
+            comm_seg["created_at"] = _next_ts()
+            await _push_priority_segment(comm_seg)
+            # Reset contatore community per non doppiare il blocco a breve
+            await db.station.update_one(
+                {"_id": "state"},
+                {"$set": {"songs_since_community": 0}},
+                upsert=True,
+            )
+    else:
+        # === "Il Disco del Giorno" (rubrica oraria dispari) ===
+        daily = await db.tracks.find_one(
+            {"is_daily": True, "status": "ready", "audio_url": {"$ne": None},
+             "on_air": {"$ne": False}, "deleted_at": None},
+            {"_id": 0},
+            sort=[("created_at", -1)],
+        )
+        if daily:
+            dj_name = random.choice(["Leo", "Aria", "Max"])
+            voice_map = {"Leo": "onyx", "Aria": "nova", "Max": "echo"}
+            voice_key = voice_map.get(dj_name, "nova")
+            title = daily.get("title") or "Brano del giorno"
+            artist = daily.get("artist") or "R-A.I."
+            script = (
+                f"È il momento del Disco del Giorno: {title}, firmato {artist}. "
+                f"La rotazione R-A-I lo mette in prima linea per tutta la giornata. Ascoltatelo, è per voi."
+            )
+            daily_seg = Segment(
+                kind="talk",
+                dj_name=dj_name,
+                voice_key=voice_key,
+                title=f"★ Disco del Giorno — {title}",
+                script=script,
+                music_audio_url=daily.get("audio_url"),
+                duration_sec=daily.get("duration_sec") or 200,
+                track_meta={"is_daily": True, **daily},
+                llm_provider="daily_disc",
+            ).model_dump()
+            daily_seg["created_at"] = _next_ts()
+            await _push_priority_segment(daily_seg)
+    logger.info(f"[palinsesto] hourly sponsored sequence enqueued (hour={hour}, items pushed after time_signal)")
 
 
 async def _generate_answer_background(qid: str, question_text: str, listener_name: str):
@@ -4217,6 +4402,21 @@ async def admin_approval_reject(track_id: str):
     if r.matched_count == 0:
         raise HTTPException(404, "Richiesta non trovata")
     return {"ok": True, "id": track_id, "rejected": True}
+
+
+@api_router.patch("/admin/tracks/{track_id}/sponsor-intro")
+async def admin_toggle_sponsor_intro(track_id: str, payload: dict):
+    """Marca/desmarca una traccia come jingle di intro sponsor orario
+    ('Il segnale orario è offerto da...'). Viene consumata in LRP dopo il
+    time_signal, prima dello spot pubblicitario."""
+    val = bool(payload.get("value", True))
+    r = await db.tracks.update_one(
+        {"id": track_id, "deleted_at": None},
+        {"$set": {"is_sponsor_intro": val, "updated_at": now_iso()}},
+    )
+    if r.matched_count == 0:
+        raise HTTPException(404, "Traccia non trovata")
+    return {"ok": True, "id": track_id, "is_sponsor_intro": val}
 
 
 @api_router.patch("/admin/tracks/{track_id}/loop-bind")
