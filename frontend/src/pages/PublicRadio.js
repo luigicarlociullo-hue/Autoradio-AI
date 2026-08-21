@@ -16,6 +16,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import BrandName from "@/components/BrandName";
 import MicButton from "@/components/MicButton";
 import Cue from "@/components/Cue";
+import BigCue from "@/components/BigCue";
+import LiveBrainTicker from "@/components/LiveBrainTicker";
 import LiveBrain from "@/components/LiveBrain";
 
 // SineWaveVisualizer — 3 onde sinusoidali blu neon, reattive all'audio (AnalyserNode).
@@ -662,12 +664,30 @@ export default function PublicRadio() {
               )}
             </div>
 
-            <div className="font-display text-xl sm:text-2xl font-bold min-h-[2.5rem] flex items-center gap-3 text-glow-cyan flex-1" data-testid="now-playing-title">
-              {isPreparing && !current && (
-                <Loader2 className="w-5 h-5 text-cyan-400 animate-spin shrink-0" data-testid="loading-spinner" />
-              )}
-              <span>{current ? current.title : (isPreparing ? "Preparazione…" : (isPlaying ? "Un attimo…" : "Trasmissione in stand-by"))}</span>
+            <div className="min-h-[2.5rem] flex items-center gap-3" data-testid="now-playing-title">
+              <BigCue
+                size={72}
+                mode={(function () {
+                  const k = (current?.kind || "").toLowerCase();
+                  if (!isPlaying && !isPreparing) return "idle";
+                  if (isPreparing) return "thinking";
+                  if (["talk","joke","weather","horoscope","interview","motivation","history","news","answer","community"].includes(k)) return "speaking";
+                  if (k === "music") return "happy";
+                  if (k === "time_signal") return "alert";
+                  if (k === "jingle") return "listen";
+                  return "idle";
+                })()}
+              />
+              <LiveBrainTicker current={current} />
             </div>
+            {current && (
+              <div
+                className="font-display text-lg sm:text-xl font-bold text-glow-cyan mt-2 truncate"
+                data-testid="current-title"
+              >
+                {current.title}
+              </div>
+            )}
 
             {current?.script && (
               <p className="mt-2 text-zinc-400 leading-relaxed line-clamp-2 font-mono text-xs" data-testid="current-script">
