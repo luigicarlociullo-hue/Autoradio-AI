@@ -484,3 +484,36 @@ Vorrei costruire un software di gestione radiofonica completamente automatizzato
 - `backend/tests/test_master_plan.py`: 23/23 PASS (inclusa regressione `/api/tracks` post-upload)
 - `backend/tests/test_palinsesto_jingle.py`: 5/5 PASS (regressione)
 - Preview: screenshot mostra logo pulsante ciano/magenta + waveform discreta + fondo animato (no YT unavailable)
+
+---
+
+## 2026-08-22 · Blocco Regia (Auth JWT admin)
+
+**Implementato:**
+- Backend: `/app/backend/auth.py` con bcrypt + PyJWT (HS256, TTL 8h)
+- Middleware globale che protegge tutti gli endpoint `/api/admin/*` (401 senza JWT admin)
+- Endpoint auth: `POST /api/regia/login`, `GET /api/regia/me`, `POST /api/regia/logout`
+- Brute-force: 5 tentativi/15min per IP:email → 429
+- Seed admin idempotente all'avvio (aggiorna hash se `ADMIN_PASSWORD` cambia in `.env`)
+- Frontend: `AuthProvider` (context), `AuthGuard` (redirect `/admin/login`), pagina `/admin/login` in stile Console
+- Bottone "Regia · Logout" nell'header Dashboard
+- Interceptor Axios: fallback `Authorization: Bearer` da localStorage per browser che bloccano cookie SameSite=None cross-site
+- `backend/.env` aggiornato con `JWT_SECRET`, `ADMIN_EMAIL="admin@r-ai.it"`, `ADMIN_PASSWORD="RAI-Regia-2026!"`
+- `/app/memory/test_credentials.md` aggiornato
+
+**Test manuali (curl):** login OK 200, wrong pwd 401, `/api/admin/*` senza cookie 401, con cookie passa (200/405).
+
+**Azioni utente rimaste:**
+1. Sostituire `ADMIN_PASSWORD` in `.env` con password forte propria
+2. Deploy su `r-ai.it` + copiare le 3 env vars in Produzione (Emergent settings)
+
+## Previous LEDWALL / Team / Sponsor / Chat Neurale / CUE / Whisper features
+Vedi turni precedenti in questa sessione:
+- LEDWALL Canvas 60fps multi-layer (nebulosa + console PNG breathing 40s + sinusoidi + stelle cadenti sottili dai 4 bordi + Neural Sphere talk + Atomic Clock + Night mode)
+- R-A.I. TEAM unificato 6 chip (3 speaker + 3 DJ notte)
+- DIVENTA PARTNER + Coda di Approvazione + Sponsor scheduling (spot_start/end/freq)
+- Sequenza oraria sponsorizzata: time_signal → sponsor_intro (LRP) → ad_spot (LRP) → ora PARI community LRP / ora DISPARI Disco del Giorno
+- CHAT NEURALE con mic Whisper (`whisper-1` via `EMERGENT_LLM_KEY`) + tabula rasa messaggi all'avvio
+- CUE piccolo pixel-art (card TEAM) + BigCue SVG arancione con blink casuale 8-16s in header
+- LiveBrainTicker marquee LCD nell'header
+- Fix cache preascolto + cestino sotto MP3 list
