@@ -4588,6 +4588,20 @@ async def root():
 
 app.include_router(api_router)
 
+# ============================================================================
+# AUTH — Regia protetta (JWT, single-admin, password da .env)
+# ----------------------------------------------------------------------------
+# Middleware globale che blocca /api/admin/* senza token admin.
+# Router pubblico per /api/auth/{login,logout,me}.
+# ============================================================================
+from auth import (  # noqa: E402
+    make_auth_router as _make_auth_router,
+    seed_admin as _seed_admin,
+    admin_gate_middleware as _admin_gate,
+)
+app.include_router(_make_auth_router(db), prefix="/api")
+app.middleware("http")(_admin_gate)
+
 _cors_origins_env = os.environ.get('CORS_ORIGINS', '*').strip()
 if _cors_origins_env and _cors_origins_env != '*':
     _cors_kwargs = {"allow_origins": [o.strip() for o in _cors_origins_env.split(',') if o.strip()]}
@@ -4615,6 +4629,7 @@ app.add_middleware(
 @app.on_event("startup")
 async def on_startup():
     await ensure_seeded()
+    await _seed_admin(db)   # seed admin Regia (idempotente)
     await telegram_bot.start(db)
     # Kick off background Suno music library filler
     asyncio.create_task(_suno_library_filler())

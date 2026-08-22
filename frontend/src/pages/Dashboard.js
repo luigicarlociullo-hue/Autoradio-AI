@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useRef } from "react";
+import { useAuth } from "@/lib/auth";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Radio, Power, Trash2, Sparkles, Zap, Music2, Newspaper, MessageCircle, LogOut, LogIn, Send, User, ChevronRight, Cpu, Users, RefreshCw, Megaphone, Euro, ExternalLink, Download, Archive, Sliders, Mic, PauseCircle, PlayCircle, Upload, Package, Replace, Volume2 } from "lucide-react";
 import { lineInMixer } from "@/lib/lineInMixer";
@@ -144,6 +145,7 @@ export default function Dashboard() {
             ) : (
               <button data-testid="login-button" onClick={login} className="btn-outline text-sm flex items-center gap-2"><LogIn className="w-4 h-4" /> Login Google</button>
             )}
+            <RegiaLogoutButton />
           </div>
         </div>
       </header>
@@ -3800,3 +3802,20 @@ function CommunityWallPanel() {
   );
 }
 
+
+
+// ==================== RegiaLogoutButton — logout admin JWT ====================
+function RegiaLogoutButton() {
+  const auth = useAuth();
+  if (!auth) return null;
+  return (
+    <button
+      data-testid="regia-logout"
+      onClick={() => auth.logout()}
+      className="btn-outline text-xs flex items-center gap-1.5 !py-1.5 !px-2.5"
+      title="Esci dalla Regia (admin)"
+    >
+      <LogOut className="w-3.5 h-3.5" /> Regia · Logout
+    </button>
+  );
+}
