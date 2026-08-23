@@ -898,10 +898,6 @@ export default function PublicRadio() {
                 </Dialog>
               ))}
           </div>
-          {/* LIVE BRAIN · terminale operazioni AI in tempo reale */}
-          <div className="mt-3">
-            <LiveBrain current={current} segments={segments} />
-          </div>
         </div>
       </section>
 
@@ -1217,116 +1213,6 @@ function HomeCards({ djs, questionName, setQuestionName, questionText, setQuesti
         </Link>
       </CoverCard>
 
-      <section
-        data-testid="card-chat-led"
-        className="console-panel p-5 md:col-span-2"
-        style={{ boxShadow: "0 0 0 1px rgba(0,191,255,0.28) inset, 0 14px 40px rgba(0,0,0,0.6), 0 0 32px rgba(0,191,255,0.22)" }}
-      >
-        <CornerAccents />
-        <span className="module-tag">MOD · E · CHAT NEURALE</span>
-
-        <div className="flex items-start gap-3 mt-3 mb-3">
-          <div className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0"
-               style={{
-                 background: "rgba(0,191,255,0.08)",
-                 border: "1px solid var(--console-line-strong)",
-                 boxShadow: "0 0 12px rgba(0,191,255,0.4)",
-               }}>
-            <MessageCircle className="w-5 h-5" style={{ color: "var(--console-cyan)", filter: "drop-shadow(0 0 6px rgba(0,229,255,0.8))" }} />
-          </div>
-          <div className="flex-1 min-w-0">
-            <div className="label-mono">◂ CHAT NEURALE ▸</div>
-            <h3 className="font-display font-black text-xl mt-0.5 text-glow-blue" data-testid="chat-neurale-title">CHAT NEURALE</h3>
-            <p className="text-[11px] font-mono text-zinc-400 leading-snug mt-1" data-testid="chat-neurale-sub">
-              Dialoga in tempo reale con il cervello di R-A.I. Scrivi, sfida o chiedi: ti risponderemo a voce in diretta.
-            </p>
-          </div>
-          <div className="hidden sm:block"><VuMeter /></div>
-        </div>
-
-        {/* Visualizzatore ad onde sinusoidali sopra il feed */}
-        <SineWaveVisualizer />
-
-        {/* Display LED */}
-        <div
-          ref={scrollRef}
-          data-testid="led-feed"
-          className="led-screen h-44 overflow-y-auto text-sm space-y-1"
-          style={{ fontSize: "15px", lineHeight: "1.35" }}
-        >
-          {messages.length === 0 ? (
-            <div className="led-row led-line-sys text-center pt-12" style={{ fontSize: "16px" }}>
-              &gt; IN ATTESA DI SEGNALE_
-            </div>
-          ) : (
-            messages.map(m => (
-              <div key={m.id} className="led-row" data-testid={`led-msg-${m.id}`}>
-                <div className="led-line-user">
-                  &gt; [{(m.name || "USER").toUpperCase()}] {m.question}
-                </div>
-                {m.answer && (
-                  <div className="led-line-dj pl-4">
-                    &lt; [{(m.answering_dj || "DJ").toUpperCase()}] {m.answer}
-                  </div>
-                )}
-                {!m.answer && m.processing_status === "processing" && (
-                  <div className="led-line-sys pl-4 italic">
-                    &lt; [{(m.answering_dj || "DJ").toUpperCase()}] elaborazione risposta_
-                  </div>
-                )}
-              </div>
-            ))
-          )}
-        </div>
-
-        <form onSubmit={submitQuestion} className="mt-3 flex flex-col sm:flex-row gap-2" data-testid="led-input-form">
-          <input
-            data-testid="led-input-name"
-            value={questionName}
-            onChange={(e) => setQuestionName(e.target.value)}
-            placeholder="NOME"
-            className="w-full sm:w-28 rounded-md bg-black border outline-none px-3 py-2 text-xs font-mono text-cyan-300 placeholder:text-cyan-800 uppercase tracking-widest"
-            style={{ borderColor: "var(--console-line-strong)" }}
-          />
-          <input
-            data-testid="led-input-question"
-            value={questionText}
-            onChange={(e) => setQuestionText(e.target.value)}
-            placeholder="Cosa vuoi dire a R-A.I.?"
-            className="flex-1 rounded-md bg-black border outline-none px-3 py-2 text-xs font-mono text-white placeholder:text-cyan-800 uppercase tracking-widest"
-            style={{ borderColor: "var(--console-line-strong)" }}
-            required
-          />
-          <MicButton
-            disabled={busy}
-            onTranscribed={async (text) => {
-              const clean = (text || "").trim();
-              if (!clean) return;
-              setQuestionText(clean);
-              // Submit direttamente come vocale: prefissa nome con emoji mic per differenziare in chat
-              try {
-                await endpoints.submitQuestion({
-                  name: (questionName || "Ascoltatore") + " 🎙️",
-                  question: clean,
-                  source: "voice",
-                });
-                setQuestionText("");
-                toast.success("Vocale trascritto e inviato in onda");
-              } catch (e) {
-                toast.error("Invio vocale fallito");
-              }
-            }}
-          />
-          <button
-            type="submit"
-            disabled={busy || !questionText.trim()}
-            data-testid="led-input-send"
-            className="btn-primary inline-flex items-center gap-1.5 !text-[10px] disabled:opacity-40 whitespace-nowrap !px-4 !py-2"
-          >
-            <Send className="w-3 h-3" /> ENTRA IN ONDA
-          </button>
-        </form>
-      </section>
     </div>
   );
 }
