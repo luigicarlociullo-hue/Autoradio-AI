@@ -1,6 +1,7 @@
 import React, { useRef, useState } from "react";
 import { Mic, Square, Loader2 } from "lucide-react";
 import { toast } from "sonner";
+import radioEngine from "@/lib/radioEngine";
 
 /**
  * MicButton — registra vocale via MediaRecorder, upload a /api/voice/transcribe,
@@ -14,6 +15,11 @@ export default function MicButton({ onTranscribed, disabled }) {
 
   const start = async () => {
     if (disabled || state !== "idle") return;
+    // FIX (voce in chat manda in "caos" l'audio BT mentre si guida): abbassa
+    // subito la radio prima di richiedere il microfono, cosi' la transizione
+    // e' pulita invece di due audio (radio + attesa mic) che si accavallano
+    // mentre il sistema rinegozia il routing Bluetooth/altoparlante.
+    try { radioEngine.duckForVoiceChat(); } catch (e) {}
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const mime =
@@ -25,6 +31,7 @@ export default function MicButton({ onTranscribed, disabled }) {
       mr.ondataavailable = (e) => { if (e.data && e.data.size > 0) chunksRef.current.push(e.data); };
       mr.onstop = async () => {
         stream.getTracks().forEach(t => t.stop());
+        try { radioEngine.unduckAfterVoiceChat(); } catch (e) {}
         const blob = new Blob(chunksRef.current, { type: mime || "audio/webm" });
         chunksRef.current = [];
         if (blob.size < 800) { setState("idle"); toast.error("Registrazione troppo breve"); return; }
@@ -51,6 +58,7 @@ export default function MicButton({ onTranscribed, disabled }) {
       // safety: stop dopo 30s
       stopTimerRef.current = setTimeout(() => { try { mr.stop(); } catch {} }, 30_000);
     } catch (e) {
+      try { radioEngine.unduckAfterVoiceChat(); } catch (e2) {}
       toast.error("Microfono non disponibile");
       setState("idle");
     }

@@ -18,6 +18,8 @@ import MicButton from "@/components/MicButton";
 import Cue from "@/components/Cue";
 import BigCue from "@/components/BigCue";
 import LiveBrainTicker from "@/components/LiveBrainTicker";
+import ChatMini from "@/components/ChatMini";
+import ServicesDock from "@/components/ServicesDock";
 import LiveBrain from "@/components/LiveBrain";
 
 // SineWaveVisualizer — 3 onde sinusoidali blu neon, reattive all'audio (AnalyserNode).
@@ -537,6 +539,7 @@ export default function PublicRadio() {
 
   return (
     <div className="relative min-h-screen text-white">
+      <ServicesDock />
       {/* Console background: nero + grid + orbi blu + scanlines */}
       <div
         aria-hidden
@@ -628,12 +631,11 @@ export default function PublicRadio() {
         </div>
       </header>
 
-      {/* ================ HERO — Visual + player centrali (compatto) ================ */}
+      {/* ================ HERO — Cruscotto 3-col (Above the Fold) ================ */}
       <section className="max-w-7xl mx-auto px-4 pt-4 pb-4 relative z-10">
-        {/* Layout compatto: visual + now-playing affiancati su desktop */}
-        <div className="grid lg:grid-cols-5 gap-4 items-stretch">
-          {/* Visual centrale — LEDWALL Canvas 60fps (Resolume-style) */}
-          <div className="lg:col-span-2 relative">
+        <div className="grid lg:grid-cols-12 gap-4 items-stretch">
+          {/* Colonna SX (5/12): LEDWALL Visualizzatore */}
+          <div className="lg:col-span-5 relative">
             <div className="absolute -top-2 right-3 z-20">
               <VuMeter />
             </div>
@@ -645,12 +647,17 @@ export default function PublicRadio() {
             />
           </div>
 
-          {/* NOW PLAYING — pannello compatto */}
-          <div className="lg:col-span-3 console-panel p-4 md:p-5 flex flex-col">
+          {/* Colonna CENTRALE (4/12): Now Playing + ON AIR + controlli */}
+          <div className="lg:col-span-4 console-panel p-4 md:p-5 flex flex-col">
             <CornerAccents />
             <span className="module-tag">MOD · A · NOW PLAYING</span>
 
             <div className="flex items-center gap-2 mt-3 mb-2 flex-wrap">
+              {onAir ? (
+                <span className="on-air-badge !py-0.5 !px-2 !text-[10px]"><span className="dot" /> ON AIR</span>
+              ) : (
+                <span className="standby-badge !py-0.5 !px-2 !text-[10px]"><span className="dot" /> STANDBY</span>
+              )}
               {current && <KindBadge kind={current.kind} />}
               {current?.llm_provider && (
                 <span className="chip" data-testid="current-llm-provider">
@@ -666,7 +673,7 @@ export default function PublicRadio() {
 
             <div className="min-h-[2.5rem] flex items-center gap-3" data-testid="now-playing-title">
               <BigCue
-                size={72}
+                size={64}
                 mode={(function () {
                   const k = (current?.kind || "").toLowerCase();
                   if (!isPlaying && !isPreparing) return "idle";
@@ -688,7 +695,6 @@ export default function PublicRadio() {
                 {current.title}
               </div>
             )}
-
             {current?.script && (
               <p className="mt-2 text-zinc-400 leading-relaxed line-clamp-2 font-mono text-xs" data-testid="current-script">
                 {current.script}
@@ -698,7 +704,7 @@ export default function PublicRadio() {
               <Waveform active={isPlaying} />
             </div>
 
-            <div className="mt-4 flex items-center gap-3">
+            <div className="mt-4 flex items-center gap-3 flex-wrap">
               <button
                 data-testid="play-pause-button"
                 onClick={handlePlay}
@@ -717,12 +723,17 @@ export default function PublicRadio() {
               >
                 <SkipForward className="w-4 h-4" />
               </button>
-              <div className="flex-1 grid grid-cols-3 gap-2">
+              <div className="flex-1 grid grid-cols-3 gap-2 min-w-[180px]">
                 <MiniDisplay icon={Users}    label="LIVE"    value={station.listeners || 0} />
                 <MiniDisplay icon={Waves}    label="SEGS"    value={station.total_segments || 0} />
                 <MiniDisplay icon={Mic}      label="DJ"      value={djs.length} />
               </div>
             </div>
+          </div>
+
+          {/* Colonna DX (3/12): CHAT NEURALE integrata */}
+          <div className="lg:col-span-3 flex flex-col min-h-[360px]">
+            <ChatMini />
           </div>
         </div>
 
@@ -771,118 +782,6 @@ export default function PublicRadio() {
         />
       </section>
 
-      {/* ================ VIRTUAL STUDIOS ================ */}
-      <section className="max-w-7xl mx-auto px-6 py-3 relative z-10" data-testid="virtual-studios-section">
-        <Dialog>
-          <DialogTrigger asChild>
-            <button
-              type="button"
-              data-testid="virtual-studios-card"
-              className="console-panel w-full text-left group transition-all duration-300 hover:-translate-y-0.5 overflow-hidden"
-              style={{
-                padding: 0,
-                boxShadow: "0 0 0 1px rgba(0,191,255,0.35) inset, 0 14px 40px rgba(0,0,0,0.7), 0 0 34px rgba(0,191,255,0.22)",
-              }}
-              aria-label="Apri R-A.I. Virtual Studios"
-            >
-              <CornerAccents />
-              <div className="grid md:grid-cols-5 gap-0">
-                <div className="md:col-span-3 relative aspect-[16/9] md:aspect-auto bg-black overflow-hidden">
-                  <img
-                    src="/rai-studios.png"
-                    alt="R-A.I. Virtual Studios · ambiente radiofonico"
-                    className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-[1.03]"
-                    loading="lazy"
-                    data-testid="virtual-studios-thumb"
-                  />
-                  <div
-                    aria-hidden
-                    className="absolute inset-0 pointer-events-none"
-                    style={{
-                      background: "linear-gradient(180deg, rgba(0,0,0,0.05) 0%, rgba(0,0,0,0.55) 100%)",
-                    }}
-                  />
-                  <div className="absolute top-3 left-3">
-                    <span className="module-tag">MOD · G · VIRTUAL STUDIOS</span>
-                  </div>
-                  <div className="absolute bottom-3 right-3 flex items-center gap-2 text-cyan-300 text-[10px] font-mono uppercase tracking-widest">
-                    <Maximize2 className="w-3.5 h-3.5" />
-                    APRI FULLSCREEN
-                  </div>
-                </div>
-                <div className="md:col-span-2 p-5 md:p-6 flex flex-col justify-center gap-2">
-                  <div className="label-mono flex items-center gap-2"><Building2 className="w-3 h-3" /> HQ · CONTROL ROOM</div>
-                  <h2
-                    className="font-display font-black text-2xl sm:text-3xl text-glow-blue"
-                    data-testid="virtual-studios-title"
-                    style={{
-                      fontFamily: '"Orbitron", "Share Tech Mono", ui-monospace, monospace',
-                      letterSpacing: "0.06em",
-                    }}
-                  >
-                    R-A.I. VIRTUAL STUDIOS
-                  </h2>
-                  <p className="text-xs font-mono text-zinc-300 leading-relaxed">
-                    <span className="text-cyan-400">▸</span> Console cinematografica · riflesso liquido.<br />
-                    <span className="text-cyan-400">▸</span> Il set virtuale dei DJ AI.<br />
-                    <span className="text-cyan-400">▸</span> Clicca per esplorare in fullscreen.
-                  </p>
-                </div>
-              </div>
-            </button>
-          </DialogTrigger>
-          <DialogContent
-            className="bg-black text-white p-0 border-0 max-w-[96vw] w-[96vw] sm:max-w-[92vw] md:max-w-[88vw]"
-            data-testid="virtual-studios-dialog"
-            style={{
-              boxShadow: "0 0 0 1px rgba(0,229,255,0.5) inset, 0 30px 120px rgba(0,0,0,0.9), 0 0 80px rgba(0,191,255,0.35)",
-            }}
-          >
-            <DialogHeader className="px-6 pt-5 pb-2">
-              <DialogTitle
-                className="text-2xl sm:text-3xl font-display font-black text-glow-blue"
-                style={{
-                  fontFamily: '"Orbitron", "Share Tech Mono", ui-monospace, monospace',
-                  letterSpacing: "0.08em",
-                }}
-              >
-                R-A.I. VIRTUAL STUDIOS
-              </DialogTitle>
-              <DialogDescription className="text-xs font-mono uppercase tracking-widest text-cyan-500 mt-1">
-                HQ · CONSOLE DI TRASMISSIONE
-              </DialogDescription>
-            </DialogHeader>
-            <div className="px-4 sm:px-6 pb-4 sm:pb-6">
-              <div
-                className="relative w-full overflow-hidden rounded-xl"
-                style={{
-                  border: "1px solid rgba(0,229,255,0.45)",
-                  boxShadow: "0 0 40px rgba(0,191,255,0.28)",
-                }}
-              >
-                <img
-                  src="/rai-studios.png"
-                  alt="R-A.I. Virtual Studios · fullscreen"
-                  className="w-full h-auto max-h-[75vh] object-contain bg-black"
-                  data-testid="virtual-studios-fullscreen-img"
-                />
-              </div>
-              <p
-                className="mt-4 text-center text-sm sm:text-base font-mono text-cyan-200"
-                data-testid="virtual-studios-caption"
-                style={{
-                  fontFamily: '"Share Tech Mono", "Orbitron", ui-monospace, monospace',
-                  letterSpacing: "0.1em",
-                  textShadow: "0 0 6px rgba(0,229,255,0.7), 0 0 20px rgba(0,180,255,0.4)",
-                }}
-              >
-                Il cuore pulsante di R-A.I. — Prossimamente visitabile in 3D.
-              </p>
-            </div>
-          </DialogContent>
-        </Dialog>
-      </section>
-
       {/* ================ R-A.I. TEAM — 3 SPEAKER + 3 DJ CLUB, compatto orizzontale ================ */}
       <section className="max-w-7xl mx-auto px-6 py-4 relative z-10" data-testid="rai-team-section">
         <div className="console-panel p-4">
@@ -902,6 +801,7 @@ export default function PublicRadio() {
               </p>
             </div>
             <div className="flex items-center gap-3">
+              <NextEventChip />
               <Cue
                 mode={(function () {
                   const k = (current?.kind || "").toLowerCase();
@@ -1007,100 +907,6 @@ export default function PublicRadio() {
 
       {/* ================ WALL COMMUNITY — brani approvati con play counter ================ */}
       <CommunityWallPublic />
-
-      {/* ================ RE-PLAY · Bottone verso archivio ================ */}
-      <section className="max-w-7xl mx-auto px-6 py-4 relative z-10" data-testid="replay-section">
-        <Link
-          to="/replay"
-          data-testid="replay-cta"
-          className="console-panel p-4 sm:p-5 flex items-center gap-4 w-full group transition-all duration-200 hover:-translate-y-0.5 focusable"
-          style={{
-            boxShadow: "0 0 0 1px rgba(0,191,255,0.4) inset, 0 12px 32px rgba(0,0,0,0.7), 0 0 26px rgba(0,191,255,0.22)",
-          }}
-        >
-          <div
-            className="w-12 h-12 rounded-lg flex items-center justify-center shrink-0"
-            style={{
-              background: "rgba(0,191,255,0.08)",
-              border: "1px solid rgba(0,229,255,0.55)",
-              boxShadow: "0 0 14px rgba(0,229,255,0.45), inset 0 0 10px rgba(0,229,255,0.15)",
-            }}
-          >
-            <AudioWaveform className="w-6 h-6" style={{ color: "var(--console-cyan)", filter: "drop-shadow(0 0 8px rgba(0,229,255,0.9))" }} />
-          </div>
-          <div className="min-w-0 flex-1">
-            <div className="label-mono">◂ ARCHIVIO STORICO ▸</div>
-            <h2
-              className="font-display font-black text-xl sm:text-2xl text-glow-blue mt-0.5"
-              data-testid="replay-cta-title"
-              style={{ fontFamily: '"Orbitron","Share Tech Mono",ui-monospace,monospace', letterSpacing: "0.06em" }}
-            >
-              RE-PLAY (Archivio Storico)
-            </h2>
-            <p className="text-[11px] font-mono text-zinc-400 mt-0.5">
-              Riascolta set dei DJ, dischi del giorno e momenti talk.
-            </p>
-          </div>
-          <div className="text-cyan-300 text-[11px] font-mono uppercase tracking-widest shrink-0 group-hover:text-white">
-            APRI ▸
-          </div>
-        </Link>
-      </section>
-
-      {/* ================ COMUNICAZIONE UFFICIALE ================ */}
-      <section className="max-w-7xl mx-auto px-6 py-4 relative z-10" data-testid="comunicazione-section">
-        <div className="label-mono mb-2 flex items-center gap-2"><Antenna className="w-3 h-3" /> HQ · CONTATTI</div>
-        <h2
-          className="font-display font-bold text-2xl sm:text-3xl mb-4 text-glow-blue"
-          data-testid="comunicazione-heading"
-          style={{ fontFamily: '"Orbitron","Share Tech Mono",ui-monospace,monospace', letterSpacing: "0.06em" }}
-        >
-          COMUNICAZIONE UFFICIALE
-        </h2>
-        <div className="grid sm:grid-cols-3 gap-3">
-          {[
-            { icon: Mail,       label: "Relazioni Pubbliche",   email: "info@r-ai.it",      testId: "contact-info" },
-            { icon: Building2,  label: "Ufficio di Presidenza", email: "direzione@r-ai.it", testId: "contact-direzione" },
-            { icon: Mic,        label: "Diretta Live",          email: "diretta@r-ai.it",   testId: "contact-diretta" },
-          ].map(({ icon: Icon, label, email, testId }) => (
-            <a
-              key={email}
-              href={`mailto:${email}`}
-              data-testid={testId}
-              className="console-panel p-4 flex items-center gap-3 group transition-all duration-200 hover:-translate-y-0.5 focusable"
-              style={{
-                background: "#000",
-                boxShadow: "0 0 0 1px rgba(0,191,255,0.35) inset, 0 10px 28px rgba(0,0,0,0.7), 0 0 20px rgba(0,191,255,0.18)",
-              }}
-            >
-              <div
-                className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0"
-                style={{
-                  background: "rgba(0,191,255,0.08)",
-                  border: "1px solid rgba(0,229,255,0.55)",
-                  boxShadow: "0 0 14px rgba(0,229,255,0.45), inset 0 0 10px rgba(0,229,255,0.15)",
-                }}
-              >
-                <Icon className="w-5 h-5" style={{ color: "var(--console-cyan)", filter: "drop-shadow(0 0 6px rgba(0,229,255,0.85))" }} />
-              </div>
-              <div className="min-w-0 flex-1">
-                <div className="text-[10px] font-mono uppercase tracking-widest text-cyan-500">{label}</div>
-                <div
-                  className="text-sm font-mono truncate text-glow-cyan group-hover:text-white transition-colors"
-                  style={{
-                    fontFamily: '"Share Tech Mono","VT323",ui-monospace,monospace',
-                    color: "#B8ECFF",
-                    letterSpacing: "0.04em",
-                    textShadow: "0 0 4px rgba(0,229,255,0.85), 0 0 14px rgba(0,180,255,0.55)",
-                  }}
-                >
-                  {email}
-                </div>
-              </div>
-            </a>
-          ))}
-        </div>
-      </section>
 
       <footer className="max-w-7xl mx-auto px-6 py-10 text-[10px] font-mono uppercase tracking-widest text-zinc-600 border-t mt-8 relative z-10"
               style={{ borderColor: "var(--console-line)" }}>
@@ -1410,55 +1216,6 @@ function HomeCards({ djs, questionName, setQuestionName, questionText, setQuesti
           Manda il tuo brano techno/house
         </Link>
       </CoverCard>
-
-      {/* ====== DIVENTA PARTNER — Sponsor CTA ====== */}
-      <Link
-        to="/partner"
-        data-testid="card-diventa-partner"
-        className="console-panel p-5 flex flex-col justify-between group transition-all duration-200 hover:-translate-y-0.5 focusable"
-        style={{
-          boxShadow: "0 0 0 1px rgba(255,184,77,0.35) inset, 0 14px 40px rgba(0,0,0,0.6), 0 0 32px rgba(255,184,77,0.20)",
-          background: "linear-gradient(180deg, rgba(255,184,77,0.06) 0%, rgba(0,0,0,0.6) 100%)",
-          backdropFilter: "blur(6px)",
-          WebkitBackdropFilter: "blur(6px)",
-        }}
-      >
-        <div>
-          <CornerAccents />
-          <span className="module-tag" style={{ color: "#FFB84D", borderColor: "rgba(255,184,77,0.6)" }}>MOD · H · SPONSOR</span>
-          <div className="flex items-center gap-3 mt-3">
-            <div
-              className="w-12 h-12 rounded-lg flex items-center justify-center shrink-0"
-              style={{
-                background: "rgba(255,184,77,0.10)",
-                border: "1px solid rgba(255,184,77,0.55)",
-                boxShadow: "0 0 14px rgba(255,184,77,0.55)",
-              }}
-            >
-              <Building2 className="w-6 h-6" style={{ color: "#FFB84D", filter: "drop-shadow(0 0 6px rgba(255,184,77,0.9))" }} />
-            </div>
-            <div className="min-w-0">
-              <div className="label-mono" style={{ color: "#FFB84D" }}>◂ SPONSOR PARTNER ▸</div>
-              <h3
-                className="font-display font-black text-xl mt-0.5"
-                data-testid="diventa-partner-title"
-                style={{ color: "#FFD79A", textShadow: "0 0 10px rgba(255,184,77,0.7)" }}
-              >
-                DIVENTA PARTNER
-              </h3>
-            </div>
-          </div>
-          <p className="text-sm font-mono text-zinc-200 leading-relaxed mt-3">
-            <span style={{ color: "#FFB84D" }}>▸</span> Carica il tuo spot MP3.<br />
-            <span style={{ color: "#FFB84D" }}>▸</span> Oppure fallo generare all'AI.<br />
-            <span style={{ color: "#FFB84D" }}>▸</span> Va in onda solo dopo approvazione.
-          </p>
-        </div>
-        <div className="mt-4 flex items-center gap-2 self-start px-3 py-2 rounded-md text-[11px] font-mono uppercase tracking-widest"
-             style={{ border: "1px solid rgba(255,184,77,0.55)", color: "#FFD79A" }}>
-          <Send className="w-3.5 h-3.5" /> Invia richiesta →
-        </div>
-      </Link>
 
       <section
         data-testid="card-chat-led"
@@ -1801,3 +1558,47 @@ function CommunityWallPublic() {
   );
 }
 
+
+
+// ==================== NextEventChip — rubrica in arrivo all'ora successiva ====================
+function NextEventChip() {
+  const [now, setNow] = React.useState(new Date());
+  React.useEffect(() => {
+    const iv = setInterval(() => setNow(new Date()), 20_000);
+    return () => clearInterval(iv);
+  }, []);
+  const nextHour = (now.getHours() + 1) % 24;
+  // Convenzione backend: ora PARI → Umani Vs Algoritmo · DISPARI → Disco del Giorno
+  const isEven = nextHour % 2 === 0;
+  const label = isEven ? "Umani Vs Algoritmo" : "Il Disco del Giorno";
+  const color = isEven ? "#00E5FF" : "#FFB84D";
+  const hh = String(nextHour).padStart(2, "0");
+  return (
+    <div
+      data-testid="next-event-chip"
+      className="hidden md:flex flex-col items-end px-3 py-1.5 rounded-lg"
+      style={{
+        border: `1px solid ${color}55`,
+        background: "rgba(0,0,0,0.4)",
+        boxShadow: `0 0 12px ${color}33`,
+        backdropFilter: "blur(6px)",
+        WebkitBackdropFilter: "blur(6px)",
+      }}
+      title={`Prossima rubrica alle ${hh}:00`}
+    >
+      <div className="text-[9px] font-mono uppercase tracking-widest" style={{ color: `${color}bb` }}>
+        ▸ NEXT EVENT · {hh}:00
+      </div>
+      <div
+        className="text-xs font-mono font-bold"
+        style={{
+          color,
+          fontFamily: '"Share Tech Mono","VT323",ui-monospace,monospace',
+          textShadow: `0 0 6px ${color}aa`,
+        }}
+      >
+        {label}
+      </div>
+    </div>
+  );
+}

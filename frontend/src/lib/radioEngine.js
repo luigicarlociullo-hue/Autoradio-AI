@@ -12,6 +12,37 @@ class RadioEngine {
     this.currentUtterance = null;
     this.isPaused = false;
     this.currentKind = null;
+    this._duckActive = false;
+  }
+
+  // FIX (voce in chat manda in "caos" l'audio BT): richiedere il microfono
+  // (getUserMedia) mentre la radio suona in Bluetooth puo' far scattare la
+  // modalita' "chiamata" del sistema, che ruba l'output audio dal BT e lo
+  // sposta sull'altoparlante del telefono, oltre a creare contesa di risorse
+  // (rallentamenti). Non e' evitabile al 100% via codice (e' comportamento
+  // OS/browser), ma abbassiamo la radio PRIMA di attivare il microfono cosi'
+  // la transizione e' pulita invece che il "caos" di due audio che si
+  // accavallano mentre il sistema rinegozia il routing.
+  duckForVoiceChat() {
+    this._duckActive = true;
+    try {
+      if (this.outputBus && this.audioCtx) {
+        const now = this.audioCtx.currentTime;
+        this.outputBus.gain.cancelScheduledValues(now);
+        this.outputBus.gain.linearRampToValueAtTime(Math.max(0.05, this.outputBus.gain.value * 0.12), now + 0.25);
+      }
+    } catch (e) {}
+  }
+
+  unduckAfterVoiceChat() {
+    this._duckActive = false;
+    try {
+      if (this.outputBus && this.audioCtx) {
+        const now = this.audioCtx.currentTime;
+        this.outputBus.gain.cancelScheduledValues(now);
+        this.outputBus.gain.linearRampToValueAtTime(2.4, now + 0.4);
+      }
+    } catch (e) {}
   }
 
   ensureAudioCtx() {
@@ -113,7 +144,9 @@ class RadioEngine {
         set(this.voiceBus, m.voice_vol);
         set(this.bedBus, m.bed_vol);
         // Master: manteniamo il boost 2.4 ma lo scaliamo con master_vol.
-        const master = Math.max(0, Math.min(1, (m.master_vol ?? 100) / 100)) * 2.4;
+        // Se un duck (es. voce in chat) e' attivo, questo poller (ogni 2s) non
+        // deve sovrascriverlo riportando il volume a piena scala a meta' duck.
+        const master = Math.max(0, Math.min(1, (m.master_vol ?? 100) / 100)) * 2.4 * (this._duckActive ? 0.12 : 1);
         try {
           this.outputBus.gain.cancelScheduledValues(now);
           this.outputBus.gain.linearRampToValueAtTime(master, now + 0.1);
@@ -1658,12 +1691,35 @@ class RadioEngine {
           // 4) Attendi fine brano meno 8s (outro window) + pre-warm next 5s prima
           let nextPreWarmed = false;
           await new Promise((r) => {
-            const iv = setInterval(() => {
+            // FIX (player si blocca in silenzio con UI ancora "viva" — video
+          // "vuoto.mp4"/"rallentamento.mp4"): se il Bluetooth in auto causa
+          // un buffer stall, audio.currentTime si blocca ma paused/ended/
+          // stopRequested restano false — nessuna condizione di uscita
+          // scattava piu' e questa Promise (quindi l'intero loop di
+          // riproduzione) restava bloccata per sempre, anche con mascotte e
+          // ticker ancora animati (loro girano su timer indipendenti).
+          // Watchdog: se currentTime non avanza per STALL_LIMIT_MS mentre il
+          // brano dovrebbe suonare, trattalo come bloccato e salta avanti.
+          let lastTime = -1;
+          let stalledSinceMs = 0;
+          const STALL_LIMIT_MS = 9000;
+          const iv = setInterval(() => {
               if (!audio || audio.paused || audio.ended || this.stopRequested) {
                 clearInterval(iv); r(); return;
               }
+              const ct = audio.currentTime || 0;
+              if (ct === lastTime) {
+                stalledSinceMs += 200;
+                if (stalledSinceMs >= STALL_LIMIT_MS) {
+                  console.warn("Music stalled (no progress for", STALL_LIMIT_MS, "ms) — skipping:", url);
+                  clearInterval(iv); r(); return;
+                }
+              } else {
+                lastTime = ct;
+                stalledSinceMs = 0;
+              }
               const dur = (audio.duration || 60);
-              const remaining = dur - (audio.currentTime || 0);
+              const remaining = dur - ct;
               // === FIX A · zero silenzio ===
               // Pre-warm ANTICIPATO: appena il brano supera il 40% del tempo
               // (o 20s dalla partenza) chiamiamo il hook, che a sua volta:
@@ -1672,7 +1728,7 @@ class RadioEngine {
               // Così quando il brano corrente termina il crossfade, il B è
               // GIÀ completamente in memoria e parte in <20ms.
               if (!nextPreWarmed && this._preWarmHook &&
-                  ((audio.currentTime || 0) >= Math.min(20, dur * 0.4))) {
+                  (ct >= Math.min(20, dur * 0.4))) {
                 nextPreWarmed = true;
                 try { this._preWarmHook(); } catch (e) {}
               }

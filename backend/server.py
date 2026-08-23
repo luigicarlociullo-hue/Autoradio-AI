@@ -2448,50 +2448,56 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
             # Round-robin all'interno di ciascun pool per rotare tutti equamente.
             # Include anche gli upload admin ("admin_upload") oltre ai brani Suno.
             _music_sources = {"$in": ["suno", "admin_upload"]}
-            high_pool = await db.tracks.find(
-                {"source": _music_sources, "status": "ready", "audio_url": {"$ne": None},
-                 "on_air": {"$ne": False},
-                 "deleted_at": None,
-                 "$or": [
-                     {"priority": "high"},
-                     {"rotation_weight": {"$gt": 1}},
-                 ],
-                 "$and": [
-                     {"$or": [{"is_anthem": {"$exists": False}}, {"is_anthem": False}]},
-                     {"$or": [{"is_jingle": {"$exists": False}}, {"is_jingle": False}]},
-                 ]},
-                {"_id": 0},
-                sort=[("last_played_at", 1), ("created_at", 1)],
-            ).to_list(length=50)
-            normal_pool = await db.tracks.find(
-                {"source": _music_sources, "status": "ready", "audio_url": {"$ne": None},
-                 "on_air": {"$ne": False},
-                 "deleted_at": None,
-                 "$or": [{"is_anthem": {"$exists": False}}, {"is_anthem": False}],
-                 "priority": {"$ne": "high"},
-                 "is_jingle": {"$ne": True},
-                 "$and": [{"$or": [{"rotation_weight": {"$exists": False}}, {"rotation_weight": {"$lte": 1}}]}]},
-                {"_id": 0},
-                sort=[("last_played_at", 1), ("created_at", 1)],
-            ).to_list(length=50)
+            high_query = {
+                "source": _music_sources, "status": "ready", "audio_url": {"$ne": None},
+                "on_air": {"$ne": False},
+                "deleted_at": None,
+                "$or": [
+                    {"priority": "high"},
+                    {"rotation_weight": {"$gt": 1}},
+                ],
+                "$and": [
+                    {"$or": [{"is_anthem": {"$exists": False}}, {"is_anthem": False}]},
+                    {"$or": [{"is_jingle": {"$exists": False}}, {"is_jingle": False}]},
+                ],
+            }
+            normal_query = {
+                "source": _music_sources, "status": "ready", "audio_url": {"$ne": None},
+                "on_air": {"$ne": False},
+                "deleted_at": None,
+                "$or": [{"is_anthem": {"$exists": False}}, {"is_anthem": False}],
+                "priority": {"$ne": "high"},
+                "is_jingle": {"$ne": True},
+                "$and": [{"$or": [{"rotation_weight": {"$exists": False}}, {"rotation_weight": {"$lte": 1}}]}],
+            }
+            # FIX (brano duplicato all'avvio): la vecchia logica leggeva il pool
+            # con find().to_list() e aggiornava last_played_at SOLO DOPO aver
+            # scelto candidates[0] — due richieste quasi simultanee (il fetch
+            # iniziale del player + fillQueue() che parte subito dopo per
+            # riempire il buffer) potevano leggere lo stesso "meno riprodotto"
+            # PRIMA che l'update dell'una fosse visibile all'altra, scegliendo
+            # lo stesso brano due volte di fila. find_one_and_update rende la
+            # selezione+claim un'unica operazione atomica lato DB.
+            has_high = await db.tracks.find_one(high_query, {"_id": 1})
+            has_normal = await db.tracks.find_one(normal_query, {"_id": 1})
+            if has_high and has_normal:
+                pool_query = high_query if random.random() < 0.65 else normal_query
+            elif has_high:
+                pool_query = high_query
+            elif has_normal:
+                pool_query = normal_query
+            else:
+                pool_query = None
 
-            candidates = []
-            if high_pool and normal_pool:
-                # 65% probabilità di pescare dall'high pool
-                candidates = high_pool if random.random() < 0.65 else normal_pool
-            elif high_pool:
-                candidates = high_pool
-            elif normal_pool:
-                candidates = normal_pool
-
-            if candidates:
-                chosen = candidates[0]
-                track = Track(**chosen)
-                # Mark as just played so the next call picks a different one
-                await db.tracks.update_one(
-                    {"id": track.id},
+            if pool_query is not None:
+                chosen = await db.tracks.find_one_and_update(
+                    pool_query,
                     {"$set": {"last_played_at": datetime.now(timezone.utc).isoformat()}},
+                    sort=[("last_played_at", 1), ("created_at", 1)],
+                    projection={"_id": 0},
                 )
+                if chosen:
+                    track = Track(**chosen)
         if track is None:
             # Library round-robin returned nothing (rare). PRIMA di toccare
             # Suno, garantiamo continuità pescando un brano SEED (i 5 brani
