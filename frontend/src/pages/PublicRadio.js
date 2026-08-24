@@ -19,6 +19,7 @@ import Cue from "@/components/Cue";
 import BigCue from "@/components/BigCue";
 import LiveBrainTicker from "@/components/LiveBrainTicker";
 import ChatMini from "@/components/ChatMini";
+import CueThinking from "@/components/CueThinking";
 import ServicesDock from "@/components/ServicesDock";
 import LiveBrain from "@/components/LiveBrain";
 
@@ -687,6 +688,7 @@ export default function PublicRadio() {
               />
               <LiveBrainTicker current={current} />
             </div>
+            <CueThinking current={current} />
             {current && (
               <div
                 className="font-display text-lg sm:text-xl font-bold text-glow-cyan mt-2 truncate"
