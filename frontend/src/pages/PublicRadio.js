@@ -772,20 +772,10 @@ export default function PublicRadio() {
           </div>
         )}
 
-        {/* 4 MODULI CONSOLE — L'esperimento · Disco del giorno · Human vs AI · Chat LED */}
-        <HomeCards
-          djs={djs}
-          questionName={questionName}
-          setQuestionName={setQuestionName}
-          questionText={questionText}
-          setQuestionText={setQuestionText}
-          submitQuestion={submitQuestion}
-          busy={busy}
-        />
       </section>
 
       {/* ================ R-A.I. TEAM — 3 SPEAKER + 3 DJ CLUB, compatto orizzontale ================ */}
-      <section className="max-w-7xl mx-auto px-6 py-4 relative z-10" data-testid="rai-team-section">
+      <section className="max-w-7xl mx-auto px-6 py-2 relative z-10" data-testid="rai-team-section">
         <div className="console-panel p-4">
           <CornerAccents />
           <div className="flex items-end justify-between mb-3 flex-wrap gap-2">
@@ -903,10 +893,78 @@ export default function PublicRadio() {
         </div>
       </section>
 
+      {/* ================ SPONSOR CTA — DIVENTA PARTNER (sponsor-grade) ================ */}
+      <section className="max-w-7xl mx-auto px-6 py-2 relative z-10" data-testid="sponsor-cta-section">
+        <Link
+          to="/partner"
+          data-testid="card-diventa-partner"
+          className="relative flex items-center gap-4 rounded-2xl px-5 py-4 group focusable overflow-hidden"
+          style={{
+            border: "1px solid rgba(255,184,77,0.45)",
+            background: "linear-gradient(120deg, rgba(255,107,26,0.10) 0%, rgba(0,0,0,0.55) 55%, rgba(255,184,77,0.10) 100%)",
+            backdropFilter: "blur(16px) saturate(1.25)",
+            WebkitBackdropFilter: "blur(16px) saturate(1.25)",
+            boxShadow: "0 0 0 1px rgba(255,184,77,0.28) inset, 0 18px 44px rgba(0,0,0,0.6), 0 0 44px rgba(255,184,77,0.20)",
+          }}
+        >
+          <CornerAccents />
+          <div
+            className="w-12 h-12 rounded-xl flex items-center justify-center shrink-0"
+            style={{
+              background: "rgba(255,184,77,0.12)",
+              border: "1px solid rgba(255,184,77,0.6)",
+              boxShadow: "0 0 18px rgba(255,184,77,0.55), inset 0 0 12px rgba(255,184,77,0.18)",
+            }}
+          >
+            <Building2 className="w-6 h-6" style={{ color: "#FFD79A", filter: "drop-shadow(0 0 6px rgba(255,184,77,0.9))" }} />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="label-mono" style={{ color: "#FFB84D" }}>◂ SPONSOR PARTNER ▸</div>
+            <h3
+              className="font-display font-black text-lg sm:text-xl leading-tight"
+              data-testid="diventa-partner-title"
+              style={{
+                fontFamily: '"Orbitron","Share Tech Mono",ui-monospace,monospace',
+                letterSpacing: "0.05em",
+                color: "#FFD79A",
+                textShadow: "0 0 10px rgba(255,184,77,0.75), 0 0 22px rgba(255,107,26,0.35)",
+              }}
+            >
+              DIVENTA PARTNER · SPONSORIZZA R-A.I.
+            </h3>
+            <p className="text-[11px] font-mono text-zinc-200 mt-0.5">
+              <span style={{ color: "#FFB84D" }}>▸</span> Spot MP3 o generato dall'AI · scheduling per data + frequenza · approvazione admin.
+            </p>
+          </div>
+          <div
+            className="hidden sm:flex items-center gap-2 px-3 py-2 rounded-md text-[11px] font-mono uppercase tracking-widest shrink-0"
+            style={{
+              border: "1px solid rgba(255,184,77,0.55)",
+              color: "#FFD79A",
+              background: "rgba(0,0,0,0.35)",
+              textShadow: "0 0 6px rgba(255,184,77,0.7)",
+            }}
+          >
+            <Send className="w-3.5 h-3.5" /> Invia richiesta →
+          </div>
+        </Link>
+      </section>
+
+      {/* 4 MODULI CONSOLE — L'esperimento · Disco del giorno · Human vs AI · Chat LED */}
+      <HomeCards
+          djs={djs}
+          questionName={questionName}
+          setQuestionName={setQuestionName}
+          questionText={questionText}
+          setQuestionText={setQuestionText}
+          submitQuestion={submitQuestion}
+          busy={busy}
+        />
+
       {/* ================ WALL COMMUNITY — brani approvati con play counter ================ */}
       <CommunityWallPublic />
 
-      <footer className="max-w-7xl mx-auto px-6 py-10 text-[10px] font-mono uppercase tracking-widest text-zinc-600 border-t mt-8 relative z-10"
+      <footer className="max-w-7xl mx-auto px-6 py-4 text-[10px] font-mono uppercase tracking-widest text-zinc-600 border-t mt-8 relative z-10"
               style={{ borderColor: "var(--console-line)" }}>
         <div className="flex items-center gap-2 flex-wrap">
           <Antenna className="w-3 h-3" />
@@ -1298,6 +1356,8 @@ function CoverCard({
         </div>
       </div>
     </section>
+
+
   );
 }
 
@@ -1393,7 +1453,7 @@ function CommunityWallPublic() {
   if (!tracks || tracks.length === 0) return null;
 
   return (
-    <section className="max-w-7xl mx-auto px-6 py-4 relative z-10" data-testid="wall-community-public">
+    <section className="max-w-7xl mx-auto px-6 py-2 relative z-10" data-testid="wall-community-public">
       <div className="flex items-end justify-between mb-3">
         <div>
           <div className="label-mono flex items-center gap-2"><Users className="w-3 h-3" /> WALL · COMMUNITY BOARD</div>

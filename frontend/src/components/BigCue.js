@@ -44,8 +44,29 @@ function Eye({ shape, cx, cy, color = "#00E5FF" }) {
 export default function BigCue({ mode = "idle", size = 96 }) {
   const eyes = EYES[mode] || EYES.idle;
   const mouth = MOUTH[mode] || MOUTH.idle;
-  // Palette arancione acceso "viva" — variazioni per stato
-  const accent = mode === "alert" ? "#FF3D00" : mode === "speaking" ? "#FF8A00" : "#FFA034";
+  // Palette Green Brother — verde acido/neon
+  const accent = mode === "alert" ? "#B6FF00" : mode === "speaking" ? "#39FF14" : "#39FF14";
+
+  // Bass pulse via AnalyserNode di radioEngine
+  const [pulse, setPulse] = React.useState(1);
+  React.useEffect(() => {
+    let raf;
+    const loop = () => {
+      const an = require("@/lib/radioEngine").default?.getAnalyser?.();
+      if (an) {
+        const bins = an.frequencyBinCount;
+        const freq = new Uint8Array(bins);
+        an.getByteFrequencyData(freq);
+        let bass = 0;
+        for (let i = 2; i < 14; i++) bass += freq[i];
+        bass /= (12 * 255);
+        setPulse(1 + Math.min(0.22, bass * 0.6));
+      }
+      raf = requestAnimationFrame(loop);
+    };
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
+  }, []);
 
   // Blink casuale ogni 8-16s (occhi che si chiudono per ~140ms)
   const [blink, setBlink] = React.useState(false);
@@ -82,7 +103,7 @@ export default function BigCue({ mode = "idle", size = 96 }) {
       data-testid="big-cue"
       data-mode={mode}
       className="relative shrink-0"
-      style={{ width: size, height: size, filter: `drop-shadow(0 0 12px ${accent}66)` }}
+      style={{ width: size, height: size, filter: `drop-shadow(0 0 12px ${accent}77)`, transform: `scale(${pulse})`, transition: "transform 90ms linear" }}
       aria-label={`CUE ${mouth.label}`}
       title={`CUE · ${mouth.label}`}
     >
