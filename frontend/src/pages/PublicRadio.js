@@ -650,122 +650,7 @@ export default function PublicRadio() {
               trackOverlay={trackOverlay}
               djs={djs}
             />
-            <div className="console-panel p-3 mt-2" data-testid="rai-team-section">
-              <CornerAccents />
-              <div className="flex items-end justify-between mb-3 flex-wrap gap-2">
-                <div>
-                  <div className="label-mono flex items-center gap-2"><Mic className="w-3 h-3" /> R-A.I. · TEAM</div>
-                  <h2
-                    className="font-display font-bold text-xl sm:text-2xl mt-0.5 text-glow-blue"
-                    data-testid="rai-team-heading"
-                    style={{ fontFamily: '"Orbitron","Share Tech Mono",ui-monospace,monospace', letterSpacing: "0.06em" }}
-                  >
-                    R-A.I. TEAM
-                  </h2>
-                  <p className="text-[10px] font-mono uppercase tracking-widest text-zinc-500 mt-0.5">
-                    3 VOCI · 3 CERVELLI ▸ 3 DJ · 3 RITMI · L'ANIMA DEL CLUB
-                  </p>
-                </div>
-                <div className="flex items-center gap-3">
-                  <NextEventChip />
-                  <Cue
-                    mode={(function () {
-                      const k = (current?.kind || "").toLowerCase();
-                      if (!isPlaying) return "idle";
-                      if (["talk","joke","weather","horoscope","interview","motivation","history","news","answer","community"].includes(k)) return "speaking";
-                      if (k === "music") return "happy";
-                      if (k === "time_signal") return "alert";
-                      if (k === "jingle") return "listen";
-                      return "thinking";
-                    })()}
-                  />
-                  <div className="hidden sm:block"><VuMeter /></div>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-3 gap-2">
-                {djs
-                  .slice()
-                  .sort((a, b) => (a.night_slot ? 1 : 0) - (b.night_slot ? 1 : 0) || (a.night_slot || 0) - (b.night_slot || 0))
-                  .map(dj => (
-                    <Dialog key={dj.id}>
-                      <DialogTrigger asChild>
-                        <button
-                          type="button"
-                          data-testid={`team-chip-${dj.name}`}
-                          className="flex flex-col items-center gap-1.5 p-2 rounded-lg transition-all hover:-translate-y-0.5 focusable"
-                          style={{
-                            background: "rgba(0,0,0,0.55)",
-                            border: `1px solid ${dj.accent_color || "#00BFFF"}55`,
-                            boxShadow: `0 0 12px ${dj.accent_color || "#00BFFF"}22, inset 0 0 8px ${dj.accent_color || "#00BFFF"}12`,
-                          }}
-                        >
-                          <div
-                            className="w-12 h-12 rounded-full overflow-hidden bg-black shrink-0"
-                            style={{
-                              border: `1px solid ${dj.accent_color || "#00BFFF"}77`,
-                              boxShadow: `0 0 16px ${dj.accent_color || "#00BFFF"}66`,
-                            }}
-                          >
-                            {dj.avatar_url && (
-                              <img src={dj.avatar_url} alt={dj.name} className="w-full h-full object-cover" loading="lazy" />
-                            )}
-                          </div>
-                          <div
-                            className="font-display font-black text-[13px] leading-none dj-name-force"
-                            style={{ color: dj.accent_color || "#00BFFF", textShadow: `0 0 8px ${dj.accent_color || "#00BFFF"}` }}
-                          >
-                            {dj.name}
-                          </div>
-                          <div className="text-[9px] font-mono uppercase tracking-widest text-zinc-500 leading-none">
-                            {dj.night_slot ? "CLUB NIGHT" : "SPEAKER"}
-                          </div>
-                        </button>
-                      </DialogTrigger>
-                      <DialogContent
-                        className="max-w-lg bg-[#02040A] text-white"
-                        data-testid={`team-dialog-${dj.name}`}
-                        style={{
-                          border: `1px solid ${dj.accent_color || "#00BFFF"}66`,
-                          boxShadow: `0 0 40px ${dj.accent_color || "#00BFFF"}44`,
-                        }}
-                      >
-                        <DialogHeader>
-                          <div className="flex items-center gap-4">
-                            {dj.avatar_url && (
-                              <img
-                                src={dj.avatar_url}
-                                alt={dj.name}
-                                className="w-20 h-20 rounded-lg object-cover"
-                                style={{
-                                  border: `1px solid ${dj.accent_color || "#00BFFF"}77`,
-                                  boxShadow: `0 0 24px ${dj.accent_color || "#00BFFF"}66`,
-                                }}
-                              />
-                            )}
-                            <div>
-                              <DialogTitle
-                                className="text-2xl font-display font-black"
-                                style={{ color: dj.accent_color || "#00BFFF", textShadow: `0 0 12px ${dj.accent_color || "#00BFFF"}` }}
-                              >
-                                {dj.name}
-                              </DialogTitle>
-                              <DialogDescription className="text-xs font-mono uppercase tracking-widest text-cyan-500 mt-1">
-                                {dj.llm_provider} · {dj.llm_model}
-                                {dj.night_slot ? ` · ${dj.night_slot === 1 ? "22:00-00:00" : dj.night_slot === 2 ? "00:00-02:00" : "02:00-04:00"}` : " · SPEAKER"}
-                              </DialogDescription>
-                            </div>
-                          </div>
-                        </DialogHeader>
-                        <p className="text-sm font-mono text-zinc-300 leading-relaxed mt-2">
-                          {dj.personality || "Nessuna bio disponibile."}
-                        </p>
-                      </DialogContent>
-                    </Dialog>
-                  ))}
-              </div>
             </div>
-          </div>
 
           {/* Colonna CENTRALE (4/12): Now Playing + ON AIR + controlli.
               order-1 su mobile: il Play deve essere il primo blocco
@@ -893,6 +778,113 @@ export default function PublicRadio() {
           </div>
         )}
 
+      </section>
+
+      {/* ================ TEAM STRIP — barretta 6 avatar orizzontali ================ */}
+      <section className="max-w-7xl mx-auto px-4 py-1 relative z-10" data-testid="rai-team-strip">
+        <div
+          className="flex items-center gap-3 rounded-xl px-3 py-2 overflow-x-auto"
+          style={{
+            background: "linear-gradient(180deg, rgba(4,10,22,0.35) 0%, rgba(2,6,15,0.55) 100%)",
+            backdropFilter: "blur(14px) saturate(1.2)",
+            WebkitBackdropFilter: "blur(14px) saturate(1.2)",
+            border: "1px solid rgba(0,229,255,0.20)",
+            boxShadow: "0 0 18px rgba(0,191,255,0.12), inset 0 0 10px rgba(0,229,255,0.08)",
+          }}
+        >
+          <div className="shrink-0 flex flex-col leading-none pr-2 border-r border-cyan-500/15">
+            <span className="text-[9px] font-mono uppercase tracking-widest text-cyan-500">STAFF</span>
+            <span
+              className="text-[11px] font-bold text-glow-blue"
+              data-testid="rai-team-heading"
+              style={{ fontFamily: '"Orbitron","Share Tech Mono",ui-monospace,monospace', letterSpacing: "0.08em" }}
+            >
+              R-A.I. TEAM
+            </span>
+          </div>
+          <div className="flex items-center gap-3 flex-1 min-w-0">
+            {djs
+              .slice()
+              .sort((a, b) => (a.night_slot ? 1 : 0) - (b.night_slot ? 1 : 0) || (a.night_slot || 0) - (b.night_slot || 0))
+              .map(dj => (
+                <Dialog key={dj.id}>
+                  <DialogTrigger asChild>
+                    <button
+                      type="button"
+                      data-testid={`team-chip-${dj.name}`}
+                      className="flex flex-col items-center gap-0.5 shrink-0 hover:-translate-y-0.5 transition-transform focusable"
+                      title={dj.name}
+                    >
+                      <div
+                        className="w-11 h-11 rounded-full overflow-hidden bg-black"
+                        style={{
+                          border: `1px solid ${dj.accent_color || "#00BFFF"}99`,
+                          boxShadow: `0 0 10px ${dj.accent_color || "#00BFFF"}88`,
+                        }}
+                      >
+                        {dj.avatar_url && (
+                          <img src={dj.avatar_url} alt={dj.name} className="w-full h-full object-cover" loading="lazy" />
+                        )}
+                      </div>
+                      <span
+                        className="text-[10px] font-black leading-none dj-name-force"
+                        style={{
+                          fontFamily: '"Orbitron","Share Tech Mono",ui-monospace,monospace',
+                          letterSpacing: "0.05em",
+                          color: dj.accent_color || "#00BFFF",
+                          textShadow: `0 0 6px ${dj.accent_color || "#00BFFF"}`,
+                        }}
+                      >
+                        {dj.name}
+                      </span>
+                    </button>
+                  </DialogTrigger>
+                  <DialogContent
+                    className="max-w-lg bg-[#02040A] text-white"
+                    data-testid={`team-dialog-${dj.name}`}
+                    style={{
+                      border: `1px solid ${dj.accent_color || "#00BFFF"}66`,
+                      boxShadow: `0 0 40px ${dj.accent_color || "#00BFFF"}44`,
+                    }}
+                  >
+                    <DialogHeader>
+                      <div className="flex items-center gap-4">
+                        {dj.avatar_url && (
+                          <img
+                            src={dj.avatar_url}
+                            alt={dj.name}
+                            className="w-20 h-20 rounded-lg object-cover"
+                            style={{
+                              border: `1px solid ${dj.accent_color || "#00BFFF"}77`,
+                              boxShadow: `0 0 24px ${dj.accent_color || "#00BFFF"}66`,
+                            }}
+                          />
+                        )}
+                        <div>
+                          <DialogTitle
+                            className="text-2xl font-display font-black"
+                            style={{ color: dj.accent_color || "#00BFFF", textShadow: `0 0 12px ${dj.accent_color || "#00BFFF"}` }}
+                          >
+                            {dj.name}
+                          </DialogTitle>
+                          <DialogDescription className="text-xs font-mono uppercase tracking-widest text-cyan-500 mt-1">
+                            {dj.llm_provider} · {dj.llm_model}
+                            {dj.night_slot ? ` · ${dj.night_slot === 1 ? "22:00-00:00" : dj.night_slot === 2 ? "00:00-02:00" : "02:00-04:00"}` : " · SPEAKER"}
+                          </DialogDescription>
+                        </div>
+                      </div>
+                    </DialogHeader>
+                    <p className="text-sm font-mono text-zinc-300 leading-relaxed mt-2">
+                      {dj.personality || "Nessuna bio disponibile."}
+                    </p>
+                  </DialogContent>
+                </Dialog>
+              ))}
+          </div>
+          <div className="shrink-0 pl-2 border-l border-cyan-500/15">
+            <NextEventChip />
+          </div>
+        </div>
       </section>
 
       {/* ================ R-A.I. TEAM — 3 SPEAKER + 3 DJ CLUB, compatto orizzontale ================ */}
