@@ -556,6 +556,7 @@ body {
      2-3 righe corte invece di allungarsi nella colonna vicina. */
   max-width: 64px;
   font-family: 'Caveat', 'Kalam', 'Audiowide', cursive;
+  /* re-anchored to .header-brand-group, not the 56px logo box alone (ticket 239289) */
   font-weight: 400;
   font-style: italic;
   font-size: 11px;
@@ -584,6 +585,16 @@ a.powered-by-signature:hover {
   filter: drop-shadow(0 0 3px rgba(0, 229, 255, 0.5));
   padding-left: 2px;
   line-height: 0.85;
+}
+
+/* FIX (ticket 239289): su mobile l'header va in flex-wrap e il nav
+   (STANDBY/REGIA) scende subito sotto il gruppo logo+nome. La firma e'
+   position:absolute quindi non riserva spazio in flow: il nav le finiva
+   sopra. Diamo al gruppo un margin-bottom reale pari all'altezza della
+   firma cosi' il nav wrappato scende sotto di essa invece di sovrapporla. */
+@media (max-width: 640px) {
+  .header-brand-group { margin-bottom: 34px; }
+  .powered-by-signature { max-width: 90px; }
 }
 
 /* Titoli DJ Club Night — forzatura visibilità richiesta dall'utente */
@@ -778,6 +789,15 @@ a.powered-by-signature:hover {
 }
 .cover-card[data-open="true"] .cover-card-btn {
   aspect-ratio: 16 / 3.3;  /* si "restringe" verso l'alto quando aperta */
+}
+/* FIX (ticket 239289): a 16/5 una card larga ~340px (mobile) e' alta solo
+   ~106px. L'eyebrow + titolo su 2 righe ancorati in basso (.cover-card-
+   title-wrap, bottom:0) superavano quell'altezza e finivano sopra il tag
+   modulo/icona ancorati in alto (top:12px) - testo e badge sovrapposti.
+   Su mobile alziamo la card cosi' il testo ha spazio senza toccare l'alto. */
+@media (max-width: 640px) {
+  .cover-card-btn { aspect-ratio: 4 / 3; }
+  .cover-card[data-open="true"] .cover-card-btn { aspect-ratio: 16 / 9; }
 }
 .cover-card-img {
   position: absolute; inset: 0;

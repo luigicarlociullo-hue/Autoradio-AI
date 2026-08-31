@@ -565,10 +565,10 @@ export default function PublicRadio() {
       {/* ================ HEADER — Console top bezel ================ */}
       <header className="glass sticky top-0 z-40 relative">
         <div className="max-w-7xl mx-auto px-4 py-2.5 flex items-center justify-between gap-3 flex-wrap">
-          <div className="flex items-center gap-3 min-w-0">
+          <div className="flex items-center gap-3 min-w-0 relative header-brand-group">
             {/* SIMBOLO GRAFICO R-A.I. — con firma autografo attaccata al bordo */}
             <div
-              className="relative w-14 h-14 shrink-0 flex items-center justify-center"
+              className="w-14 h-14 shrink-0 flex items-center justify-center"
               data-testid="rai-logo"
               style={{ filter: "drop-shadow(0 0 10px rgba(0,229,255,0.55))" }}
             >
@@ -633,10 +633,14 @@ export default function PublicRadio() {
       </header>
 
       {/* ================ HERO — Cruscotto 3-col (Above the Fold) ================ */}
-      <section className="max-w-7xl mx-auto px-4 pt-4 pb-4 relative z-10">
-        <div className="grid lg:grid-cols-12 gap-4 items-stretch">
-          {/* Colonna SX (5/12): LEDWALL Visualizzatore */}
-          <div className="lg:col-span-5 relative">
+      <section className="max-w-7xl mx-auto px-4 pt-2 pb-2 relative z-10">
+        <div className="grid lg:grid-cols-12 gap-3 items-stretch">
+          {/* Colonna SX (5/12): LEDWALL Visualizzatore.
+              order-2 su mobile (ticket 239289): sotto lg questo blocco
+              decorativo (hero + team) precedeva sempre la colonna Play,
+              spingendo il controllo di riproduzione fuori dal primo
+              schermo. Su mobile va dopo Now Playing; da lg torna 1o. */}
+          <div className="lg:col-span-5 relative order-2 lg:order-1">
             <div className="absolute -top-2 right-3 z-20">
               <VuMeter />
             </div>
@@ -646,7 +650,7 @@ export default function PublicRadio() {
               trackOverlay={trackOverlay}
               djs={djs}
             />
-            <div className="console-panel p-4 mt-4" data-testid="rai-team-section">
+            <div className="console-panel p-3 mt-2" data-testid="rai-team-section">
               <CornerAccents />
               <div className="flex items-end justify-between mb-3 flex-wrap gap-2">
                 <div>
@@ -763,8 +767,10 @@ export default function PublicRadio() {
             </div>
           </div>
 
-          {/* Colonna CENTRALE (4/12): Now Playing + ON AIR + controlli */}
-          <div className="lg:col-span-4 console-panel p-4 md:p-5 flex flex-col">
+          {/* Colonna CENTRALE (4/12): Now Playing + ON AIR + controlli.
+              order-1 su mobile: il Play deve essere il primo blocco
+              visibile, non il secondo (ticket 239289). */}
+          <div className="lg:col-span-4 console-panel p-4 md:p-5 flex flex-col order-1 lg:order-2">
             <CornerAccents />
             <span className="module-tag">MOD · A · NOW PLAYING</span>
 
@@ -849,8 +855,8 @@ export default function PublicRadio() {
           </div>
 
           {/* Colonna DX (3/12): CHAT NEURALE integrata */}
-          <div className="lg:col-span-3 flex flex-col min-h-[360px]">
-            <ChatMini />
+          <div className="lg:col-span-3 flex flex-col order-3 lg:order-3" style={{ maxHeight: 400 }}>
+            <ChatMini heightClass="h-full" />
           </div>
         </div>
 
@@ -891,7 +897,7 @@ export default function PublicRadio() {
 
       {/* ================ R-A.I. TEAM — 3 SPEAKER + 3 DJ CLUB, compatto orizzontale ================ */}
       {/* ================ SPONSOR CTA — DIVENTA PARTNER (sponsor-grade) ================ */}
-      <section className="max-w-7xl mx-auto px-6 py-2 relative z-10" data-testid="sponsor-cta-section">
+      <section className="max-w-7xl mx-auto px-6 py-1 relative z-10" data-testid="sponsor-cta-section">
         <Link
           to="/partner"
           data-testid="card-diventa-partner"
@@ -969,18 +975,24 @@ export default function PublicRadio() {
         </div>
       </footer>
 
-      {/* Donate button */}
+      {/* Donate button — corner-anchored on mobile (ticket 239289: a fixed,
+          dead-center bottom pill sat on top of whatever content/status panel
+          happened to be at the bottom of the viewport at any scroll
+          position). Desktop keeps the wide centered pill; mobile shrinks to
+          an icon-first pill tucked in the bottom-right corner, out of the
+          main content column, with safe-area padding for notched devices. */}
       <button
         onClick={() => setShowDonate(true)}
         data-testid="donate-open-button"
-        className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 group flex items-center gap-2 px-5 py-3 rounded-full font-mono font-bold text-xs uppercase tracking-widest text-white shadow-2xl transition-transform hover:scale-105 active:scale-95 focusable"
+        className="fixed z-50 group flex items-center gap-2 px-3.5 py-2.5 sm:px-5 sm:py-3 rounded-full font-mono font-bold text-xs uppercase tracking-widest text-white shadow-2xl transition-transform hover:scale-105 active:scale-95 focusable right-3 bottom-3 sm:right-1/2 sm:bottom-6 sm:translate-x-1/2"
         style={{
           background: "linear-gradient(135deg, #FF6B1A 0%, #FF8A3D 100%)",
           boxShadow: "0 8px 30px rgba(255,107,26,0.45), 0 0 0 1px rgba(255,255,255,0.1) inset",
+          marginBottom: "env(safe-area-inset-bottom, 0px)",
         }}
       >
-        <Heart className="w-4 h-4" fill="currentColor" />
-        <span>Sostieni il progetto</span>
+        <Heart className="w-4 h-4 shrink-0" fill="currentColor" />
+        <span className="hidden sm:inline">Sostieni il progetto</span>
       </button>
 
       {showDonate && (
@@ -1450,7 +1462,7 @@ function CommunityWallPublic() {
   if (!tracks || tracks.length === 0) return null;
 
   return (
-    <section className="max-w-7xl mx-auto px-6 py-2 relative z-10" data-testid="wall-community-public">
+    <section className="max-w-7xl mx-auto px-6 py-1 relative z-10" data-testid="wall-community-public">
       <div className="flex items-end justify-between mb-3">
         <div>
           <div className="label-mono flex items-center gap-2"><Users className="w-3 h-3" /> WALL · COMMUNITY BOARD</div>

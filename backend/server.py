@@ -230,7 +230,7 @@ class Question(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
     question: str
-    source: Literal["web", "telegram", "sms"] = "web"
+    source: Literal["web", "telegram", "sms", "voice"] = "web"
     answered: bool = False
     answer: Optional[str] = None
     answering_dj: Optional[str] = None
