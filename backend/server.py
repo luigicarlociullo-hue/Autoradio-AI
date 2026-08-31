@@ -4358,9 +4358,10 @@ async def admin_set_track_bpm(track_id: str, payload: dict):
 
 # ---- WHISPER · Trascrizione vocale (chat neurale mic) ----
 @api_router.post("/voice/transcribe")
-async def voice_transcribe(file: UploadFile = File(...), lang: Optional[str] = Form("it")):
-    """Trascrive un vocale (webm/wav/mp3/m4a…) via OpenAI Whisper (whisper-1).
-    Usa la Emergent LLM Universal Key. Ritorna {text: str}. Max 25 MB."""
+async def voice_transcribe(file: UploadFile = File(...), lang: Optional[str] = Form("it"), name: Optional[str] = Form(None)):
+    """Trascrive un vocale via OpenAI Whisper e (best-effort) lo salva su
+    /app/backend/static/voice + collection `voice_messages` con status=pending.
+    Ritorna {text, id, audio_url}."""
     if not file:
         raise HTTPException(400, "File mancante")
     data = await file.read()
@@ -4375,32 +4376,99 @@ async def voice_transcribe(file: UploadFile = File(...), lang: Optional[str] = F
     api_key = os.environ.get("EMERGENT_LLM_KEY")
     if not api_key:
         raise HTTPException(500, "EMERGENT_LLM_KEY mancante")
-    # Salva in tmp per passare un file-like reale a Whisper
-    import tempfile
-    suffix = "." + (file.filename.rsplit(".", 1)[-1].lower() if "." in (file.filename or "") else "webm")
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tf:
+
+    import tempfile, uuid as _uuid
+    ext = (file.filename or "").rsplit(".", 1)[-1].lower()
+    if ext not in ("webm", "mp3", "wav", "m4a", "ogg", "mp4"):
+        ext = "webm"
+    voice_id = _uuid.uuid4().hex[:12]
+    voice_dir = Path("/app/backend/static/voice")
+    voice_dir.mkdir(parents=True, exist_ok=True)
+    voice_path = voice_dir / f"vm_{voice_id}.{ext}"
+    voice_path.write_bytes(data)
+    audio_url = f"/api/static/voice/vm_{voice_id}.{ext}"
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix="." + ext) as tf:
         tf.write(data)
         tf_path = tf.name
+    text = ""
     try:
         stt = OpenAISpeechToText(api_key=api_key)
         with open(tf_path, "rb") as f:
             resp = await stt.transcribe(
-                file=f,
-                model="whisper-1",
-                response_format="json",
+                file=f, model="whisper-1", response_format="json",
                 language=(lang or "it")[:2],
             )
-        text = getattr(resp, "text", None) or (resp.get("text") if isinstance(resp, dict) else "")
-        return {"text": (text or "").strip()}
+        text = (getattr(resp, "text", None) or (resp.get("text") if isinstance(resp, dict) else "") or "").strip()
     except Exception as e:
         logger.warning(f"[whisper] transcribe failed: {e}")
-        raise HTTPException(502, f"Trascrizione fallita: {e}")
     finally:
-        try:
-            import os as _os
-            _os.unlink(tf_path)
-        except Exception:
-            pass
+        try: os.unlink(tf_path)
+        except Exception: pass
+
+    # Persisti nella coda vocali
+    doc = {
+        "id": voice_id,
+        "author": (name or "Ascoltatore").strip()[:80],
+        "text": text,
+        "audio_url": audio_url,
+        "status": "pending",
+        "created_at": now_iso(),
+    }
+    try:
+        await db.voice_messages.insert_one(doc.copy())
+    except Exception as e:
+        logger.warning(f"[voice] insert failed: {e}")
+
+    return {"text": text, "id": voice_id, "audio_url": audio_url}
+
+
+# ---- Voice Live: coda regia ----
+@api_router.get("/admin/voice-queue")
+async def admin_voice_queue():
+    docs = await db.voice_messages.find({"status": {"$in": ["pending", "on_air"]}}, {"_id": 0}, sort=[("created_at", -1)]).to_list(200)
+    return {"items": docs, "count": len(docs)}
+
+
+@api_router.post("/admin/voice-queue/{vm_id}/approve")
+async def admin_voice_approve(vm_id: str):
+    vm = await db.voice_messages.find_one({"id": vm_id})
+    if not vm:
+        raise HTTPException(404, "Vocale non trovato")
+    # Segmento community "voice_live": DJ intro + user audio playthrough
+    dj_name = random.choice(["Leo", "Aria", "Max"])
+    voice_map = {"Leo": "onyx", "Aria": "nova", "Max": "echo"}
+    author = vm.get("author") or "Ascoltatore"
+    text = vm.get("text") or ""
+    script = (
+        f"E ora una voce reale che entra in onda: {author} ci scrive — "
+        f"o meglio, ci parla. Ascoltiamo insieme il suo messaggio."
+    )
+    seg = Segment(
+        kind="answer",
+        dj_name=dj_name,
+        voice_key=voice_map.get(dj_name, "nova"),
+        title=f"🎙️ Voice Live · {author}",
+        script=script,
+        music_audio_url=vm.get("audio_url"),
+        duration_sec=60,
+        track_meta={"is_voice_live": True, "author": author, "transcript": text, "vm_id": vm_id},
+        llm_provider="voice_live",
+    ).model_dump()
+    seg["created_at"] = now_iso()
+    await db.priority_queue.insert_one(seg)
+    await db.voice_messages.update_one({"id": vm_id}, {"$set": {"status": "on_air", "approved_at": now_iso()}})
+    return {"ok": True}
+
+
+@api_router.delete("/admin/voice-queue/{vm_id}")
+async def admin_voice_delete(vm_id: str):
+    r = await db.voice_messages.update_one({"id": vm_id}, {"$set": {"status": "rejected", "rejected_at": now_iso()}})
+    if r.matched_count == 0:
+        raise HTTPException(404, "Vocale non trovato")
+    return {"ok": True}
+
+
 
 
 # ---- WALL COMMUNITY (pubblico) ----

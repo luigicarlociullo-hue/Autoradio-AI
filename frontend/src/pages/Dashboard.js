@@ -205,6 +205,7 @@ export default function Dashboard() {
 
         {/* Coda di Approvazione — richieste esterne partner in attesa OK admin */}
         <ApprovalQueuePanel />
+        <VoiceQueuePanel />
 
         {/* Regia Audio: mixer real-time + crossfade + sottofondi */}
         <RegiaAudioPanel />
@@ -3817,5 +3818,107 @@ function RegiaLogoutButton() {
     >
       <LogOut className="w-3.5 h-3.5" /> Regia · Logout
     </button>
+  );
+}
+
+
+// ==================== VoiceQueuePanel — vocali live ascoltatori ====================
+function VoiceQueuePanel() {
+  const [items, setItems] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const backend = process.env.REACT_APP_BACKEND_URL;
+
+  const load = async () => {
+    try {
+      const r = await api.get("/admin/voice-queue");
+      setItems(r?.data?.items || []);
+    } catch (e) {}
+  };
+  useEffect(() => { load(); const iv = setInterval(load, 15000); return () => clearInterval(iv); }, []);
+
+  const approve = async (id) => {
+    setBusy(true);
+    try { await api.post(`/admin/voice-queue/${id}/approve`); toast.success("🎙️ Vocale approvato · in onda al prossimo slot"); load(); }
+    catch { toast.error("Errore approvazione"); }
+    finally { setBusy(false); }
+  };
+  const reject = async (id) => {
+    if (!window.confirm("Cancellare questo vocale?")) return;
+    setBusy(true);
+    try { await api.delete(`/admin/voice-queue/${id}`); toast.success("Vocale cancellato"); load(); }
+    catch { toast.error("Errore"); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <section
+      className="lg:col-span-4 card-surface p-6"
+      data-testid="voice-queue-panel"
+      style={{
+        boxShadow: "0 0 0 1px rgba(255,61,138,0.30) inset, 0 12px 40px rgba(0,0,0,0.55), 0 0 32px rgba(255,61,138,0.12)",
+        background: "linear-gradient(180deg, rgba(255,61,138,0.04) 0%, rgba(0,0,0,0.4) 100%)",
+      }}
+    >
+      <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+        <div>
+          <div className="label-mono flex items-center gap-2" style={{ color: "#FF7FB0" }}>
+            🎙️ Voice Live · vocali ascoltatori
+          </div>
+          <h3 className="font-display font-black text-xl mt-1">
+            {items.length === 0 ? "Nessun vocale in coda" : `${items.length} in attesa di OK`}
+          </h3>
+        </div>
+        <button onClick={load} className="btn-outline text-xs" data-testid="voice-queue-refresh">Aggiorna</button>
+      </div>
+
+      {items.length === 0 ? (
+        <div className="text-sm font-mono text-zinc-500 border border-white/5 rounded p-4">
+          ▸ Nessun vocale registrato dagli ascoltatori.
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {items.map(vm => (
+            <div key={vm.id}
+              className="border border-pink-500/25 rounded-lg p-3 flex flex-col md:flex-row gap-3 md:items-center"
+              data-testid={`voice-item-${vm.id.slice(0,8)}`}
+              style={{ background: "rgba(255,61,138,0.05)" }}>
+              <div className="flex-1 min-w-0">
+                <div className="font-bold text-sm truncate flex items-center gap-2">
+                  <span className="px-2 py-0.5 rounded text-[10px] font-mono uppercase bg-pink-500/20 text-pink-300">
+                    🎙️ {vm.status === "on_air" ? "ON AIR" : "PENDING"}
+                  </span>
+                  <span className="text-pink-200">{vm.author || "Ascoltatore"}</span>
+                </div>
+                {vm.text && (
+                  <div className="text-[11px] font-mono text-zinc-300 mt-1 line-clamp-2">
+                    "{vm.text}"
+                  </div>
+                )}
+              </div>
+              <audio
+                controls preload="none"
+                src={`${backend}${vm.audio_url}`}
+                style={{ height: 32, maxWidth: 260 }}
+                data-testid={`voice-preview-${vm.id.slice(0,8)}`}
+              />
+              <div className="flex gap-2 shrink-0">
+                <button
+                  disabled={busy || vm.status === "on_air"}
+                  onClick={() => approve(vm.id)}
+                  data-testid={`voice-approve-${vm.id.slice(0,8)}`}
+                  className="px-3 py-1.5 rounded bg-emerald-500/20 border border-emerald-400/50 text-emerald-300 text-xs font-mono uppercase hover:bg-emerald-500/30 disabled:opacity-40"
+                >Approva</button>
+                <button
+                  disabled={busy}
+                  onClick={() => reject(vm.id)}
+                  data-testid={`voice-reject-${vm.id.slice(0,8)}`}
+                  className="px-3 py-1.5 rounded bg-rose-500/15 border border-rose-400/40 text-rose-300 text-xs font-mono uppercase hover:bg-rose-500/25"
+                >Cancella</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
   );
 }

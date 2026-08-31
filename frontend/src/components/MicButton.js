@@ -4,14 +4,35 @@ import { toast } from "sonner";
 import radioEngine from "@/lib/radioEngine";
 
 /**
- * MicButton — registra vocale via MediaRecorder, upload a /api/voice/transcribe,
- * poi invoca onTranscribed(text). Tap per START, tap per STOP (max 30s).
+ * MicButton — registra vocale via MediaRecorder, ducking automatico del
+ * player radio al 5% durante la registrazione, upload a /api/voice/transcribe
+ * (che salva file + DB) e poi onTranscribed(text, extra).
  */
-export default function MicButton({ onTranscribed, disabled }) {
+export default function MicButton({ onTranscribed, disabled, authorName }) {
   const [state, setState] = useState("idle"); // idle | rec | uploading
   const mrRef = useRef(null);
   const chunksRef = useRef([]);
   const stopTimerRef = useRef(null);
+  const prevMusicVolRef = useRef(null);
+
+  const duckStart = () => {
+    try {
+      const gain = radioEngine?.musicGain?.gain;
+      if (gain) {
+        prevMusicVolRef.current = gain.value;
+        gain.value = Math.max(0.03, gain.value * 0.05); // 5%
+      }
+      window.dispatchEvent(new CustomEvent("rai:voice-rec-start"));
+    } catch (e) {}
+  };
+  const duckEnd = () => {
+    try {
+      const gain = radioEngine?.musicGain?.gain;
+      if (gain && prevMusicVolRef.current != null) gain.value = prevMusicVolRef.current;
+      prevMusicVolRef.current = null;
+      window.dispatchEvent(new CustomEvent("rai:voice-rec-end"));
+    } catch (e) {}
+  };
 
   const start = async () => {
     if (disabled || state !== "idle") return;
@@ -34,6 +55,7 @@ export default function MicButton({ onTranscribed, disabled }) {
         try { radioEngine.unduckAfterVoiceChat(); } catch (e) {}
         const blob = new Blob(chunksRef.current, { type: mime || "audio/webm" });
         chunksRef.current = [];
+        duckEnd();
         if (blob.size < 800) { setState("idle"); toast.error("Registrazione troppo breve"); return; }
         setState("uploading");
         try {
@@ -46,8 +68,9 @@ export default function MicButton({ onTranscribed, disabled }) {
           if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
           const data = await r.json();
           const text = (data?.text || "").trim();
-          if (!text) throw new Error("Testo vuoto");
-          if (typeof onTranscribed === "function") await onTranscribed(text);
+          if (!text && !data?.id) throw new Error("Trascrizione vuota");
+          if (typeof onTranscribed === "function") await onTranscribed(text, data);
+          toast.success("Vocale inviato · in coda regia");
         } catch (e) {
           toast.error(`Trascrizione fallita: ${e.message}`);
         } finally { setState("idle"); }
@@ -55,6 +78,7 @@ export default function MicButton({ onTranscribed, disabled }) {
       mr.start();
       mrRef.current = mr;
       setState("rec");
+      duckStart();
       // safety: stop dopo 30s
       stopTimerRef.current = setTimeout(() => { try { mr.stop(); } catch {} }, 30_000);
     } catch (e) {

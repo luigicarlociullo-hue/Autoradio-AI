@@ -68,9 +68,23 @@ export default function ChatMini({ heightClass = "h-56" }) {
       data-testid="chat-mini"
       className="console-panel p-4 flex flex-col h-full"
     >
-      <div className="flex items-center gap-2 mb-2">
+      <div className="flex items-center gap-2 mb-2 flex-wrap">
         <MessageCircle className="w-4 h-4 text-cyan-300" />
         <div className="label-mono">◂ CHAT NEURALE ▸</div>
+        <span
+          data-testid="voice-live-badge"
+          className="text-[9px] font-mono uppercase tracking-widest px-1.5 py-0.5 rounded"
+          style={{
+            color: "#FF3D8A",
+            border: "1px solid rgba(255,61,138,0.55)",
+            background: "rgba(255,61,138,0.10)",
+            textShadow: "0 0 6px rgba(255,61,138,0.85)",
+            animation: "voiceLivePulse 1.4s ease-in-out infinite",
+          }}
+        >
+          🎙️ VOICE LIVE
+        </span>
+        <style>{`@keyframes voiceLivePulse{0%,100%{opacity:1;box-shadow:0 0 6px rgba(255,61,138,0.55)}50%{opacity:.55;box-shadow:0 0 14px rgba(255,61,138,0.85)}}`}</style>
       </div>
       <div
         ref={scrollRef}
@@ -109,7 +123,15 @@ export default function ChatMini({ heightClass = "h-56" }) {
             className="flex-1 rounded-md bg-black border outline-none px-3 py-2 text-xs font-mono text-white placeholder:text-cyan-800 uppercase tracking-widest"
             style={{ borderColor: "var(--console-line-strong)" }}
           />
-          <MicButton disabled={busy} onTranscribed={onVoice} />
+          <div className="flex flex-col items-center gap-0.5">
+            <span
+              className="text-[8px] font-mono uppercase tracking-widest"
+              style={{ color: "#FF7FB0", textShadow: "0 0 4px rgba(255,61,138,0.7)" }}
+            >
+              La tua voce in onda: registra ora!
+            </span>
+            <MicButton disabled={busy} authorName={name} onTranscribed={onVoice} />
+          </div>
           <button
             type="submit"
             disabled={busy || !text.trim()}

@@ -98,6 +98,29 @@ export default function BigCue({ mode = "idle", size = 96 }) {
     return () => { alive = false; clearTimeout(closeTid); clearTimeout(openTid); };
   }, []);
 
+  // Reagisce alla registrazione vocale: blink veloce + antenna extra durante rec
+  const [recActive, setRecActive] = React.useState(false);
+  React.useEffect(() => {
+    const on = () => setRecActive(true);
+    const off = () => setRecActive(false);
+    window.addEventListener("rai:voice-rec-start", on);
+    window.addEventListener("rai:voice-rec-end", off);
+    return () => {
+      window.removeEventListener("rai:voice-rec-start", on);
+      window.removeEventListener("rai:voice-rec-end", off);
+    };
+  }, []);
+  React.useEffect(() => {
+    if (!recActive) return;
+    let alive = true;
+    const iv = setInterval(() => {
+      if (!alive) return;
+      setBlink(true);
+      setTimeout(() => alive && setBlink(false), 90);
+    }, 500);
+    return () => { alive = false; clearInterval(iv); };
+  }, [recActive]);
+
   return (
     <div
       data-testid="big-cue"
