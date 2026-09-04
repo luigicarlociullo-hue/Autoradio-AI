@@ -102,20 +102,32 @@ async def _synth_elevenlabs(text: str, voice_key: str, kind: str = "") -> bytes 
     if os.environ.get("TTS_DISABLE_ELEVENLABS", "").strip().lower() in ("1", "true", "yes"):
         logger.info("[TTS] ElevenLabs disabled by env kill-switch")
         return None
-    # SOFT SWITCH (runtime, dal Dashboard) — station.state.tts_provider
-    provider_mode = "smart"  # default v12.11+ = smart routing
+    # FM_MODE MASTER (v13.1): il toggle "FM MODE" nella Regia ha priorità
+    # assoluta su qualsiasi altra impostazione TTS:
+    #   • FM_MODE ON  → sempre ElevenLabs HD (radio vera, alta espressività)
+    #   • FM_MODE OFF → sempre OpenAI TTS (economy, default)
+    fm_mode = None
+    provider_mode = "smart"  # default v12.11+ = smart routing (fallback se fm_mode assente)
     try:
         from motor.motor_asyncio import AsyncIOMotorClient
         _mongo_url = os.environ.get("MONGO_URL")
         _db_name = os.environ.get("DB_NAME")
         if _mongo_url and _db_name:
             _client = AsyncIOMotorClient(_mongo_url)
-            _st = await _client[_db_name].station.find_one({"_id": "state"}, {"tts_provider": 1})
+            _st = await _client[_db_name].station.find_one({"_id": "state"}, {"tts_provider": 1, "fm_mode": 1})
             _client.close()
-            if _st and _st.get("tts_provider"):
-                provider_mode = str(_st.get("tts_provider")).lower()
+            if _st:
+                fm_mode = bool(_st.get("fm_mode"))
+                if _st.get("tts_provider"):
+                    provider_mode = str(_st.get("tts_provider")).lower()
     except Exception:
         pass
+
+    # FM_MODE override forte
+    if fm_mode is True:
+        provider_mode = "elevenlabs"
+    elif fm_mode is False:
+        provider_mode = "openai"
 
     if provider_mode == "openai":
         logger.info("[TTS] ElevenLabs disabled by admin toggle (openai)")

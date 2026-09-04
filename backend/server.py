@@ -365,6 +365,19 @@ async def llm_generate(provider: str, model: str, system_prompt: str, user_promp
     fallback silenzioso (che produrrebbe testo hardcoded/vuoto). I chiamanti
     critici (batch di generazione musicale, `generate_track`) DEVONO passare
     `raise_on_budget=True` per evitare di sprecare crediti Suno."""
+    # FM_MODE override (v13.1): il toggle master "FM MODE" nella Regia
+    # sostituisce provider/model runtime senza toccare le DJ persona:
+    #   • ON  → Claude Sonnet 4.5 (massima qualità radio vera)
+    #   • OFF → Gemini 3 Flash (massimo risparmio, default)
+    try:
+        st = await db.station.find_one({"_id": "state"}, {"fm_mode": 1})
+        fm_on = bool(st and st.get("fm_mode"))
+        if fm_on:
+            provider, model = "anthropic", "claude-sonnet-4-5-20250929"
+        else:
+            provider, model = "gemini", "gemini-3-flash-preview"
+    except Exception:
+        pass  # DB miss → usa provider/model originali
     if not EMERGENT_LLM_KEY:
         # Direct-only path (no Universal Key configured)
         return await _llm_direct_openai(system_prompt, user_prompt)
@@ -3964,6 +3977,26 @@ async def get_station_mix():
     return {**mix, "active_bed_url": active_bed_url}
 
 
+@api_router.get("/admin/fm-mode")
+async def get_fm_mode():
+    """Stato del toggle master FM_MODE (Radio Vera vs Economy).
+    Default: OFF ad ogni avvio (reset dallo startup event)."""
+    st = await db.station.find_one({"_id": "state"}, {"fm_mode": 1}) or {}
+    return {
+        "fm_mode": bool(st.get("fm_mode")),
+        "note": "ON = Claude Sonnet 4.5 + ElevenLabs HD (Radio Vera). OFF = Gemini Flash + OpenAI TTS (Economy).",
+    }
+
+
+@api_router.patch("/admin/fm-mode")
+async def set_fm_mode(payload: dict):
+    """Toggle master FM_MODE runtime. Salva in station.state.fm_mode."""
+    enabled = bool(payload.get("enabled"))
+    await db.station.update_one({"_id": "state"}, {"$set": {"fm_mode": enabled}}, upsert=True)
+    logger.info(f"[FM_MODE] set to {'ON' if enabled else 'OFF'} via API")
+    return {"ok": True, "fm_mode": enabled}
+
+
 @api_router.get("/admin/tts/provider")
 async def get_tts_provider():
     st = await db.station.find_one({"_id": "state"}) or {}
@@ -4780,6 +4813,10 @@ async def on_startup():
     await ensure_seeded()
     await _seed_admin(db)   # seed admin Regia (idempotente)
     await telegram_bot.start(db)
+    # FM_MODE reset a OFF ad ogni avvio/restart (safety-first: nessun
+    # consumo AI premium finché l'admin non lo attiva esplicitamente).
+    await db.station.update_one({"_id": "state"}, {"$set": {"fm_mode": False}}, upsert=True)
+    logger.info("[startup] FM_MODE reset → OFF (economy default)")
     # Kill switch globale per i cicli AI in background (Suno filler,
     # integrity check, time_signal pregen). Default: DISABILITATO.
     # Riattiva da regia via PATCH /api/admin/background-tasks.

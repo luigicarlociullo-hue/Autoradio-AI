@@ -5,7 +5,21 @@
 > zero rigenerazioni ridondanti. Riusare sempre asset esistenti prima di generare.
 > Le domande all'utente sono ammesse SOLO se bloccanti. Applicare a ogni sessione futura.
 
-## v13.0 · PERSISTENZA & RISPARMIO (2026-02-04)
+## v13.1 · FM MODE MASTER SWITCH (2026-02-04)
+- **Toggle master `FM_MODE`** nella Dashboard (`<FmModePanel />` in cima, pill switch pink/cyan). Default **OFF** ad ogni startup/restart backend (safety-first).
+- **Endpoints**: `GET/PATCH /api/admin/fm-mode` (protetti JWT). Persiste in `station.state.fm_mode` ma il valore viene **forzato a False all'avvio** in on_startup.
+- **Routing dinamico LLM** in `llm_generate()`:
+  • FM ON → `("anthropic", "claude-sonnet-4-5-20250929")` per ogni segmento
+  • FM OFF → `("gemini", "gemini-3-flash-preview")` (economy)
+  (override runtime, non tocca le DJ persona in DB)
+- **Routing dinamico TTS** in `elevenlabs_service._synth_elevenlabs`:
+  • FM ON → sempre ElevenLabs HD (alta espressività)
+  • FM OFF → sempre OpenAI TTS-1-HD (Universal Key)
+  Il toggle `tts_provider` (smart/eleven/openai) resta come opzione manuale ma FM_MODE ha priorità assoluta.
+- Integrazione voci utenti nel discorso DJ: già supportata dal flusso Voice Live → priority queue (segmento `kind=answer`, `music_audio_url=vocale`).
+- **Palinsesto Autore** (backlog): schema `program_schedule` ora → subject/title, CRUD Dashboard Autore da progettare come prossima P0 quando FM_MODE ON.
+
+
 - **Object Storage-first**: Suno/Community/Community-Jingle/Beds/Voice-messages tutti salvati in Emergent Object Storage. Nessuna scrittura autoritativa su disco pod. Disco locale usato solo come cache lazy (populata da stream_mp3 on-read). Fix 4 lint-blocker deploy.
 - Nuovo endpoint `GET /api/voice_audio/{filename}` streaming from objstore (Range-aware, no cache locale).
 - Helper `object_storage.put_bytes(sub_path, data, content_type)` per file non-mp3 (voice webm/m4a/ogg).

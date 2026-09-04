@@ -152,6 +152,9 @@ export default function Dashboard() {
 
       <main className="max-w-[1400px] mx-auto px-6 py-8 grid grid-cols-1 lg:grid-cols-4 gap-6">
 
+        {/* MASTER SWITCH · FM MODE (Radio Vera vs Economy) — default OFF ad ogni restart */}
+        <FmModePanel />
+
         {/* NEW: Broadcast control bar — Play/Pause/Skip/Jingle propagated
             to every public listener via /api/admin/command */}
         <BroadcastControlBar />
@@ -3416,6 +3419,99 @@ function KillSwitchPanel() {
               <PlayCircle className="w-4 h-4" /> Riavvia automazione
             </button>
           )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// ==================== NightDJsPanel — Assegnazione slot 22-04 ====================
+function FmModePanel() {
+  const [on, setOn] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const load = async () => {
+    try {
+      const r = await api.get("/admin/fm-mode");
+      setOn(!!r.data?.fm_mode);
+    } catch (e) {}
+  };
+  useEffect(() => { load(); const iv = setInterval(load, 5000); return () => clearInterval(iv); }, []);
+
+  const toggle = async () => {
+    const next = !on;
+    const msg = next
+      ? "Attivare FM MODE (RADIO VERA)?\n\n• Claude Sonnet 4.5 · voci ElevenLabs HD\n• Costo pieno per ogni segmento\n\nOK per confermare."
+      : "Disattivare FM MODE?\n\nLa radio tornerà in ECONOMY (Gemini Flash + OpenAI TTS, risparmio massimo).";
+    if (!window.confirm(msg)) return;
+    setBusy(true);
+    try {
+      await api.patch("/admin/fm-mode", { enabled: next });
+      setOn(next);
+      toast.success(next ? "FM MODE · Radio Vera ATTIVA" : "FM MODE OFF · Economy");
+    } catch (e) { toast.error("Errore FM MODE"); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <section
+      className="lg:col-span-4 rounded-xl p-5 relative"
+      data-testid="fm-mode-panel"
+      style={{
+        background: on
+          ? "linear-gradient(180deg, rgba(255,20,147,0.15), rgba(20,0,10,0.9))"
+          : "linear-gradient(180deg, rgba(0,229,255,0.06), rgba(0,10,20,0.7))",
+        border: `1px solid ${on ? "rgba(255,20,147,0.55)" : "rgba(0,229,255,0.25)"}`,
+        boxShadow: on ? "0 0 34px rgba(255,20,147,0.45)" : "0 0 18px rgba(0,229,255,0.12)",
+      }}
+    >
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div className="min-w-0">
+          <div className="label-mono flex items-center gap-2" style={{ color: on ? "#FF3EA5" : "#00E5FF" }}>
+            <Radio className="w-3.5 h-3.5" /> FM MODE · MASTER SWITCH
+          </div>
+          <div
+            className="font-display font-black text-2xl sm:text-3xl mt-1"
+            style={{
+              color: on ? "#FF7ACC" : "#B8F1FF",
+              textShadow: on ? "0 0 14px rgba(255,20,147,0.7)" : "0 0 8px rgba(0,229,255,0.35)",
+            }}
+          >
+            {on ? "RADIO VERA · ON" : "ECONOMY · OFF"}
+          </div>
+          <div className="text-xs font-mono text-zinc-400 mt-1 max-w-2xl">
+            {on
+              ? "Claude Sonnet 4.5 + ElevenLabs HD · alta espressività, integrazione voci utenti. Consumo pieno."
+              : "Gemini 3 Flash + OpenAI TTS-1-HD · rotazione automatica, massimo risparmio (default all'avvio)."}
+          </div>
+        </div>
+        <div className="flex items-center gap-3 shrink-0">
+          <span className="text-[10px] font-mono uppercase tracking-widest text-zinc-500">
+            {on ? "Premium" : "Standard"}
+          </span>
+          <button
+            onClick={toggle}
+            disabled={busy}
+            data-testid="fm-mode-toggle"
+            className={`relative w-20 h-10 rounded-full transition-all ${busy ? "opacity-60" : ""}`}
+            style={{
+              background: on
+                ? "linear-gradient(90deg, #FF1493, #FF6B1A)"
+                : "linear-gradient(90deg, #1a2030, #0f1420)",
+              border: `1px solid ${on ? "rgba(255,20,147,0.8)" : "rgba(0,229,255,0.35)"}`,
+              boxShadow: on ? "inset 0 0 10px rgba(255,255,255,0.25)" : "inset 0 0 6px rgba(0,0,0,0.4)",
+            }}
+            aria-pressed={on}
+          >
+            <span
+              className="absolute top-1 w-8 h-8 rounded-full transition-all"
+              style={{
+                left: on ? "calc(100% - 2.25rem)" : "0.25rem",
+                background: on ? "#fff" : "#00E5FF",
+                boxShadow: on ? "0 0 12px rgba(255,255,255,0.9)" : "0 0 10px rgba(0,229,255,0.7)",
+              }}
+            />
+          </button>
         </div>
       </div>
     </section>
