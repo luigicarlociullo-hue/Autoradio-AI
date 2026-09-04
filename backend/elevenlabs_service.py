@@ -5,9 +5,17 @@ Fallback: OpenAI TTS-1-HD via Emergent Universal Key gateway
          (OPENAI_API_KEY + OPENAI_BASE_URL, endpoint /audio/speech) — usato solo
          se ElevenLabs fallisce o non è configurato.
 Generated MP3s are stored in TTS_DIR and served through /api/tts/{filename}.
+
+CACHE (v13.0): TTS deterministico basato su hash SHA256 di
+(voice_key + kind + text). Prima di chiamare qualsiasi API TTS si verifica
+la collection Mongo `tts_cache`; se il file audio è già stato generato in
+passato per lo stesso script/voce/kind viene RIUTILIZZATO senza pagare
+nuovamente il provider. Il file audio vive su Object Storage — la cache
+locale su disco è solo un'ottimizzazione lazy.
 """
 import os
 import uuid
+import hashlib
 import logging
 from pathlib import Path
 import httpx
@@ -144,11 +152,42 @@ async def synth_speech(text: str, voice_key: str = "female-1", kind: str = "") -
     Genera TTS. Primario ElevenLabs, fallback OpenAI TTS-1-HD (Universal Key).
     Il parametro `kind` abilita il routing "smart" (ElevenLabs solo per 'answer').
     Ritorna il filename dentro TTS_DIR, o None se entrambi falliscono.
+
+    CACHE: prima di chiamare l'API, cerca in db.tts_cache un record con la
+    stessa `content_hash` (SHA256 di voice_key+kind+text). Se esiste,
+    riutilizza il file audio già presente su Object Storage — nessuna
+    chiamata al provider TTS, zero spreco.
     """
     if not text or not text.strip():
         return None
     text = text.strip()
 
+    # ---- Cache lookup ---------------------------------------------------
+    content_hash = hashlib.sha256(
+        f"{voice_key}|{kind}|{text}".encode("utf-8")
+    ).hexdigest()
+    cached_filename = None
+    try:
+        from motor.motor_asyncio import AsyncIOMotorClient
+        _mongo_url = os.environ.get("MONGO_URL")
+        _db_name = os.environ.get("DB_NAME")
+        if _mongo_url and _db_name:
+            _client = AsyncIOMotorClient(_mongo_url)
+            _db = _client[_db_name]
+            hit = await _db.tts_cache.find_one({"_id": content_hash})
+            _client.close()
+            if hit and hit.get("filename"):
+                cached_filename = hit["filename"]
+    except Exception as e:
+        logger.debug(f"[TTS cache] lookup failed: {e}")
+
+    if cached_filename:
+        # Verifica esistenza locale, altrimenti scaricherà dall'objstore on-demand
+        # via l'endpoint /api/tts/{filename}. In entrambi i casi ritorniamo subito.
+        logger.info(f"[TTS cache] HIT hash={content_hash[:10]}… → {cached_filename} (skip API)")
+        return cached_filename
+
+    # ---- Cache MISS: genera davvero ------------------------------------
     # 1) ElevenLabs (primary — HD voice) — con smart-routing su kind
     audio = await _synth_elevenlabs(text, voice_key, kind=kind)
     provider = "elevenlabs"
@@ -161,7 +200,9 @@ async def synth_speech(text: str, voice_key: str = "female-1", kind: str = "") -
     if not audio:
         return None
 
-    filename = f"tts_{uuid.uuid4().hex}.mp3"
+    # Filename DETERMINISTICO basato sul contenuto → riuso trasparente e
+    # de-duplicazione anche se il record cache si perdesse.
+    filename = f"tts_{content_hash[:24]}.mp3"
     (TTS_DIR / filename).write_bytes(audio)
     logger.info(f"TTS synthesized via {provider}: {filename} ({len(audio):,} bytes)")
     # Best-effort push to Emergent Object Storage (no-op unless USE_OBJECT_STORAGE=true).
@@ -171,6 +212,32 @@ async def synth_speech(text: str, voice_key: str = "female-1", kind: str = "") -
             await object_storage.put_mp3(f"tts/{filename}", audio)
     except Exception as e:
         logger.debug(f"objstore push skipped: {e}")
+
+    # Salva nella cache Mongo per riuso futuro
+    try:
+        from motor.motor_asyncio import AsyncIOMotorClient
+        from datetime import datetime, timezone
+        _mongo_url = os.environ.get("MONGO_URL")
+        _db_name = os.environ.get("DB_NAME")
+        if _mongo_url and _db_name:
+            _client = AsyncIOMotorClient(_mongo_url)
+            await _client[_db_name].tts_cache.update_one(
+                {"_id": content_hash},
+                {"$set": {
+                    "filename": filename,
+                    "voice_key": voice_key,
+                    "kind": kind,
+                    "provider": provider,
+                    "text_preview": text[:200],
+                    "bytes": len(audio),
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                }},
+                upsert=True,
+            )
+            _client.close()
+    except Exception as e:
+        logger.debug(f"[TTS cache] persist failed: {e}")
+
     return filename
 
 

@@ -96,8 +96,9 @@ async def download_and_save_suno_audio(audio_url: str, track_id: str) -> Optiona
         return None
     local_name = f"track_{track_id}.mp3"
     local_path = SUNO_AUDIO_DIR / local_name
+    # Already on disk (lazy cache) or already in Object Storage → skip re-download.
     if local_path.exists() and local_path.stat().st_size > 0:
-        # Already on disk — best-effort push to object storage (idempotent).
+        # Ensure objstore has it (idempotent, storage is source of truth for prod).
         if object_storage.is_enabled():
             try:
                 await object_storage.upload_local_file(str(local_path), f"suno/{local_name}")
@@ -108,13 +109,16 @@ async def download_and_save_suno_audio(audio_url: str, track_id: str) -> Optiona
         async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
             r = await client.get(audio_url)
             r.raise_for_status()
-            local_path.write_bytes(r.content)
-        logger.info(f"Suno track {track_id} downloaded → {local_path} ({local_path.stat().st_size} bytes)")
-        if object_storage.is_enabled():
-            try:
-                await object_storage.put_mp3(f"suno/{local_name}", r.content)
-            except Exception:
-                pass
+        # PRIMARY STORAGE: Emergent Object Storage (survives redeploy, shared across envs).
+        # Local disk is only a lazy read cache populated by stream_mp3 on GET.
+        if not object_storage.is_enabled():
+            logger.error(f"Suno download {track_id}: object storage disabled, cannot persist")
+            return None
+        stored_path = await object_storage.put_mp3(f"suno/{local_name}", r.content)
+        if not stored_path:
+            logger.error(f"Suno download {track_id}: objstore upload failed")
+            return None
+        logger.info(f"Suno track {track_id} → objstore {stored_path} ({len(r.content)} bytes)")
         return f"/api/suno_audio/{local_name}"
     except Exception as e:
         logger.warning(f"Suno download for {track_id} failed: {e}")
@@ -1230,15 +1234,14 @@ async def admin_tracks_upload(
                 except Exception as e:  # noqa: BLE001
                     logger.warning(f"Replace: failed to delete legacy file {legacy_path}: {e}")
 
-    # Write the new mp3 (this atomically overwrites any existing track_<id>.mp3).
-    local_path.write_bytes(data)
-
-    # Push all'object storage (best-effort, no-op se flag disattivato).
-    # Same path → same object key → the new file transparently replaces the old.
-    try:
-        await object_storage.put_mp3(f"suno/{local_name}", data)
-    except Exception as e:  # noqa: BLE001
-        logger.debug(f"objstore upload skipped: {e}")
+    # PRIMARY STORAGE: Emergent Object Storage (source of truth in prod).
+    # No local write here — the /api/suno_audio/{name} endpoint fetches from
+    # objstore and populates a lazy local cache on read.
+    if not object_storage.is_enabled():
+        raise HTTPException(503, "Object Storage disabilitato: attivare USE_OBJECT_STORAGE=true")
+    stored_path = await object_storage.put_mp3(f"suno/{local_name}", data)
+    if not stored_path:
+        raise HTTPException(502, "Upload su Object Storage fallito")
 
     audio_url = f"/api/suno_audio/{local_name}"
     now = datetime.now(timezone.utc).isoformat()
@@ -3730,14 +3733,13 @@ async def community_submit(
         status="off",
     )
     local_name = f"community_{track.id}.mp3"
-    local_path = COMMUNITY_AUDIO_DIR / local_name
-    local_path.write_bytes(data)
-
-    # Object storage push (best-effort)
-    try:
-        await object_storage.put_mp3(f"community/{local_name}", data)
-    except Exception as e:  # noqa: BLE001
-        logger.debug(f"community objstore upload skipped: {e}")
+    # PRIMARY STORAGE: Emergent Object Storage. Local disk only as lazy cache
+    # populated by GET /api/community_audio/{name} on first read.
+    if not object_storage.is_enabled():
+        raise HTTPException(503, "Object Storage disabilitato: impossibile ricevere il brano")
+    stored_path = await object_storage.put_mp3(f"community/{local_name}", data)
+    if not stored_path:
+        raise HTTPException(502, "Upload su Object Storage fallito")
 
     track.audio_url = f"/api/community_audio/{local_name}"
     await db.community_tracks.insert_one(track.model_dump())
@@ -3883,12 +3885,12 @@ async def _save_community_jingle(role: str, file: UploadFile) -> str:
     if not _validate_mp3_bytes(data):
         raise HTTPException(400, "Il file non risulta essere un MP3 valido")
     local_name = f"community_jingle_{role}.mp3"
-    local_path = COMMUNITY_AUDIO_DIR / local_name
-    local_path.write_bytes(data)
-    try:
-        await object_storage.put_mp3(f"community/{local_name}", data)
-    except Exception as e:  # noqa: BLE001
-        logger.debug(f"community jingle objstore upload skipped: {e}")
+    # PRIMARY STORAGE: Emergent Object Storage.
+    if not object_storage.is_enabled():
+        raise HTTPException(503, "Object Storage disabilitato: impossibile salvare jingle")
+    stored_path = await object_storage.put_mp3(f"community/{local_name}", data)
+    if not stored_path:
+        raise HTTPException(502, "Upload su Object Storage fallito")
     url = f"/api/community_jingle/{local_name}"
     field = f"community_{role}_jingle_url"
     await db.station.update_one({"_id": "state"}, {"$set": {field: url}}, upsert=True)
@@ -4023,7 +4025,12 @@ async def upload_bed(file: UploadFile = File(...), name: str = Form("")):
         raise HTTPException(400, "File non riconosciuto come MP3")
     bed_id = str(uuid.uuid4())
     local_name = f"bed_{bed_id}.mp3"
-    (BEDS_DIR / local_name).write_bytes(data)
+    # PRIMARY STORAGE: Emergent Object Storage.
+    if not object_storage.is_enabled():
+        raise HTTPException(503, "Object Storage disabilitato: impossibile salvare bed")
+    stored_path = await object_storage.put_mp3(f"beds/{local_name}", data)
+    if not stored_path:
+        raise HTTPException(502, "Upload su Object Storage fallito")
     display_name = (name or file.filename or "Bed").strip()[:60]
     doc = {
         "id": bed_id,
@@ -4033,10 +4040,6 @@ async def upload_bed(file: UploadFile = File(...), name: str = Form("")):
         "uploaded_at": now_iso(),
     }
     await db.beds.insert_one(doc)
-    try:
-        await object_storage.put_mp3(f"beds/{local_name}", data)
-    except Exception as e:  # noqa: BLE001
-        logger.debug(f"bed objstore push skipped: {e}")
     doc.pop("_id", None)
     return {"ok": True, "bed": doc}
 
@@ -4382,11 +4385,20 @@ async def voice_transcribe(file: UploadFile = File(...), lang: Optional[str] = F
     if ext not in ("webm", "mp3", "wav", "m4a", "ogg", "mp4"):
         ext = "webm"
     voice_id = _uuid.uuid4().hex[:12]
-    voice_dir = Path("/app/backend/static/voice")
-    voice_dir.mkdir(parents=True, exist_ok=True)
-    voice_path = voice_dir / f"vm_{voice_id}.{ext}"
-    voice_path.write_bytes(data)
-    audio_url = f"/api/static/voice/vm_{voice_id}.{ext}"
+    voice_name = f"vm_{voice_id}.{ext}"
+    # PRIMARY STORAGE: Emergent Object Storage (source of truth in prod).
+    if not object_storage.is_enabled():
+        raise HTTPException(503, "Object Storage disabilitato: impossibile ricevere il vocale")
+    mime = {"webm": "audio/webm", "mp3": "audio/mpeg", "wav": "audio/wav",
+            "m4a": "audio/mp4", "ogg": "audio/ogg", "mp4": "audio/mp4"}.get(ext, "application/octet-stream")
+    try:
+        stored_path = await object_storage.put_bytes(f"voice/{voice_name}", data, mime)
+    except Exception as e:
+        logger.error(f"[voice] objstore upload failed: {e}")
+        raise HTTPException(502, "Upload su Object Storage fallito")
+    if not stored_path:
+        raise HTTPException(502, "Upload su Object Storage fallito")
+    audio_url = f"/api/voice_audio/{voice_name}"
 
     with tempfile.NamedTemporaryFile(delete=False, suffix="." + ext) as tf:
         tf.write(data)
@@ -4421,6 +4433,32 @@ async def voice_transcribe(file: UploadFile = File(...), lang: Optional[str] = F
         logger.warning(f"[voice] insert failed: {e}")
 
     return {"text": text, "id": voice_id, "audio_url": audio_url}
+
+
+@api_router.get("/voice_audio/{filename}")
+async def get_voice_audio(filename: str, request: Request):
+    """Serve i vocali degli ascoltatori direttamente dall'Object Storage.
+    Non esiste cache locale (i vocali sono effimeri, ~1 min di durata) — si
+    stremano lazy dal bucket con supporto Range per riproduzione mobile."""
+    if "/" in filename or ".." in filename or not filename.startswith("vm_"):
+        raise HTTPException(400, "Invalid filename")
+    ext = filename.rsplit(".", 1)[-1].lower()
+    mime = {"webm": "audio/webm", "mp3": "audio/mpeg", "wav": "audio/wav",
+            "m4a": "audio/mp4", "ogg": "audio/ogg", "mp4": "audio/mp4"}.get(ext, "audio/webm")
+    if not object_storage.is_enabled():
+        raise HTTPException(503, "Object Storage disabilitato")
+    streamed = await object_storage.stream_mp3(
+        f"voice/{filename}", cache_to=None, range_header=request.headers.get("range")
+    )
+    if not streamed:
+        raise HTTPException(404, "Voice audio not found")
+    gen, content_length, status_code, content_range = streamed
+    headers = {"Cache-Control": "public, max-age=3600", "Accept-Ranges": "bytes"}
+    if content_length:
+        headers["Content-Length"] = content_length
+    if content_range:
+        headers["Content-Range"] = content_range
+    return StreamingResponse(gen, status_code=status_code, media_type=mime, headers=headers)
 
 
 # ---- Voice Live: coda regia ----
@@ -4700,18 +4738,59 @@ app.add_middleware(
 )
 
 
+@api_router.get("/admin/background-tasks")
+async def admin_bg_tasks_status():
+    """Stato del kill-switch globale dei cicli AI in background."""
+    enabled = os.environ.get("BACKGROUND_TASKS_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
+    return {
+        "enabled": enabled,
+        "tasks": ["suno_library_filler", "suno_integrity_check", "time_signal_pregenerator"],
+        "note": "Richiede restart del backend per prendere effetto",
+    }
+
+
+@api_router.patch("/admin/background-tasks")
+async def admin_bg_tasks_toggle(payload: dict):
+    """Attiva/disattiva persistentemente i cicli AI in background.
+    Riavvio backend richiesto per applicare (i loop vengono lanciati solo allo startup)."""
+    enabled = bool(payload.get("enabled"))
+    env_path = ROOT_DIR / ".env"
+    try:
+        lines = env_path.read_text().splitlines()
+    except Exception:
+        lines = []
+    key = "BACKGROUND_TASKS_ENABLED"
+    new_val = "true" if enabled else "false"
+    found = False
+    for i, ln in enumerate(lines):
+        if ln.strip().startswith(f"{key}="):
+            lines[i] = f"{key}={new_val}"
+            found = True
+            break
+    if not found:
+        lines.append(f"{key}={new_val}")
+    env_path.write_text("\n".join(lines) + "\n")
+    os.environ[key] = new_val
+    logger.info(f"BACKGROUND_TASKS_ENABLED set to {new_val} via API")
+    return {"enabled": enabled, "persisted": True, "restart_required": True}
+
+
 @app.on_event("startup")
 async def on_startup():
     await ensure_seeded()
     await _seed_admin(db)   # seed admin Regia (idempotente)
     await telegram_bot.start(db)
-    # Kick off background Suno music library filler
-    asyncio.create_task(_suno_library_filler())
-    # Kick off weekly integrity check for local Suno mp3s
-    asyncio.create_task(_suno_integrity_check())
-    # FIX (v12.15): pre-genera il segnale orario ~60-90s prima di ogni ora
-    # per eliminare il silenzio da attesa LLM/TTS in-request.
-    asyncio.create_task(_time_signal_pregenerator())
+    # Kill switch globale per i cicli AI in background (Suno filler,
+    # integrity check, time_signal pregen). Default: DISABILITATO.
+    # Riattiva da regia via PATCH /api/admin/background-tasks.
+    bg_enabled = os.environ.get("BACKGROUND_TASKS_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
+    if bg_enabled:
+        asyncio.create_task(_suno_library_filler())
+        asyncio.create_task(_suno_integrity_check())
+        asyncio.create_task(_time_signal_pregenerator())
+        logger.info("[startup] Background AI tasks ENABLED (Suno filler, integrity, time_signal pregen)")
+    else:
+        logger.info("[startup] Background AI tasks DISABLED (BACKGROUND_TASKS_ENABLED=false) — nessun consumo automatico")
 
 
 async def _suno_integrity_check():

@@ -5,7 +5,15 @@
 > zero rigenerazioni ridondanti. Riusare sempre asset esistenti prima di generare.
 > Le domande all'utente sono ammesse SOLO se bloccanti. Applicare a ogni sessione futura.
 
-## v12.14 · PERFEZIONAMENTO PRE-FORK (2026-02)
+## v13.0 · PERSISTENZA & RISPARMIO (2026-02-04)
+- **Object Storage-first**: Suno/Community/Community-Jingle/Beds/Voice-messages tutti salvati in Emergent Object Storage. Nessuna scrittura autoritativa su disco pod. Disco locale usato solo come cache lazy (populata da stream_mp3 on-read). Fix 4 lint-blocker deploy.
+- Nuovo endpoint `GET /api/voice_audio/{filename}` streaming from objstore (Range-aware, no cache locale).
+- Helper `object_storage.put_bytes(sub_path, data, content_type)` per file non-mp3 (voice webm/m4a/ogg).
+- **TTS Cache**: `elevenlabs_service.synth_speech` ora usa hash SHA256(voice_key+kind+text) come filename deterministico. Prima di chiamare ElevenLabs/OpenAI TTS verifica `db.tts_cache` — riuso trasparente. Zero doppie chiamate per script identici.
+- **Kill-switch Background AI**: env `BACKGROUND_TASKS_ENABLED=false` (default) blocca all'avvio Suno filler, integrity check, time_signal pregenerator. Toggle via `PATCH /api/admin/background-tasks`. `SUNO_AUTOGEN_ENABLED=false`. **Nessun consumo AI in background senza autorizzazione admin**.
+- DB writes MongoDB: sono già real-time (motor async), nessuna cache in memoria — dati sicuri per passaggio produzione.
+
+
 - Firma Audiowide 8-10px, rotazione -8°, cliccabile → FB profilo L&C.
 - Track: campi `genre`, `bpm`, `bpm_source`, `deleted_at` (soft-delete).
 - Cestino: `DELETE /admin/tracks/{id}` = soft; `POST .../restore`; `DELETE .../purge`; `GET /admin/tracks/trash`; `POST /admin/trash/auto-clean {days:30}`.

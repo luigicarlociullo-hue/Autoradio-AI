@@ -103,6 +103,21 @@ def _get_object_sync(path: str) -> Tuple[bytes, str]:
     return resp.content, resp.headers.get("Content-Type", "application/octet-stream")
 
 
+async def put_bytes(sub_path: str, data: bytes, content_type: str) -> Optional[str]:
+    """Generic upload for any content-type (webm audio, etc). Returns canonical
+    storage path (no leading slash) or None if disabled/failed."""
+    if not is_enabled():
+        return None
+    full_path = f"{APP_NAME}/{sub_path.lstrip('/')}"
+    try:
+        result = await asyncio.to_thread(_put_object_sync, full_path, data, content_type)
+        logger.info(f"objstore ← uploaded {full_path} ({result.get('size')} bytes, {content_type})")
+        return result["path"]
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"objstore upload failed for {full_path}: {e}")
+        return None
+
+
 async def put_mp3(sub_path: str, data: bytes) -> Optional[str]:
     """Upload an mp3 and return the canonical storage path (no leading slash),
     e.g. 'r-a-i/suno/track_xxx.mp3'.  Returns None if disabled or failed."""
