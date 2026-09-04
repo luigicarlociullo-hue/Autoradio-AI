@@ -10,7 +10,7 @@ export default function AdminLogin() {
   const loc = useLocation();
   const from = loc.state?.from || "/dashboard";
 
-  const [email, setEmail] = useState("admin@r-ai.it");
+  const [email, setEmail] = useState("admin");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -84,9 +84,9 @@ export default function AdminLogin() {
           Solo il personale autorizzato può accedere. Password admin protetta da variabile d'ambiente e JWT firmato.
         </p>
 
-        <label className="label-mono block mb-1">Email admin</label>
+        <label className="label-mono block mb-1">Username admin</label>
         <input
-          type="email" required autoFocus
+          type="text" required autoFocus autoComplete="username"
           data-testid="admin-login-email"
           value={email} onChange={(e) => setEmail(e.target.value)}
           className="w-full bg-black border border-white/10 rounded px-3 py-2 text-white text-sm mb-3"
