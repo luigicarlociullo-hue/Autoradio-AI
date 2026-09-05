@@ -43,6 +43,7 @@ export default function LedWall({
   current = null,
   trackOverlay = null,
   djs = [],
+  fillHeight = false,   // v13.6 · quando true, occupa altezza 100% del parent (no aspect-ratio)
 }) {
   const canvasRef = useRef(null);
   const bgRef = useRef(null);
@@ -408,9 +409,9 @@ export default function LedWall({
   return (
     <div
       data-testid="ledwall"
-      className="relative w-full rounded-2xl overflow-hidden focusable"
+      className={`relative w-full rounded-2xl overflow-hidden focusable${fillHeight ? " h-full" : ""}`}
       style={{
-        aspectRatio: "16 / 6.75",
+        ...(fillHeight ? {} : { aspectRatio: "16 / 6.75" }),
         background: "#000",
         border: "1px solid rgba(0,229,255,0.35)",
         boxShadow: "0 0 0 1px rgba(0,229,255,0.25) inset, 0 0 40px rgba(0,191,255,0.25)",

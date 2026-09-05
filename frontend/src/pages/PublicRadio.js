@@ -641,7 +641,7 @@ export default function PublicRadio() {
               decorativo (hero + team) precedeva sempre la colonna Play,
               spingendo il controllo di riproduzione fuori dal primo
               schermo. Su mobile va dopo Now Playing; da lg torna 1o. */}
-          <div className="lg:col-span-5 relative order-2 lg:order-1">
+          <div className="lg:col-span-5 relative order-2 lg:order-1 lg:self-stretch flex flex-col">
             <div className="absolute -top-2 right-3 z-20">
               <VuMeter />
             </div>
@@ -650,6 +650,7 @@ export default function PublicRadio() {
               current={current}
               trackOverlay={trackOverlay}
               djs={djs}
+              fillHeight
             />
             </div>
 
