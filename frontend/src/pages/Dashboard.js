@@ -6,6 +6,7 @@ import { lineInMixer } from "@/lib/lineInMixer";
 import { endpoints, api } from "@/lib/api";
 import BrandName from "@/components/BrandName";
 import MasterClockPanel from "@/components/MasterClockPanel";
+import BroadcasterPanel from "@/components/BroadcasterPanel";
 import { toast } from "sonner";
 
 const STUDIO_BG = "https://images.unsplash.com/photo-1781865202636-0adef1d06cce?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDQ2MzR8MHwxfHNlYXJjaHwzfHxmdXR1cmlzdGljJTIwcmFkaW8lMjBzdHVkaW8lMjBuaWdodHxlbnwwfHx8fDE3ODM4MDAwMjl8MA&ixlib=rb-4.1.0&q=85";
@@ -158,6 +159,9 @@ export default function Dashboard() {
 
         {/* MASTER CLOCK · Palinsesto orario 24H (v13.2) */}
         <MasterClockPanel />
+
+        {/* BROADCASTER · HLS interno + Icecast esterno + Dual-Brain (v13.3) */}
+        <BroadcasterPanel />
 
         {/* NEW: Broadcast control bar — Play/Pause/Skip/Jingle propagated
             to every public listener via /api/admin/command */}

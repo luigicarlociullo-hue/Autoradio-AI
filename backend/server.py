@@ -4896,6 +4896,294 @@ async def admin_generate_pill(payload: dict):
 
 
 
+# ============================================================================
+# v13.3 · HLS BROADCAST — Streaming In-Pod (default) + External URL Redirect
+# ============================================================================
+def _build_hls_playlist(tracks: list, base_url: str) -> str:
+    lines = [
+        "#EXTM3U",
+        "#EXT-X-VERSION:3",
+        "#EXT-X-TARGETDURATION:180",
+        "#EXT-X-MEDIA-SEQUENCE:0",
+        "#EXT-X-PLAYLIST-TYPE:EVENT",
+        f"#EXT-X-PROGRAM-DATE-TIME:{datetime.now(timezone.utc).isoformat()}",
+    ]
+    for t in tracks:
+        dur = float(t.get("duration_sec") or 150)
+        title = (t.get("title") or "R-A.I.").replace(",", " ")
+        artist = (t.get("artist") or "R-A.I.").replace(",", " ")
+        url = t.get("audio_url") or ""
+        if url.startswith("/"):
+            url = f"{base_url.rstrip('/')}{url}"
+        lines.append(f"#EXTINF:{dur:.3f},{artist} - {title}")
+        lines.append(url)
+    lines.append("")
+    return "\n".join(lines)
+
+
+@api_router.get("/stream/live.m3u8")
+async def hls_live_playlist(request: Request):
+    """HLS Live Playlist — endpoint universale per l'ascolto sincrono.
+    Con `external_stream_url` configurato → 302 verso quell'URL Icecast.
+    Altrimenti restituisce un `.m3u8` con i prossimi ~5 brani (day/night filtered)."""
+    st = await db.station.find_one({"_id": "state"}, {"external_stream_url": 1}) or {}
+    ext_url = (st.get("external_stream_url") or "").strip()
+    if ext_url:
+        return Response(status_code=302, headers={"Location": ext_url})
+    proto = request.headers.get("x-forwarded-proto", "https")
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host") or ""
+    base_url = f"{proto}://{host}"
+    try:
+        from zoneinfo import ZoneInfo
+        now_local = datetime.now(ZoneInfo("Europe/Rome"))
+    except Exception:
+        now_local = datetime.now(timezone.utc)
+    is_night = (now_local.hour >= 22 or now_local.hour < 4)
+    dp_filter = (
+        {"$or": [{"daypart_night": {"$ne": False}}, {"daypart_night": {"$exists": False}}]}
+        if is_night else
+        {"$or": [{"daypart_day": {"$ne": False}}, {"daypart_day": {"$exists": False}}]}
+    )
+    q = {
+        "source": {"$in": ["suno", "admin_upload"]},
+        "status": "ready", "audio_url": {"$ne": None},
+        "on_air": {"$ne": False}, "deleted_at": None,
+        "$and": [
+            {"$or": [{"is_anthem": {"$exists": False}}, {"is_anthem": False}]},
+            {"$or": [{"is_jingle": {"$exists": False}}, {"is_jingle": False}]},
+            dp_filter,
+        ],
+    }
+    tracks = await db.tracks.find(q, {"_id": 0, "title": 1, "artist": 1, "audio_url": 1, "duration_sec": 1}).sort("last_played_at", 1).limit(5).to_list(5)
+    if not tracks:
+        tracks = await db.tracks.find(
+            {"is_seed": True, "status": "ready", "audio_url": {"$ne": None}},
+            {"_id": 0, "title": 1, "artist": 1, "audio_url": 1, "duration_sec": 1},
+        ).limit(5).to_list(5)
+    playlist = _build_hls_playlist(tracks or [], base_url)
+    return Response(content=playlist, media_type="application/vnd.apple.mpegurl",
+                    headers={"Cache-Control": "no-store", "Access-Control-Allow-Origin": "*"})
+
+
+@api_router.get("/admin/external-stream")
+async def admin_get_external_stream():
+    st = await db.station.find_one({"_id": "state"}, {"external_stream_url": 1}) or {}
+    return {"external_stream_url": st.get("external_stream_url") or ""}
+
+
+@api_router.patch("/admin/external-stream")
+async def admin_set_external_stream(payload: dict):
+    url = (payload.get("url") or "").strip()
+    if url and not (url.startswith("http://") or url.startswith("https://")):
+        raise HTTPException(400, "URL deve iniziare con http:// o https://")
+    await db.station.update_one(
+        {"_id": "state"}, {"$set": {"external_stream_url": url or None}}, upsert=True
+    )
+    logger.info(f"[stream] external_stream_url set to '{url}'")
+    return {"ok": True, "external_stream_url": url}
+
+
+# ============================================================================
+# v13.3 · DJ DUAL-BRAIN — Scontro di Logica (solo FM MODE)
+# ============================================================================
+_DUAL_LEO_SYSTEM = (
+    "Sei Leo, DJ storico di R-A.I. In questo segmento speciale 'DUAL-BRAIN' "
+    "sei l'AVVOCATO DIFENSORE del brano/ascoltatore proposto. Difendilo con "
+    "passione ma con classe. Massimo 3-4 frasi (~25 secondi parlati). "
+    "Termina con una battuta provocatoria diretta al collega Max. "
+    "Italiano parlato, no elenchi, no markdown."
+)
+_DUAL_MAX_SYSTEM = (
+    "Sei Max, DJ dance di R-A.I. In questo segmento 'DUAL-BRAIN' sei il "
+    "PUBBLICO MINISTERO: critica ferocemente ma con ironia quello che Leo ha "
+    "appena difeso. Massimo 3-4 frasi (~25 secondi). Chiudi con una frase-"
+    "slogan che spiazzi Leo. Italiano parlato, no elenchi."
+)
+
+
+@api_router.post("/admin/dual-brain/generate")
+async def admin_dual_brain_generate(payload: dict):
+    """Genera Dual-Brain (Leo vs Max) su un soggetto. Richiede FM MODE ON."""
+    st = await db.station.find_one({"_id": "state"}, {"fm_mode": 1}) or {}
+    if not st.get("fm_mode"):
+        raise HTTPException(409, "Dual-Brain disponibile solo con FM MODE ON")
+    subject = (payload.get("subject") or "").strip()[:600]
+    if not subject:
+        raise HTTPException(400, "subject richiesto")
+    try:
+        leo_script, max_script = await asyncio.gather(
+            llm_generate("anthropic", "claude-sonnet-4-5-20250929", _DUAL_LEO_SYSTEM, f"Difendi con passione: {subject}"),
+            llm_generate("anthropic", "claude-sonnet-4-5-20250929", _DUAL_MAX_SYSTEM, f"Critica con ironia: {subject}"),
+        )
+    except Exception as e:
+        raise HTTPException(502, f"Generazione script fallita: {e}")
+    try:
+        leo_file, max_file = await asyncio.gather(
+            elevenlabs_service.synth_speech(leo_script, voice_key="male-1", kind="dual_brain"),
+            elevenlabs_service.synth_speech(max_script, voice_key="male-2", kind="dual_brain"),
+        )
+    except Exception as e:
+        raise HTTPException(502, f"TTS fallito: {e}")
+    return {
+        "subject": subject,
+        "leo": {"script": leo_script.strip(), "tts_url": f"/api/tts/{leo_file}" if leo_file else None},
+        "max": {"script": max_script.strip(), "tts_url": f"/api/tts/{max_file}" if max_file else None},
+        "kind": "dual_brain",
+    }
+
+
+@api_router.post("/admin/dual-brain/inject")
+async def admin_dual_brain_inject(payload: dict):
+    """Inietta un Dual-Brain nella priority_queue (top-of-queue)."""
+    leo = payload.get("leo") or {}
+    max_ = payload.get("max") or {}
+    if not (leo.get("tts_url") and max_.get("tts_url")):
+        raise HTTPException(400, "tts_url mancante")
+    seg = {
+        "id": str(uuid.uuid4()),
+        "kind": "dual_brain",
+        "title": f"DUAL-BRAIN · {(payload.get('subject') or 'Scontro di logica')[:80]}",
+        "leo_script": leo.get("script"),
+        "leo_speech_url": leo.get("tts_url"),
+        "max_script": max_.get("script"),
+        "max_speech_url": max_.get("tts_url"),
+        "priority": True,
+        "created_at": now_iso(),
+    }
+    await db.priority_queue.insert_one(seg.copy())
+    return {"ok": True, "injected": seg["id"]}
+
+
+# ============================================================================
+# v13.3 · IDENTITÀ DIGITALE ASCOLTATORI — Avatar AI al primo messaggio
+# ============================================================================
+_ARCHETYPE_SYSTEM = (
+    "Sei R-A.I., una radio AI. Analizzi il testo di un ascoltatore per "
+    "assegnargli un ARCHETIPO musicale futuristico. Rispondi con SOLO un JSON "
+    'con chiavi {"name": "<archetipo>", "tagline": "<7-10 parole>", '
+    '"color_a": "#RRGGBB", "color_b": "#RRGGBB"}. '
+    "Archetipi: 'Guerriero Techno', 'Sognatore Ambient', 'Cantastorie Trap', "
+    "'Nomade Jazz', 'Sciamano House', 'Poeta Synthwave', 'Alchimista Downtempo', "
+    "'Ribelle Punk', 'Viaggiatore Dub', 'Cyberpunk Industrial'. "
+    "Scegli quello più adatto al testo dato. Solo JSON, niente altro testo."
+)
+
+
+@api_router.post("/chat/avatar")
+async def chat_generate_avatar(payload: dict):
+    """Crea o recupera l'identità digitale di un ascoltatore.
+    Body: {browser_id, first_message, name?}. Cache per browser_id."""
+    browser_id = (payload.get("browser_id") or "").strip()[:80]
+    first_msg = (payload.get("first_message") or "").strip()[:500]
+    name = (payload.get("name") or "").strip()[:60]
+    if not browser_id or not first_msg:
+        raise HTTPException(400, "browser_id e first_message richiesti")
+    existing = await db.listener_profiles.find_one({"_id": browser_id}, {"_id": 0})
+    if existing:
+        return {"browser_id": browser_id, **existing, "cached": True}
+    # Classifica archetipo
+    arche_name = "Nomade Digitale"
+    tagline = "Vibrazione neurale in sincronia con R-A.I."
+    color_a, color_b = "#00E5FF", "#FF00AA"
+    try:
+        import json as _json, re as _re
+        raw = await llm_generate("gemini", "gemini-3-flash-preview", _ARCHETYPE_SYSTEM,
+                                 f"Testo ascoltatore ({name or 'anonimo'}): {first_msg}")
+        parsed = None
+        try:
+            parsed = _json.loads(raw)
+        except Exception:
+            m = _re.search(r"\{[^}]+\}", raw or "", _re.DOTALL)
+            if m:
+                try: parsed = _json.loads(m.group(0))
+                except Exception: parsed = None
+        if parsed:
+            arche_name = (parsed.get("name") or arche_name)[:40]
+            tagline = (parsed.get("tagline") or tagline)[:120]
+            color_a = (parsed.get("color_a") or color_a)[:7]
+            color_b = (parsed.get("color_b") or color_b)[:7]
+    except Exception as e:
+        logger.warning(f"[avatar] classify fail: {e}")
+    # Avatar SVG procedurale (zero-cost, on-brand neon)
+    import base64 as _b64
+    initial = (name or arche_name or "?")[:1].upper()
+    svg = (
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">'
+        f'<defs><radialGradient id="g" cx="50%" cy="50%">'
+        f'<stop offset="0%" stop-color="{color_a}"/>'
+        f'<stop offset="100%" stop-color="{color_b}"/></radialGradient></defs>'
+        f'<circle cx="50" cy="50" r="48" fill="url(#g)" opacity="0.92"/>'
+        f'<circle cx="50" cy="50" r="30" fill="none" stroke="#fff" stroke-width="1.2" opacity="0.7"/>'
+        f'<circle cx="50" cy="50" r="18" fill="none" stroke="#fff" stroke-width="0.8" opacity="0.5"/>'
+        f'<text x="50" y="60" font-family="monospace" font-size="26" fill="#fff" '
+        f'text-anchor="middle" font-weight="bold">{initial}</text></svg>'
+    )
+    avatar_url = f"data:image/svg+xml;base64,{_b64.b64encode(svg.encode()).decode()}"
+    profile = {
+        "name": name or "Ascoltatore",
+        "archetype": {"name": arche_name, "tagline": tagline, "color_a": color_a, "color_b": color_b},
+        "avatar_url": avatar_url,
+        "first_message": first_msg,
+        "created_at": now_iso(),
+    }
+    await db.listener_profiles.update_one({"_id": browser_id}, {"$set": profile}, upsert=True)
+    return {"browser_id": browser_id, **profile, "cached": False}
+
+
+# ============================================================================
+# v13.3 · AUTO-SCHEDULING PILLOLE (Master Clock → generazione automatica)
+# ============================================================================
+async def _pillole_scheduler():
+    """Ogni 60s: se l'ora corrente ha slot kind=past_pill/future_pill e FM_MODE
+    è ON, genera script + TTS e inietta nella priority_queue. Una volta per ora."""
+    last_run_hour = None
+    while True:
+        try:
+            await asyncio.sleep(60)
+            st = await db.station.find_one({"_id": "state"}, {"fm_mode": 1}) or {}
+            if not st.get("fm_mode"):
+                continue
+            try:
+                from zoneinfo import ZoneInfo
+                now_local = datetime.now(ZoneInfo("Europe/Rome"))
+            except Exception:
+                now_local = datetime.now(timezone.utc)
+            hour = now_local.hour
+            if hour == last_run_hour:
+                continue
+            slot = await db.program_schedule.find_one({"hour": hour}, {"_id": 0})
+            if not slot or slot.get("kind") not in ("past_pill", "future_pill"):
+                continue
+            kind_short = "past" if slot["kind"] == "past_pill" else "future"
+            system = _PILL_PAST_SYSTEM if kind_short == "past" else _PILL_FUTURE_SYSTEM
+            hint = slot.get("subject") or slot.get("title") or ""
+            try:
+                script = await llm_generate("anthropic", "claude-sonnet-4-5-20250929", system, hint or "Scegli un argomento adatto alla rubrica.")
+                tts_file = await elevenlabs_service.synth_speech(script, voice_key="male-1" if kind_short == "past" else "female-1", kind="pill")
+                if tts_file:
+                    seg = {
+                        "id": str(uuid.uuid4()),
+                        "kind": f"pill_{kind_short}",
+                        "title": slot.get("title") or ("Pillola dal Passato" if kind_short == "past" else "Pillola dal Futuro"),
+                        "script": script,
+                        "speech_url": f"/api/tts/{tts_file}",
+                        "priority": True,
+                        "scheduled_hour": hour,
+                        "created_at": now_iso(),
+                    }
+                    await db.priority_queue.insert_one(seg.copy())
+                    last_run_hour = hour
+                    logger.info(f"[pill-scheduler] Injected pill_{kind_short} for hour {hour}")
+            except Exception as e:
+                logger.warning(f"[pill-scheduler] Gen fail hour={hour}: {e}")
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.warning(f"[pill-scheduler] loop error: {e}")
+
+
+
+
 @api_router.patch("/admin/tracks/{track_id}/rotation")
 async def admin_toggle_rotation(track_id: str, payload: dict):
     """Include/escludi la traccia (tipicamente un FX/loop) dalla rotazione automatica."""
@@ -5146,6 +5434,10 @@ async def on_startup():
         logger.info("[startup] Background AI tasks ENABLED (Suno filler, integrity, time_signal pregen)")
     else:
         logger.info("[startup] Background AI tasks DISABLED (BACKGROUND_TASKS_ENABLED=false) — nessun consumo automatico")
+    # Auto-scheduling Pillole (v13.3) — sempre attivo, ma internamente si
+    # sospende se FM_MODE è OFF, quindi zero costi in economy.
+    asyncio.create_task(_pillole_scheduler())
+    logger.info("[startup] Pillole auto-scheduler running (gated by FM_MODE)")
 
 
 async def _suno_integrity_check():

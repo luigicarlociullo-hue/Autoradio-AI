@@ -5,7 +5,15 @@
 > zero rigenerazioni ridondanti. Riusare sempre asset esistenti prima di generare.
 > Le domande all'utente sono ammesse SOLO se bloccanti. Applicare a ogni sessione futura.
 
-## v13.2 · MASTER BROADCASTER · Editoriale + Radioscopo + BPM (2026-02-04)
+## v13.3 · MASTER BROADCASTER · HLS + Dual-Brain + Avatar (2026-02-05)
+- **HLS Broadcast in-pod**: `GET /api/stream/live.m3u8` genera playlist `#EXTM3U` con i prossimi 5 brani (rispetta day/night filter). Universale (VLC, Safari, hls.js). Latenza ≈ durata brano.
+- **External Streaming URL** (Icecast): field `station.external_stream_url`. Se popolato, `/stream/live.m3u8` risponde 302 → URL esterno. Endpoint `GET/PATCH /api/admin/external-stream`. UI `<BroadcasterPanel/>`.
+- **DJ Dual-Brain**: `POST /api/admin/dual-brain/generate {subject}` genera Leo (difende) + Max (attacca) via Claude Sonnet 4.5, TTS ElevenLabs male-1/male-2 in parallelo. `POST /api/admin/dual-brain/inject` mette in priority_queue. Gate FM_MODE ON.
+- **Identità Digitale Ascoltatori**: `POST /api/chat/avatar {browser_id, first_message, name?}` classifica archetipo (Guerriero Techno, Sognatore Ambient, Cantastorie Trap...) via Gemini Flash + genera avatar SVG procedurale gradient neon. Cache Mongo `listener_profiles` per browser_id. Integrato in `ChatMini.js`: al primo messaggio mostra toast "Benvenuto umano, per me sei un..." e badge con avatar+tagline nella chat.
+- **Auto-scheduling Pillole**: loop `_pillole_scheduler` (60s tick) legge `program_schedule` per l'ora corrente; se kind=past_pill/future_pill e FM_MODE ON, genera script (Claude 4.5) + TTS ElevenLabs e inietta in priority_queue. Una sola esecuzione per ora.
+- Endpoint frontend aggiunti in `endpoints`: `chatAvatar`, `externalStreamGet/Set`, `dualBrainGenerate/Inject`.
+
+
 - **Layout header compattato**: `items-stretch` → `items-start` sul grid hero (PublicRadio riga 637). Vuoto nero eliminato.
 - **Zero troncamento brani umani**: `radioEngine.js` ora rispetta l'ended naturale quando il segmento NON ha outro DJ pianificato. La logica `remaining<=8` scatta SOLO se c'è `outro_speech_url`/`outro_script`.
 - **Logica Giorno/Notte per brano**: Track model ha `daypart_day` + `daypart_night` (default True). Rotazione musicale filtra per fascia oraria Europe/Rome (Notte 22-04, Giorno 04-22). Endpoint `PATCH /api/admin/tracks/{id}/daypart {day,night}`. Toggle ☀/🌙 nel track manager Dashboard.

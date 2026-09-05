@@ -13,8 +13,29 @@ export default function ChatMini({ heightClass = "h-56" }) {
   const [name, setName] = useState("");
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
+  const [avatar, setAvatar] = useState(null);   // Identità digitale (v13.3)
   const scrollRef = useRef(null);
   const sessionStartRef = useRef(new Date().toISOString());
+
+  // v13.3 · Browser fingerprint stabile per Identità Digitale
+  const browserIdRef = useRef((() => {
+    try {
+      let id = localStorage.getItem("rai_browser_id");
+      if (!id) {
+        id = "b_" + Math.random().toString(36).slice(2, 12) + Date.now().toString(36);
+        localStorage.setItem("rai_browser_id", id);
+      }
+      return id;
+    } catch { return "b_" + Math.random().toString(36).slice(2, 12); }
+  })());
+
+  // Al mount: se abbiamo già un avatar salvato, mostralo subito
+  useEffect(() => {
+    try {
+      const cached = localStorage.getItem("rai_avatar");
+      if (cached) setAvatar(JSON.parse(cached));
+    } catch {}
+  }, []);
 
   useEffect(() => {
     let live = true;
@@ -44,6 +65,21 @@ export default function ChatMini({ heightClass = "h-56" }) {
       await endpoints.submitQuestion({ name: name || "Ascoltatore", question: t, source: "web" });
       setText("");
       toast.success("Domanda inviata");
+      // v13.3 · IDENTITÀ DIGITALE — al primo messaggio genera archetipo+avatar
+      if (!avatar) {
+        try {
+          const r = await endpoints.chatAvatar({
+            browser_id: browserIdRef.current,
+            first_message: t,
+            name: name || "Ascoltatore",
+          });
+          setAvatar(r);
+          try { localStorage.setItem("rai_avatar", JSON.stringify(r)); } catch {}
+          if (r?.archetype?.name) {
+            toast.success(`CUE: Benvenuto umano, per me sei un ${r.archetype.name}. Ecco il tuo volto nel mio sistema.`, { duration: 8000 });
+          }
+        } catch (avErr) { /* silent */ }
+      }
     } catch (err) { toast.error("Invio fallito"); }
     finally { setBusy(false); }
   };
@@ -86,6 +122,32 @@ export default function ChatMini({ heightClass = "h-56" }) {
         </span>
         <style>{`@keyframes voiceLivePulse{0%,100%{opacity:1;box-shadow:0 0 6px rgba(255,61,138,0.55)}50%{opacity:.55;box-shadow:0 0 14px rgba(255,61,138,0.85)}}`}</style>
       </div>
+      {avatar?.archetype && (
+        <div
+          className="mb-2 flex items-center gap-2 rounded-md p-1.5 border"
+          data-testid="chat-avatar-badge"
+          style={{
+            background: `linear-gradient(90deg, ${avatar.archetype.color_a}22, ${avatar.archetype.color_b}22)`,
+            borderColor: `${avatar.archetype.color_a}66`,
+          }}
+        >
+          <img
+            src={avatar.avatar_url}
+            alt={avatar.archetype.name}
+            className="w-8 h-8 rounded-full shrink-0"
+            data-testid="chat-avatar-img"
+          />
+          <div className="min-w-0 flex-1">
+            <div
+              className="text-[10px] font-mono font-bold uppercase tracking-wide truncate"
+              style={{ color: avatar.archetype.color_a, textShadow: `0 0 6px ${avatar.archetype.color_a}66` }}
+            >
+              {avatar.archetype.name}
+            </div>
+            <div className="text-[9px] text-zinc-400 truncate">{avatar.archetype.tagline}</div>
+          </div>
+        </div>
+      )}
       <div
         ref={scrollRef}
         data-testid="chat-mini-feed"
