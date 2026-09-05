@@ -18,6 +18,7 @@ import MicButton from "@/components/MicButton";
 import Cue from "@/components/Cue";
 import BigCue from "@/components/BigCue";
 import LiveBrainTicker from "@/components/LiveBrainTicker";
+import RadioscopoWidget from "@/components/RadioscopoWidget";
 import ChatMini from "@/components/ChatMini";
 import CueThinking from "@/components/CueThinking";
 import ServicesDock from "@/components/ServicesDock";
@@ -634,7 +635,7 @@ export default function PublicRadio() {
 
       {/* ================ HERO — Cruscotto 3-col (Above the Fold) ================ */}
       <section className="max-w-7xl mx-auto px-4 pt-2 pb-2 relative z-10">
-        <div className="grid lg:grid-cols-12 gap-3 items-stretch">
+        <div className="grid lg:grid-cols-12 gap-3 items-start">
           {/* Colonna SX (5/12): LEDWALL Visualizzatore.
               order-2 su mobile (ticket 239289): sotto lg questo blocco
               decorativo (hero + team) precedeva sempre la colonna Play,
@@ -888,6 +889,11 @@ export default function PublicRadio() {
       </section>
 
       {/* ================ R-A.I. TEAM — 3 SPEAKER + 3 DJ CLUB, compatto orizzontale ================ */}
+      {/* ================ RADIOSCOPO — 12 previsioni digitali neon (v13.2) ================ */}
+      <section className="max-w-7xl mx-auto px-6 py-2 relative z-10" data-testid="radioscope-section">
+        <RadioscopoWidget />
+      </section>
+
       {/* ================ SPONSOR CTA — DIVENTA PARTNER (sponsor-grade) ================ */}
       <section className="max-w-7xl mx-auto px-6 py-1 relative z-10" data-testid="sponsor-cta-section">
         <Link

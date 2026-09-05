@@ -1732,7 +1732,23 @@ class RadioEngine {
                 nextPreWarmed = true;
                 try { this._preWarmHook(); } catch (e) {}
               }
-              if (remaining <= 8) { clearInterval(iv); r(); }
+              // FIX (v13.2): TRONCATURE BRANI UMANI.
+              // Se il segmento NON ha outro DJ pianificato (outro_speech_url
+              // o outro_script), la vecchia logica risolveva a `remaining<=8`
+              // sacrificando 8s+crossfade di un brano che invece deve suonare
+              // per intero (upload community, richieste ascoltatori, brani
+              // umani). Ora: solo se c'è OUTRO effettivo tagliamo a -8s per
+              // aprire la fascia voce; altrimenti aspettiamo l'evento
+              // naturale `ended`.
+              const hasOutro = !!(segment.outro_speech_url || segment.outro_script);
+              if (hasOutro) {
+                if (remaining <= 8) { clearInterval(iv); r(); }
+              } else {
+                // Nessun outro → lascia scorrere fino a fine naturale.
+                // (`ended` è già intercettato dalla condizione in cima al
+                // loop tramite `audio.ended`, che scatterà quando il file
+                // termina davvero.)
+              }
             }, 200);
           });
 

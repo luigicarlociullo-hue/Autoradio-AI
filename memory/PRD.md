@@ -5,7 +5,17 @@
 > zero rigenerazioni ridondanti. Riusare sempre asset esistenti prima di generare.
 > Le domande all'utente sono ammesse SOLO se bloccanti. Applicare a ogni sessione futura.
 
-## v13.1 · FM MODE MASTER SWITCH (2026-02-04)
+## v13.2 · MASTER BROADCASTER · Editoriale + Radioscopo + BPM (2026-02-04)
+- **Layout header compattato**: `items-stretch` → `items-start` sul grid hero (PublicRadio riga 637). Vuoto nero eliminato.
+- **Zero troncamento brani umani**: `radioEngine.js` ora rispetta l'ended naturale quando il segmento NON ha outro DJ pianificato. La logica `remaining<=8` scatta SOLO se c'è `outro_speech_url`/`outro_script`.
+- **Logica Giorno/Notte per brano**: Track model ha `daypart_day` + `daypart_night` (default True). Rotazione musicale filtra per fascia oraria Europe/Rome (Notte 22-04, Giorno 04-22). Endpoint `PATCH /api/admin/tracks/{id}/daypart {day,night}`. Toggle ☀/🌙 nel track manager Dashboard.
+- **Master Clock 24H**: collection `program_schedule`, endpoints `GET /api/admin/schedule`, `PATCH /api/admin/schedule/{hour}`. Slot: `{hour, title, subject, kind ∈ music|radioscope|past_pill|future_pill|rubric}`. UI `<MasterClockPanel/>` griglia 24 celle con ora corrente evidenziata.
+- **Radioscopo**: 12 previsioni giornaliere con lessico "energia digitale/vibrazioni neurali". Endpoint `GET /api/radioscope` (cache Mongo `radioscope_cache` per data ISO). Widget `<RadioscopoWidget/>` in Home con griglia 12 segni zodiacali neon.
+- **Pillole dal Passato/Futuro**: system prompt TASSATIVI in server.py (`_PILL_PAST_SYSTEM` = Leo, fatti storici verificabili, no invenzioni; `_PILL_FUTURE_SYSTEM` = Aria, trend scientifici reali estrapolati). Endpoint `POST /api/admin/pillole/genera {kind,hint}`. Usa Claude Sonnet 4.5 per qualità.
+- **BPM auto-detection server-side**: nuovo `bpm_service.py` con librosa (`beat_track` su primi 90s, clamp 60-200). Detection integrata su Suno auto-download e admin upload. Endpoint backfill `POST /api/admin/bpm/scan {limit,force}` per brani legacy. Salva in `tracks.bpm` + `bpm_source="server"`.
+- **Live Stream Icecast/HLS**: RIMANDATO — richiede infrastruttura esterna (VPS Icecast/Liquidsoap) o pipeline HLS con ffmpeg che segmenta in .m3u8+.ts su Object Storage. In attesa scelta strategica utente.
+
+
 - **Toggle master `FM_MODE`** nella Dashboard (`<FmModePanel />` in cima, pill switch pink/cyan). Default **OFF** ad ogni startup/restart backend (safety-first).
 - **Endpoints**: `GET/PATCH /api/admin/fm-mode` (protetti JWT). Persiste in `station.state.fm_mode` ma il valore viene **forzato a False all'avvio** in on_startup.
 - **Routing dinamico LLM** in `llm_generate()`:

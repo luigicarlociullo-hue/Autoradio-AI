@@ -5,6 +5,7 @@ import { Radio, Power, Trash2, Sparkles, Zap, Music2, Newspaper, MessageCircle, 
 import { lineInMixer } from "@/lib/lineInMixer";
 import { endpoints, api } from "@/lib/api";
 import BrandName from "@/components/BrandName";
+import MasterClockPanel from "@/components/MasterClockPanel";
 import { toast } from "sonner";
 
 const STUDIO_BG = "https://images.unsplash.com/photo-1781865202636-0adef1d06cce?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDQ2MzR8MHwxfHNlYXJjaHwzfHxmdXR1cmlzdGljJTIwcmFkaW8lMjBzdHVkaW8lMjBuaWdodHxlbnwwfHx8fDE3ODM4MDAwMjl8MA&ixlib=rb-4.1.0&q=85";
@@ -154,6 +155,9 @@ export default function Dashboard() {
 
         {/* MASTER SWITCH · FM MODE (Radio Vera vs Economy) — default OFF ad ogni restart */}
         <FmModePanel />
+
+        {/* MASTER CLOCK · Palinsesto orario 24H (v13.2) */}
+        <MasterClockPanel />
 
         {/* NEW: Broadcast control bar — Play/Pause/Skip/Jingle propagated
             to every public listener via /api/admin/command */}
@@ -1885,7 +1889,7 @@ function TrackManagerPanel() {
                   />
                 </td>
                 <td className="px-3 py-2 text-center">
-                  {t.kind === "jingle" && (
+                  {t.kind === "jingle" ? (
                     <button
                       data-testid={`night-jingle-${t.id.slice(0,8)}`}
                       onClick={async () => {
@@ -1903,6 +1907,45 @@ function TrackManagerPanel() {
                     >
                       {t.is_night_jingle ? "🌙 NOTTE" : "☀ Giorno"}
                     </button>
+                  ) : (
+                    <div className="inline-flex gap-1">
+                      <button
+                        data-testid={`daypart-day-${t.id.slice(0,8)}`}
+                        onClick={async () => {
+                          try {
+                            const nextDay = !(t.daypart_day !== false);
+                            await endpoints.trackDaypart(t.id, nextDay, (t.daypart_night !== false));
+                            toast.success(`Giorno: ${nextDay ? "ON" : "OFF"}`);
+                            load();
+                          } catch (e) { toast.error("Errore"); }
+                        }}
+                        className="px-1.5 py-1 rounded text-[10px] font-mono border transition"
+                        style={(t.daypart_day !== false)
+                          ? { background: "rgba(255,184,77,0.18)", borderColor: "rgba(255,184,77,0.55)", color: "#FFB84D" }
+                          : { background: "rgba(255,255,255,0.03)", borderColor: "rgba(255,255,255,0.1)", color: "#71717a" }}
+                        title="In rotazione 04-22 (giorno)"
+                      >
+                        ☀
+                      </button>
+                      <button
+                        data-testid={`daypart-night-${t.id.slice(0,8)}`}
+                        onClick={async () => {
+                          try {
+                            const nextNight = !(t.daypart_night !== false);
+                            await endpoints.trackDaypart(t.id, (t.daypart_day !== false), nextNight);
+                            toast.success(`Notte: ${nextNight ? "ON" : "OFF"}`);
+                            load();
+                          } catch (e) { toast.error("Errore"); }
+                        }}
+                        className="px-1.5 py-1 rounded text-[10px] font-mono border transition"
+                        style={(t.daypart_night !== false)
+                          ? { background: "rgba(80,80,255,0.18)", borderColor: "rgba(120,120,255,0.55)", color: "#B8B8FF" }
+                          : { background: "rgba(255,255,255,0.03)", borderColor: "rgba(255,255,255,0.1)", color: "#71717a" }}
+                        title="In rotazione 22-04 (notte)"
+                      >
+                        🌙
+                      </button>
+                    </div>
                   )}
                 </td>
                 <td className="px-3 py-2 text-center">

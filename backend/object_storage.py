@@ -103,6 +103,19 @@ def _get_object_sync(path: str) -> Tuple[bytes, str]:
     return resp.content, resp.headers.get("Content-Type", "application/octet-stream")
 
 
+async def get_bytes(sub_path: str) -> Optional[bytes]:
+    """Full-object read (per analisi BPM, backup, ecc). Ritorna None se non trovato."""
+    if not is_enabled():
+        return None
+    full_path = f"{APP_NAME}/{sub_path.lstrip('/')}"
+    try:
+        data, _ct = await asyncio.to_thread(_get_object_sync, full_path)
+        return data
+    except Exception as e:
+        logger.debug(f"objstore get_bytes miss {full_path}: {e}")
+        return None
+
+
 async def put_bytes(sub_path: str, data: bytes, content_type: str) -> Optional[str]:
     """Generic upload for any content-type (webm audio, etc). Returns canonical
     storage path (no leading slash) or None if disabled/failed."""

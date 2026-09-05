@@ -24,6 +24,7 @@ import telegram_bot
 import suno_service
 import elevenlabs_service
 import object_storage
+import bpm_service
 
 
 async def synth_speech(text: str, voice_key: str = "female-1", kind: str = ""):
@@ -119,6 +120,17 @@ async def download_and_save_suno_audio(audio_url: str, track_id: str) -> Optiona
             logger.error(f"Suno download {track_id}: objstore upload failed")
             return None
         logger.info(f"Suno track {track_id} → objstore {stored_path} ({len(r.content)} bytes)")
+        # BPM detection (v13.2) — best-effort, non blocca la restituzione URL.
+        try:
+            bpm = await bpm_service.detect_bpm_from_bytes(r.content, ".mp3")
+            if bpm:
+                await db.tracks.update_one(
+                    {"id": track_id},
+                    {"$set": {"bpm": bpm, "bpm_source": "server"}},
+                )
+                logger.info(f"[bpm] Suno {track_id} → {bpm} bpm")
+        except Exception as e:
+            logger.debug(f"[bpm] Suno {track_id} detect skip: {e}")
         return f"/api/suno_audio/{local_name}"
     except Exception as e:
         logger.warning(f"Suno download for {track_id} failed: {e}")
@@ -186,6 +198,12 @@ class Track(BaseModel):
     spot_end_date: Optional[str] = None      # ISO date fine spot
     spot_frequency_per_hour: Optional[int] = None  # passaggi/ora desiderati (1..12)
     on_air: bool = True                   # admin toggle: if False, excluded from rotation
+    # v13.2 · LOGICA EDITORIALE GIORNO/NOTTE
+    #   Ogni brano dichiara in quali fasce può essere pescato.
+    #   Fascia notte = 22:00-04:00 Europe/Rome, giorno = resto della giornata.
+    #   Se entrambi False vale "both" (retro-compat). Default: entrambi True.
+    daypart_day: bool = True              # eleggibile per rotazione diurna
+    daypart_night: bool = True            # eleggibile per rotazione notturna
     # v12.14 · Archivio Pro + Beat Detection
     # NOTE: this is intentionally a SEPARATE field from `genre` above — `genre`
     # holds the free-text descriptive genre (often with BPM, e.g. 'tech house
@@ -1145,6 +1163,7 @@ async def admin_tracks_searchable():
          "loop_bind_speaker": 1, "submitted_by": 1,
          "spot_start_date": 1, "spot_end_date": 1, "spot_frequency_per_hour": 1,
          "duration_sec": 1, "on_air": 1, "genre_category": 1, "bpm": 1, "bpm_source": 1,
+         "daypart_day": 1, "daypart_night": 1, "is_night_jingle": 1,
          "audio_url": 1, "created_at": 1},
     ).sort("created_at", -1)
     docs = await cursor.to_list(length=2000)
@@ -1173,6 +1192,9 @@ async def admin_tracks_searchable():
             "spot_start_date": t.get("spot_start_date"),
             "spot_end_date": t.get("spot_end_date"),
             "spot_frequency_per_hour": t.get("spot_frequency_per_hour"),
+            "daypart_day": t.get("daypart_day") if t.get("daypart_day") is not None else True,
+            "daypart_night": t.get("daypart_night") if t.get("daypart_night") is not None else True,
+            "is_night_jingle": bool(t.get("is_night_jingle")),
         })
     return {"tracks": items, "total": len(items)}
 
@@ -1259,6 +1281,15 @@ async def admin_tracks_upload(
     audio_url = f"/api/suno_audio/{local_name}"
     now = datetime.now(timezone.utc).isoformat()
 
+    # BPM detection (v13.2) — best-effort in-request (< 3s per 90s audio).
+    detected_bpm: Optional[int] = None
+    try:
+        detected_bpm = await bpm_service.detect_bpm_from_bytes(data, ".mp3")
+        if detected_bpm:
+            logger.info(f"[bpm] admin upload {track_id} → {detected_bpm} bpm")
+    except Exception as e:
+        logger.debug(f"[bpm] admin upload {track_id} detect skip: {e}")
+
     if mode == "replace":
         # Ereditiamo i tag/attributi immutabili della vecchia track, sovrascriviamo il resto.
         merged_tags = list(set((target.get("tags") or []) + tag_list))
@@ -1276,6 +1307,7 @@ async def admin_tracks_upload(
                 "is_fx": kind == "fx",
                 "tags": merged_tags,
                 "updated_at": now,
+                **({"bpm": detected_bpm, "bpm_source": "server"} if detected_bpm else {}),
             }},
         )
         # Update the title on any segment currently in the playback queue that
@@ -1318,6 +1350,8 @@ async def admin_tracks_upload(
             spot_frequency_per_hour=(int(spot_frequency_per_hour) if (kind == "spot" and spot_frequency_per_hour) else None),
             on_air=not pending,  # se in attesa di approvazione → off-air
             status="ready",
+            bpm=detected_bpm,
+            bpm_source=("server" if detected_bpm else None),
         )
         doc = track.model_dump()
         # Extra rotation-friendly fields (not in Track model but harmless):
@@ -2459,6 +2493,29 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
                 )
 
         if track is None and suno_service.is_enabled():
+            # v13.2 · LOGICA EDITORIALE GIORNO/NOTTE
+            #   Filtra la rotazione in base alla fascia oraria corrente:
+            #   • Notte 22:00–03:59 Europe/Rome → solo brani con daypart_night != False
+            #   • Giorno 04:00–21:59            → solo brani con daypart_day   != False
+            #   NB: default `True` in Track model → un brano legacy senza il
+            #   campo passa in entrambe le fasce (retro-compat).
+            _now_local = datetime.now(timezone.utc)
+            try:
+                # Europe/Rome timezone (UTC+1 std / UTC+2 DST). Approx via +1h/+2h
+                # non serve libreria zoneinfo se non installata: usiamo l'offset
+                # runtime del server, che in prod è UTC → +1h fisso qui va bene
+                # come euristica; se serve precisione DST installare `pytz`.
+                from zoneinfo import ZoneInfo
+                _now_local = datetime.now(ZoneInfo("Europe/Rome"))
+            except Exception:
+                pass
+            _hour = _now_local.hour
+            _is_night = (_hour >= 22 or _hour < 4)
+            _daypart_filter = (
+                {"$or": [{"daypart_night": {"$ne": False}}, {"daypart_night": {"$exists": False}}]}
+                if _is_night else
+                {"$or": [{"daypart_day": {"$ne": False}}, {"daypart_day": {"$exists": False}}]}
+            )
             # ALTA ROTAZIONE: brani con priority='high' o rotation_weight>1
             # vengono pescati ~65% delle volte, alternandosi ai brani normali.
             # Round-robin all'interno di ciascun pool per rotare tutti equamente.
@@ -2475,6 +2532,7 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
                 "$and": [
                     {"$or": [{"is_anthem": {"$exists": False}}, {"is_anthem": False}]},
                     {"$or": [{"is_jingle": {"$exists": False}}, {"is_jingle": False}]},
+                    _daypart_filter,
                 ],
             }
             normal_query = {
@@ -2484,7 +2542,10 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
                 "$or": [{"is_anthem": {"$exists": False}}, {"is_anthem": False}],
                 "priority": {"$ne": "high"},
                 "is_jingle": {"$ne": True},
-                "$and": [{"$or": [{"rotation_weight": {"$exists": False}}, {"rotation_weight": {"$lte": 1}}]}],
+                "$and": [
+                    {"$or": [{"rotation_weight": {"$exists": False}}, {"rotation_weight": {"$lte": 1}}]},
+                    _daypart_filter,
+                ],
             }
             # FIX (brano duplicato all'avvio): la vecchia logica leggeva il pool
             # con find().to_list() e aggiornava last_played_at SOLO DOPO aver
@@ -4576,6 +4637,263 @@ async def admin_fx_consume():
     """Chiamato dal client dopo aver riprodotto l'FX per pulire lo slot pending."""
     await db.station.update_one({"_id": "state"}, {"$set": {"pending_fx": None}})
     return {"ok": True}
+
+
+# ============================================================================
+# v13.2 · LOGICA EDITORIALE GIORNO/NOTTE (Admin toggle per singolo brano)
+# ============================================================================
+@api_router.patch("/admin/tracks/{track_id}/daypart")
+async def admin_set_track_daypart(track_id: str, payload: dict):
+    """Aggiorna i flag giorno/notte per un singolo brano.
+    Body: {"day": bool, "night": bool}. Se entrambi False si impostano
+    entrambi True (retro-compat, brano "sempre in aria")."""
+    day = bool(payload.get("day", True))
+    night = bool(payload.get("night", True))
+    if not day and not night:
+        day = night = True
+    r = await db.tracks.update_one(
+        {"id": track_id, "deleted_at": None},
+        {"$set": {"daypart_day": day, "daypart_night": night, "updated_at": now_iso()}},
+    )
+    if r.matched_count == 0:
+        raise HTTPException(404, "Track non trovata")
+    return {"ok": True, "daypart_day": day, "daypart_night": night}
+
+
+# ============================================================================
+# v13.2 · MASTER CLOCK — Palinsesto orario 24h (Autore)
+# ============================================================================
+# Ogni ora della giornata (0..23) ha un titolo/soggetto/kind assegnati
+# dall'admin. `kind` guida la generazione del segmento speciale in quell'ora:
+#   • "music"       → rotazione normale (default)
+#   • "radioscope"  → Il Radioscopo (12 previsioni segno per segno)
+#   • "past_pill"   → Pillole dal Passato (Leo · fatti storici REALI)
+#   • "future_pill" → Pillole dal Futuro (Aria · trend scientifici)
+#   • "rubric"      → Rubrica libera (autore definisce titolo+subject)
+_SCHEDULE_KINDS = {"music", "radioscope", "past_pill", "future_pill", "rubric"}
+
+
+@api_router.get("/admin/schedule")
+async def admin_get_schedule():
+    """Restituisce la griglia 24h. Se mancante crea 24 slot vuoti default."""
+    rows = await db.program_schedule.find({}, {"_id": 0}).sort("hour", 1).to_list(30)
+    if len(rows) < 24:
+        existing_hours = {r["hour"] for r in rows}
+        for h in range(24):
+            if h in existing_hours:
+                continue
+            await db.program_schedule.insert_one({
+                "hour": h,
+                "title": None,
+                "subject": None,
+                "kind": "music",
+                "updated_at": now_iso(),
+            })
+        rows = await db.program_schedule.find({}, {"_id": 0}).sort("hour", 1).to_list(30)
+    return {"schedule": rows}
+
+
+@api_router.patch("/admin/schedule/{hour}")
+async def admin_set_schedule_hour(hour: int, payload: dict):
+    """Aggiorna uno slot orario. Body: {title, subject, kind}."""
+    if hour < 0 or hour > 23:
+        raise HTTPException(400, "hour deve essere 0..23")
+    kind = (payload.get("kind") or "music").strip()
+    if kind not in _SCHEDULE_KINDS:
+        raise HTTPException(400, f"kind deve essere in {sorted(_SCHEDULE_KINDS)}")
+    doc = {
+        "hour": hour,
+        "title": (payload.get("title") or "").strip()[:120] or None,
+        "subject": (payload.get("subject") or "").strip()[:2000] or None,
+        "kind": kind,
+        "updated_at": now_iso(),
+    }
+    await db.program_schedule.update_one({"hour": hour}, {"$set": doc}, upsert=True)
+    return {"ok": True, "slot": doc}
+
+
+# ============================================================================
+# v13.2 · RADIOSCOPO — 12 previsioni giornaliere (una per segno)
+# ============================================================================
+_ZODIAC_IT = [
+    ("aries", "Ariete"), ("taurus", "Toro"), ("gemini", "Gemelli"),
+    ("cancer", "Cancro"), ("leo", "Leone"), ("virgo", "Vergine"),
+    ("libra", "Bilancia"), ("scorpio", "Scorpione"), ("sagittarius", "Sagittario"),
+    ("capricorn", "Capricorno"), ("aquarius", "Acquario"), ("pisces", "Pesci"),
+]
+_ZODIAC_KEYS = {k for k, _ in _ZODIAC_IT}
+
+# System prompt tassativo per il Radioscopo (v13.2):
+# tono visionario neon, lessico "energia digitale / vibrazioni neurali",
+# 2 frasi max, previsione + suggerimento operativo. Zero astrologia mistica.
+_RADIOSCOPE_SYSTEM = (
+    "Sei R-A.I., una radio AI che genera un Radioscopo digitale futuristico. "
+    "Genera previsioni per un segno zodiacale usando il lessico 'energia "
+    "digitale', 'vibrazioni neurali', 'circuiti emotivi', 'frequenze cosmiche'. "
+    "Tono: visionario, positivo, dinamico, mai mistico o esoterico. "
+    "Vietato riferimenti a divinazione, tarocchi, karma, chakra. "
+    "Formato: 2 frasi brevi. Prima frase = previsione del giorno. Seconda "
+    "frase = azione concreta suggerita. Massimo 45 parole totali. In italiano."
+)
+
+
+async def _generate_radioscope_for_sign(sign_key: str, sign_it: str) -> str:
+    prompt = f"Genera il Radioscopo per {sign_it} valido per oggi. Un solo paragrafo."
+    try:
+        text = await llm_generate("gemini", "gemini-3-flash-preview", _RADIOSCOPE_SYSTEM, prompt)
+    except Exception as e:
+        logger.warning(f"[radioscope] LLM fail for {sign_key}: {e}")
+        text = f"{sign_it}: le tue vibrazioni neurali oggi sono in sincronia con la frequenza R-A.I. Sintonizzati e lascia scorrere il flusso."
+    return (text or "").strip()
+
+
+@api_router.get("/radioscope")
+async def get_radioscope():
+    """Ritorna le 12 previsioni del giorno. Cache giornaliera in db.radioscope_cache.
+    Costo: 12 chiamate Gemini Flash una volta al giorno (< 0.02 ECU stimati)."""
+    today_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    cached = await db.radioscope_cache.find_one({"_id": today_iso}, {"_id": 0})
+    if cached and len(cached.get("signs", [])) == 12:
+        return {"date": today_iso, "signs": cached["signs"], "cached": True}
+    signs_out = []
+    for key, it in _ZODIAC_IT:
+        text = await _generate_radioscope_for_sign(key, it)
+        signs_out.append({"key": key, "name": it, "text": text})
+    await db.radioscope_cache.update_one(
+        {"_id": today_iso},
+        {"$set": {"signs": signs_out, "generated_at": now_iso()}},
+        upsert=True,
+    )
+    return {"date": today_iso, "signs": signs_out, "cached": False}
+
+
+@api_router.get("/radioscope/{sign_key}")
+async def get_radioscope_sign(sign_key: str):
+    sign_key = (sign_key or "").lower().strip()
+    if sign_key not in _ZODIAC_KEYS:
+        raise HTTPException(404, "segno non valido")
+    r = await get_radioscope()
+    for s in r["signs"]:
+        if s["key"] == sign_key:
+            return {"date": r["date"], **s}
+    raise HTTPException(500, "segno mancante")
+
+
+# ============================================================================
+# v13.2 · PILLOLE DAL PASSATO (Leo · fatti storici REALI)
+# v13.2 · PILLOLE DAL FUTURO (Aria · trend scientifici)
+# ============================================================================
+# System prompt TASSATIVI: Leo educa con fatti verificabili (radio/musica/
+# tecnologia). Aria previsione futura visionaria ma ancorata a trend reali.
+_PILL_PAST_SYSTEM = (
+    "Sei Leo, DJ storico di R-A.I. Rubrica: 'Pillole dal Passato'. Racconti "
+    "in 40-50 secondi (~130 parole) un fatto STORICO REALMENTE ACCADUTO nel "
+    "mondo della radio, della musica popolare o della tecnologia consumer. "
+    "REGOLE FERREE:\n"
+    "- NIENTE INVENZIONI: solo fatti verificati, con anno e luogo se noti.\n"
+    "- Nomi, date, città devono essere reali. Se non sei certo di una cifra "
+    "  esatta usa formule 'attorno al [anno]' invece di sbagliare.\n"
+    "- Zero fiction, zero 'racconto immaginato'. È EDUCARE, non intrattenere.\n"
+    "- Tono da speaker esperto, appassionato ma sobrio.\n"
+    "- Chiudi con una frase che leghi il passato al presente (perché conta "
+    "  ancora oggi).\n"
+    "- Italiano parlato, no elenchi puntati, no titoli, no markdown."
+)
+_PILL_FUTURE_SYSTEM = (
+    "Sei Aria, DJ del futuro di R-A.I. Rubrica: 'Pillole dal Futuro'. In 40-50 "
+    "secondi (~130 parole) presenti una PREVISIONE VISIONARIA ancorata a "
+    "trend scientifici o tecnologici REALI attualmente in sviluppo (IA "
+    "generativa, neuroscienze applicate, informatica quantistica, biotech, "
+    "nuovi materiali, energia, spazio commerciale, interfacce neurali).\n"
+    "REGOLE FERREE:\n"
+    "- Base scientifica reale: parti da un fatto o ricerca in corso oggi.\n"
+    "- Estrapolazione motivata: come potrebbe evolvere nei prossimi 5-15 anni.\n"
+    "- Zero magia o pseudoscienza. Zero distopie gratuite.\n"
+    "- Tono: informato, ottimista ma non ingenuo.\n"
+    "- Chiudi con una domanda aperta all'ascoltatore.\n"
+    "- Italiano parlato, no elenchi, no markdown."
+)
+
+
+# ============================================================================
+# v13.2 · BPM · Analisi automatica sui brani in libreria
+# ============================================================================
+@api_router.post("/admin/bpm/scan")
+async def admin_bpm_scan(payload: dict = None):
+    """Backfill BPM su tutti i brani ready senza `bpm`. Body opzionale:
+    {"limit": 20, "force": false}. Torna il conteggio aggiornato.
+    NB: ogni brano richiede ~1-3s di analisi CPU (librosa). Esegui a lotti."""
+    payload = payload or {}
+    limit = int(payload.get("limit") or 20)
+    force = bool(payload.get("force"))
+    q = {"status": "ready", "audio_url": {"$ne": None}, "deleted_at": None}
+    if not force:
+        q["$or"] = [{"bpm": {"$exists": False}}, {"bpm": None}]
+    tracks = await db.tracks.find(q, {"_id": 0, "id": 1, "audio_url": 1}).limit(limit).to_list(limit)
+    updated = 0
+    for t in tracks:
+        url = t.get("audio_url") or ""
+        try:
+            # url interno tipo /api/suno_audio/track_<id>.mp3 → fetch bytes
+            local_name = url.rsplit("/", 1)[-1]
+            data = None
+            # Prova prima Object Storage
+            try:
+                sub = None
+                if url.startswith("/api/suno_audio/"):
+                    sub = f"suno/{local_name}"
+                elif url.startswith("/api/community_audio/"):
+                    sub = f"community/{local_name}"
+                elif url.startswith("/api/beds/"):
+                    sub = f"beds/{local_name}"
+                if sub and object_storage.is_enabled():
+                    data = await object_storage.get_bytes(sub)
+            except Exception:
+                data = None
+            # Fallback disco
+            if not data:
+                for base in (SUNO_AUDIO_DIR, COMMUNITY_AUDIO_DIR, BEDS_DIR):
+                    p = base / local_name
+                    if p.exists():
+                        data = p.read_bytes()
+                        break
+            if not data:
+                continue
+            bpm = await bpm_service.detect_bpm_from_bytes(data, ".mp3")
+            if bpm:
+                await db.tracks.update_one(
+                    {"id": t["id"]},
+                    {"$set": {"bpm": bpm, "bpm_source": "server"}},
+                )
+                updated += 1
+        except Exception as e:
+            logger.warning(f"[bpm] scan skip {t.get('id')}: {e}")
+    return {"scanned": len(tracks), "updated": updated}
+
+
+@api_router.post("/admin/pillole/genera")
+async def admin_generate_pill(payload: dict):
+    """Genera uno script pronto per il TTS di una Pillola dal Passato/Futuro.
+    Body: {kind: 'past'|'future', hint?: str}. Ritorna {kind, script, dj}."""
+    kind = (payload.get("kind") or "").strip().lower()
+    hint = (payload.get("hint") or "").strip()[:400]
+    if kind not in ("past", "future"):
+        raise HTTPException(400, "kind deve essere 'past' o 'future'")
+    if kind == "past":
+        system = _PILL_PAST_SYSTEM
+        user = hint or "Scegli un fatto storico interessante e poco conosciuto legato alla radio, musica popolare o tecnologia consumer del '900 o primi anni 2000."
+        dj = "Leo"
+    else:
+        system = _PILL_FUTURE_SYSTEM
+        user = hint or "Scegli un trend scientifico o tecnologico attualmente in sviluppo e proietta la sua evoluzione nei prossimi 5-15 anni."
+        dj = "Aria"
+    try:
+        script = await llm_generate("anthropic", "claude-sonnet-4-5-20250929", system, user)
+    except Exception as e:
+        logger.warning(f"[pill:{kind}] LLM fail: {e}")
+        raise HTTPException(502, f"Generazione fallita: {e}")
+    return {"kind": kind, "dj": dj, "script": (script or "").strip()}
+
 
 
 @api_router.patch("/admin/tracks/{track_id}/rotation")

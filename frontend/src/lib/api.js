@@ -80,6 +80,7 @@ export const endpoints = {
   communityWall: () => api.get("/community/wall").then(r => r.data),
   communityTrackPlay: (id) => api.post(`/community/tracks/${id}/play`).then(r => r.data),
   trackNightJingle: (id, isNight) => api.patch(`/tracks/${id}/night-jingle`, { is_night_jingle: !!isNight }).then(r => r.data),
+  trackDaypart: (id, day, night) => api.patch(`/admin/tracks/${id}/daypart`, { day: !!day, night: !!night }).then(r => r.data),
   communityNight: (id, isNight) => api.patch(`/admin/community/${id}/night`, { is_night: !!isNight }).then(r => r.data),
   killSwitch: (enabled, stopAfterCurrent = false) => api.post("/admin/automation/kill-switch", { enabled: !!enabled, stop_after_current: !!stopAfterCurrent }).then(r => r.data),
 };
