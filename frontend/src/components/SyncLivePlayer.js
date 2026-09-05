@@ -39,6 +39,26 @@ export default function SyncLivePlayer() {
     setStatus("loading");
     const hlsUrl = `${process.env.REACT_APP_BACKEND_URL}/api/stream/live.m3u8`;
     const audio = audioRef.current;
+    // Fallback MP3 diretto (ticket 239289): se HLS non parte (browser senza
+    // MSE per MP3 o HLS "nativo" che non decodifica davvero), aggancio la
+    // traccia corrente via /api/stream/now con l'offset del clock del server:
+    // stesso frame per tutti gli ascoltatori, formato che ogni browser sa leggere.
+    const attachDirect = async () => {
+      const r = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/stream/now`);
+      const d = await r.json();
+      const cur = d?.current;
+      if (!cur?.audio_url) throw new Error("Nessuna traccia in onda");
+      if (hlsRef.current) { try { hlsRef.current.destroy(); } catch {} hlsRef.current = null; }
+      audio.src = `${process.env.REACT_APP_BACKEND_URL}${cur.audio_url}`;
+      audio.load();
+      await new Promise((resolve, reject) => {
+        audio.addEventListener("loadedmetadata", resolve, { once: true });
+        audio.addEventListener("error", () => reject(new Error("Errore caricamento audio")), { once: true });
+      });
+      try { audio.currentTime = cur.offset_sec || 0; } catch {}
+      audio.addEventListener("ended", () => { attachDirect().catch(() => {}); }, { once: true });
+      await audio.play();
+    };
     try {
       // Cleanup precedente
       if (hlsRef.current) { try { hlsRef.current.destroy(); } catch {} hlsRef.current = null; }
@@ -74,8 +94,16 @@ export default function SyncLivePlayer() {
       }
       throw new Error("HLS non supportato da questo browser");
     } catch (e) {
-      setStatus("error");
-      toast.error("Errore avvio Sync: " + (e?.message || e));
+      // Primo tentativo fallito (es. "no supported source"): aggancio diretto
+      try {
+        await attachDirect();
+        setStatus("playing");
+        toast.success("Sync Live ON — aggancio diretto");
+        return;
+      } catch (_e2) {
+        setStatus("error");
+        toast.error("Errore avvio Sync: " + (e?.message || e));
+      }
     }
   };
 
