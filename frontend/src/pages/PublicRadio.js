@@ -781,10 +781,10 @@ export default function PublicRadio() {
 
       </section>
 
-      {/* ================ TEAM STRIP — barretta 6 avatar orizzontali ================ */}
-      <section className="max-w-7xl mx-auto px-4 py-1 relative z-10" data-testid="rai-team-strip">
+      {/* ================ TEAM STRIP — respiro maggiore (v13.4) ================ */}
+      <section className="max-w-7xl mx-auto px-4 pt-4 pb-3 relative z-10" data-testid="rai-team-strip">
         <div
-          className="flex items-center gap-3 rounded-xl px-3 py-2 overflow-x-auto"
+          className="flex items-center gap-3 rounded-xl px-4 py-3 overflow-x-auto"
           style={{
             background: "linear-gradient(180deg, rgba(4,10,22,0.35) 0%, rgba(2,6,15,0.55) 100%)",
             backdropFilter: "blur(14px) saturate(1.2)",
@@ -889,8 +889,8 @@ export default function PublicRadio() {
       </section>
 
       {/* ================ R-A.I. TEAM — 3 SPEAKER + 3 DJ CLUB, compatto orizzontale ================ */}
-      {/* ================ RADIOSCOPO — 12 previsioni digitali neon (v13.2) ================ */}
-      <section className="max-w-7xl mx-auto px-6 py-2 relative z-10" data-testid="radioscope-section">
+      {/* ================ LE STELLE DI NEURONI — oroscopo tech compatto (v13.4) ================ */}
+      <section className="max-w-3xl mx-auto px-6 pt-1 pb-2 relative z-10" data-testid="radioscope-section">
         <RadioscopoWidget />
       </section>
 

@@ -4779,6 +4779,38 @@ async def get_radioscope_sign(sign_key: str):
     raise HTTPException(500, "segno mancante")
 
 
+@api_router.post("/admin/radioscope/regenerate")
+async def admin_regenerate_radioscope(payload: dict = None):
+    """Cancella la cache del giorno corrente e rigenera tutti i 12 segni.
+    Body opzionale: {"sign": "<key>"} per rigenerare un solo segno.
+    Costo: ~12 chiamate Gemini Flash (o 1 se sign specificato). Solo admin."""
+    payload = payload or {}
+    today_iso = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    sign = (payload.get("sign") or "").lower().strip() or None
+    if sign and sign not in _ZODIAC_KEYS:
+        raise HTTPException(400, "sign non valido")
+    if sign:
+        # rigenera solo un segno
+        name_it = dict(_ZODIAC_IT)[sign]
+        text = await _generate_radioscope_for_sign(sign, name_it)
+        cached = await db.radioscope_cache.find_one({"_id": today_iso}) or {"_id": today_iso, "signs": []}
+        signs = [s for s in (cached.get("signs") or []) if s.get("key") != sign]
+        signs.append({"key": sign, "name": name_it, "text": text})
+        # riordina per canonico
+        order = [k for k, _ in _ZODIAC_IT]
+        signs.sort(key=lambda s: order.index(s["key"]) if s["key"] in order else 99)
+        await db.radioscope_cache.update_one(
+            {"_id": today_iso},
+            {"$set": {"signs": signs, "regenerated_at": now_iso()}},
+            upsert=True,
+        )
+        return {"date": today_iso, "regenerated": [sign]}
+    # rigenera tutto
+    await db.radioscope_cache.delete_one({"_id": today_iso})
+    r = await get_radioscope()
+    return {"date": r["date"], "regenerated": [s["key"] for s in r["signs"]]}
+
+
 # ============================================================================
 # v13.2 · PILLOLE DAL PASSATO (Leo · fatti storici REALI)
 # v13.2 · PILLOLE DAL FUTURO (Aria · trend scientifici)

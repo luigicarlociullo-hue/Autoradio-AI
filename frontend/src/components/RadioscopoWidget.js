@@ -51,7 +51,7 @@ export default function RadioscopoWidget() {
 
   return (
     <section
-      className="rounded-xl p-4 border relative overflow-hidden"
+      className="rounded-xl p-3 border relative overflow-hidden"
       data-testid="radioscope-widget"
       style={{
         background: "linear-gradient(160deg, rgba(30,0,60,0.85), rgba(0,10,30,0.9))",
@@ -66,22 +66,27 @@ export default function RadioscopoWidget() {
           background: "radial-gradient(circle at 20% 10%, rgba(255,0,180,0.15), transparent 40%), radial-gradient(circle at 80% 90%, rgba(0,229,255,0.12), transparent 45%)",
         }}
       />
-      <div className="relative flex items-center justify-between mb-3">
-        <div
-          className="font-display font-black text-xl tracking-wider"
-          style={{
-            color: "#E5B8FF",
-            textShadow: "0 0 10px rgba(200,80,255,0.7)",
-          }}
-        >
-          IL RADIOSCOPO
+      <div className="relative flex items-center justify-between mb-2">
+        <div>
+          <div
+            className="font-display font-black text-lg tracking-wider leading-none"
+            style={{
+              color: "#E5B8FF",
+              textShadow: "0 0 10px rgba(200,80,255,0.7)",
+            }}
+          >
+            LE STELLE DI NEURONI
+          </div>
+          <div className="text-[9.5px] font-mono uppercase tracking-widest text-purple-300/70 mt-0.5">
+            L'oroscopo tech di R-A.I.
+          </div>
         </div>
-        <div className="text-[10px] font-mono uppercase tracking-widest text-purple-300/60">
-          Frequenze cosmiche · {new Date().toLocaleDateString("it-IT")}
+        <div className="text-[9px] font-mono uppercase tracking-widest text-purple-300/50 text-right leading-tight">
+          Frequenze cosmiche<br />{new Date().toLocaleDateString("it-IT")}
         </div>
       </div>
 
-      <div className="relative grid grid-cols-6 md:grid-cols-12 gap-1.5 mb-3">
+      <div className="relative grid grid-cols-6 gap-1 mb-2">
         {signs.map((s) => {
           const active = selected?.key === s.key;
           return (
@@ -90,25 +95,25 @@ export default function RadioscopoWidget() {
               onClick={() => { setSelected(s); setExpanded(true); }}
               data-testid={`radioscope-sign-${s.key}`}
               title={s.name}
-              className="aspect-square rounded-lg flex flex-col items-center justify-center transition-all hover:scale-110"
+              className="rounded flex flex-col items-center justify-center transition-all hover:scale-110 h-14"
               style={{
                 background: active
                   ? "linear-gradient(135deg, rgba(255,20,220,0.35), rgba(0,229,255,0.25))"
                   : "rgba(255,255,255,0.03)",
                 border: `1px solid ${active ? "rgba(255,20,220,0.8)" : "rgba(200,80,255,0.2)"}`,
-                boxShadow: active ? "0 0 14px rgba(255,20,220,0.5)" : "none",
+                boxShadow: active ? "0 0 10px rgba(255,20,220,0.5)" : "none",
               }}
             >
               <span
-                className="text-lg"
+                className="text-base leading-none"
                 style={{
                   color: active ? "#fff" : "#D8B4FF",
-                  textShadow: active ? "0 0 8px rgba(255,255,255,0.9)" : "0 0 4px rgba(200,80,255,0.5)",
+                  textShadow: active ? "0 0 6px rgba(255,255,255,0.9)" : "0 0 3px rgba(200,80,255,0.5)",
                 }}
               >
                 {ZODIAC_ICONS[s.key] || "★"}
               </span>
-              <span className="text-[8px] font-mono uppercase mt-0.5 text-purple-200/60">
+              <span className="text-[8px] font-mono uppercase mt-0.5 text-purple-200/70 leading-none tracking-tight">
                 {s.name.slice(0, 4)}
               </span>
             </button>

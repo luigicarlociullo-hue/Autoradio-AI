@@ -5,7 +5,14 @@
 > zero rigenerazioni ridondanti. Riusare sempre asset esistenti prima di generare.
 > Le domande all'utente sono ammesse SOLO se bloccanti. Applicare a ogni sessione futura.
 
-## v13.3 · MASTER BROADCASTER · HLS + Dual-Brain + Avatar (2026-02-05)
+## v13.4 · LE STELLE DI NEURONI · Perfezione Editoriale (2026-02-05)
+- **Rinominato ovunque** `RADIOSCOPO` → **LE STELLE DI NEURONI** con sottotitolo "L'oroscopo tech di R-A.I." (Home widget + Regia panel). API path `/api/radioscope` resta invariato per compatibilità interna.
+- **Widget compatto** in Home: max-w-3xl (era 7xl), altezza singolo segno h-14 (era aspect-square ~180px su desktop wide), 2 righe × 6 segni, celle piccole con icona base + label 4 caratteri. Sezione totale ~150px.
+- **Respiro TEAM**: `pt-4 pb-3` (era `py-1`), container interno `px-4 py-3` (era `px-3 py-2`). Ora la strip staff ha aria attorno e non appare schiacciata contro il visualizzatore.
+- **Regia "Stelle"**: nuovo pannello `<StellePanel/>` in Dashboard con lista 12 segni + testo attuale + bottone `↻` per singolo segno e "Rigenera tutto". Endpoint `POST /api/admin/radioscope/regenerate {sign?}`.
+- **Streaming scalabile**: confermata coesistenza HLS interno (default) + `station.external_stream_url` per Icecast futuro. Nessuna migrazione richiesta il giorno che si sposta su VPS.
+
+
 - **HLS Broadcast in-pod**: `GET /api/stream/live.m3u8` genera playlist `#EXTM3U` con i prossimi 5 brani (rispetta day/night filter). Universale (VLC, Safari, hls.js). Latenza ≈ durata brano.
 - **External Streaming URL** (Icecast): field `station.external_stream_url`. Se popolato, `/stream/live.m3u8` risponde 302 → URL esterno. Endpoint `GET/PATCH /api/admin/external-stream`. UI `<BroadcasterPanel/>`.
 - **DJ Dual-Brain**: `POST /api/admin/dual-brain/generate {subject}` genera Leo (difende) + Max (attacca) via Claude Sonnet 4.5, TTS ElevenLabs male-1/male-2 in parallelo. `POST /api/admin/dual-brain/inject` mette in priority_queue. Gate FM_MODE ON.
