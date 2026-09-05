@@ -4955,44 +4955,67 @@ def _build_hls_playlist(tracks: list, base_url: str) -> str:
 
 @api_router.get("/stream/live.m3u8")
 async def hls_live_playlist(request: Request):
-    """HLS Live Playlist — endpoint universale per l'ascolto sincrono.
-    Con `external_stream_url` configurato → 302 verso quell'URL Icecast.
-    Altrimenti restituisce un `.m3u8` con i prossimi ~5 brani (day/night filtered)."""
+    """HLS Live Playlist — v13.6 TRUE BROADCASTER.
+    • Con `external_stream_url` configurato → 302 verso Icecast/HLS esterno.
+    • Altrimenti legge `station_clock` e serve una playlist HLS EVENT con:
+      - Traccia corrente + prossimi 4 dal clock server-side
+      - `#EXT-X-PROGRAM-DATE-TIME` per ogni segmento
+      - `#EXT-X-START:TIME-OFFSET=<offset>` così ogni client si posiziona
+        automaticamente all'istante in cui il server è già arrivato.
+    Risultato: due client che aprono il .m3u8 nello stesso momento sentono
+    lo STESSO frame. Su Tier 0 con pod addormentato al primo request si
+    "risana" via `_clock_advance()` on-demand."""
     st = await db.station.find_one({"_id": "state"}, {"external_stream_url": 1}) or {}
     ext_url = (st.get("external_stream_url") or "").strip()
     if ext_url:
         return Response(status_code=302, headers={"Location": ext_url})
+
+    clock = await _clock_advance()   # self-heal
+    offset, cur = _clock_now_offset(clock)
     proto = request.headers.get("x-forwarded-proto", "https")
     host = request.headers.get("x-forwarded-host") or request.headers.get("host") or ""
     base_url = f"{proto}://{host}"
+
+    if not cur or not cur.get("audio_url"):
+        # Nessun brano disponibile: playlist minimale vuota
+        empty = "\n".join([
+            "#EXTM3U", "#EXT-X-VERSION:3", "#EXT-X-TARGETDURATION:10",
+            "#EXT-X-MEDIA-SEQUENCE:0", "#EXT-X-PLAYLIST-TYPE:EVENT",
+            "#EXT-X-ENDLIST", "",
+        ])
+        return Response(content=empty, media_type="application/vnd.apple.mpegurl",
+                        headers={"Cache-Control": "no-store", "Access-Control-Allow-Origin": "*"})
+
+    entries = [cur] + [t for t in (clock.get("queue") or [])[:4]]
+    lines = [
+        "#EXTM3U",
+        "#EXT-X-VERSION:3",
+        "#EXT-X-TARGETDURATION:300",
+        "#EXT-X-MEDIA-SEQUENCE:0",
+        "#EXT-X-PLAYLIST-TYPE:EVENT",
+        f"#EXT-X-START:TIME-OFFSET={offset:.3f},PRECISE=YES",
+    ]
+    # Iniziale program-date-time = quando il current è iniziato per davvero
+    running_dt = None
     try:
-        from zoneinfo import ZoneInfo
-        now_local = datetime.now(ZoneInfo("Europe/Rome"))
+        running_dt = datetime.fromisoformat((cur.get("started_at") or "").replace("Z", "+00:00"))
     except Exception:
-        now_local = datetime.now(timezone.utc)
-    is_night = (now_local.hour >= 22 or now_local.hour < 4)
-    dp_filter = (
-        {"$or": [{"daypart_night": {"$ne": False}}, {"daypart_night": {"$exists": False}}]}
-        if is_night else
-        {"$or": [{"daypart_day": {"$ne": False}}, {"daypart_day": {"$exists": False}}]}
-    )
-    q = {
-        "source": {"$in": ["suno", "admin_upload"]},
-        "status": "ready", "audio_url": {"$ne": None},
-        "on_air": {"$ne": False}, "deleted_at": None,
-        "$and": [
-            {"$or": [{"is_anthem": {"$exists": False}}, {"is_anthem": False}]},
-            {"$or": [{"is_jingle": {"$exists": False}}, {"is_jingle": False}]},
-            dp_filter,
-        ],
-    }
-    tracks = await db.tracks.find(q, {"_id": 0, "title": 1, "artist": 1, "audio_url": 1, "duration_sec": 1}).sort("last_played_at", 1).limit(5).to_list(5)
-    if not tracks:
-        tracks = await db.tracks.find(
-            {"is_seed": True, "status": "ready", "audio_url": {"$ne": None}},
-            {"_id": 0, "title": 1, "artist": 1, "audio_url": 1, "duration_sec": 1},
-        ).limit(5).to_list(5)
-    playlist = _build_hls_playlist(tracks or [], base_url)
+        running_dt = datetime.now(timezone.utc)
+
+    for i, t in enumerate(entries):
+        dur = float(t.get("duration_sec") or 180)
+        title = (t.get("title") or "R-A.I.").replace(",", " ")
+        artist = (t.get("artist") or "R-A.I.").replace(",", " ")
+        url = t.get("audio_url") or ""
+        if url.startswith("/"):
+            url = f"{base_url.rstrip('/')}{url}"
+        lines.append(f"#EXT-X-PROGRAM-DATE-TIME:{running_dt.isoformat().replace('+00:00','Z')}")
+        lines.append(f"#EXTINF:{dur:.3f},{artist} - {title}")
+        lines.append(url)
+        running_dt = running_dt + timedelta(seconds=dur)
+        _ = i
+    lines.append("")
+    playlist = "\n".join(lines)
     return Response(content=playlist, media_type="application/vnd.apple.mpegurl",
                     headers={"Cache-Control": "no-store", "Access-Control-Allow-Origin": "*"})
 
@@ -5160,6 +5183,188 @@ async def chat_generate_avatar(payload: dict):
     }
     await db.listener_profiles.update_one({"_id": browser_id}, {"$set": profile}, upsert=True)
     return {"browser_id": browser_id, **profile, "cached": False}
+
+
+
+
+# ============================================================================
+# v13.6 · TRUE BROADCASTER — Orologio Unico Server-Side
+# ============================================================================
+# Un unico registro `station.clock` in Mongo dice cosa suona ORA per tutti.
+# L'advance-loop lo aggiorna quando la traccia corrente scade. Il player
+# HLS e l'endpoint /api/stream/now lo leggono per sincronizzare i client.
+# Su Tier 0 il pod dorme quando non ci sono richieste e il loop si ferma:
+# alla riattivazione l'advance-loop "salta" al presente saltando le tracce
+# che sarebbero già finite, ripartendo dalla successiva coerente.
+
+_CLOCK_QUEUE_LOOKAHEAD = 8   # numero di brani in coda dopo il current
+
+
+async def _clock_pick_track() -> Optional[dict]:
+    """Pesca il prossimo brano rispettando day/night. Non decrementa altro."""
+    try:
+        from zoneinfo import ZoneInfo
+        now_local = datetime.now(ZoneInfo("Europe/Rome"))
+    except Exception:
+        now_local = datetime.now(timezone.utc)
+    is_night = (now_local.hour >= 22 or now_local.hour < 4)
+    dp = ({"$or": [{"daypart_night": {"$ne": False}}, {"daypart_night": {"$exists": False}}]}
+          if is_night else
+          {"$or": [{"daypart_day": {"$ne": False}}, {"daypart_day": {"$exists": False}}]})
+    q = {
+        "source": {"$in": ["suno", "admin_upload"]},
+        "status": "ready", "audio_url": {"$ne": None},
+        "on_air": {"$ne": False}, "deleted_at": None,
+        "$and": [
+            {"$or": [{"is_anthem": {"$exists": False}}, {"is_anthem": False}]},
+            {"$or": [{"is_jingle": {"$exists": False}}, {"is_jingle": False}]},
+            dp,
+        ],
+    }
+    # Pesca il meno recente per rotazione FIFO — poi aggiorniamo last_played_at
+    tr = await db.tracks.find_one(q, {"_id": 0, "id": 1, "title": 1, "artist": 1,
+                                       "audio_url": 1, "duration_sec": 1, "bpm": 1},
+                                   sort=[("last_played_at", 1)])
+    if not tr:
+        # Fallback: qualsiasi track ready
+        tr = await db.tracks.find_one(
+            {"status": "ready", "audio_url": {"$ne": None}, "on_air": {"$ne": False}, "deleted_at": None},
+            {"_id": 0, "id": 1, "title": 1, "artist": 1, "audio_url": 1, "duration_sec": 1, "bpm": 1},
+            sort=[("last_played_at", 1)],
+        )
+    if not tr:
+        return None
+    tr["duration_sec"] = int(tr.get("duration_sec") or 180)
+    return tr
+
+
+async def _clock_advance(force: bool = False) -> dict:
+    """Fa avanzare il clock se il brano corrente è scaduto (o se `force`).
+    Ripopola `queue` fino a `_CLOCK_QUEUE_LOOKAHEAD`. Restituisce il clock aggiornato.
+    NB: safe in caso di race — l'update Mongo è atomico sul singolo doc."""
+    now = datetime.now(timezone.utc)
+    clock = await db.station_clock.find_one({"_id": "clock"})
+    changed = False
+    if not clock:
+        clock = {"_id": "clock", "current": None, "queue": [], "updated_at": now.isoformat()}
+        changed = True
+    # Se non c'è current o è scaduto → promuovi dalla coda o pesca dal catalogo
+    def _is_expired(cur):
+        if not cur or not cur.get("started_at"):
+            return True
+        try:
+            started = datetime.fromisoformat(cur["started_at"].replace("Z", "+00:00"))
+        except Exception:
+            return True
+        return (now - started).total_seconds() >= float(cur.get("duration_sec") or 180)
+
+    while force or _is_expired(clock.get("current")):
+        force = False
+        # Promuovi head della queue → current
+        q = clock.get("queue") or []
+        promo = q.pop(0) if q else None
+        if not promo:
+            promo = await _clock_pick_track()
+        if not promo:
+            break
+        promo = dict(promo)
+        promo["started_at"] = now.isoformat()
+        clock["current"] = promo
+        clock["queue"] = q
+        changed = True
+        # Segna last_played_at sulla track (rotazione FIFO)
+        try:
+            await db.tracks.update_one({"id": promo["id"]}, {"$set": {"last_played_at": now.isoformat()}})
+        except Exception:
+            pass
+        # Se il current sarebbe ancora scaduto (advance grande dopo sleep pod),
+        # il loop while continuerà a girare a costo trascurabile.
+
+    # Riempi la queue fino al lookahead
+    while len(clock.get("queue") or []) < _CLOCK_QUEUE_LOOKAHEAD:
+        picked = await _clock_pick_track()
+        if not picked:
+            break
+        # Evita duplicati back-to-back col current e ultimi 2 in coda
+        recent_ids = {(clock.get("current") or {}).get("id")}
+        for t in (clock.get("queue") or [])[-2:]:
+            recent_ids.add(t.get("id"))
+        if picked["id"] in recent_ids:
+            # ne pesca un altro (fino a 3 tentativi)
+            found_alt = False
+            for _ in range(3):
+                alt = await _clock_pick_track()
+                if alt and alt["id"] not in recent_ids:
+                    picked = alt; found_alt = True; break
+            if not found_alt:
+                break
+        clock.setdefault("queue", []).append(picked)
+        changed = True
+
+    if changed:
+        clock["updated_at"] = now.isoformat()
+        await db.station_clock.update_one({"_id": "clock"}, {"$set": clock}, upsert=True)
+    return clock
+
+
+async def _clock_ticker():
+    """Loop di manutenzione del clock — avanza appena scade la traccia.
+    Su Tier 0 questo loop muore quando il pod dorme; alla prima richiesta il
+    clock viene "risanato" chiamando `_clock_advance()` on-demand."""
+    while True:
+        try:
+            await asyncio.sleep(2)
+            await _clock_advance()
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.warning(f"[clock] tick error: {e}")
+
+
+def _clock_now_offset(clock: dict) -> tuple[float, dict]:
+    """Ritorna (secondi_dall_inizio, current)."""
+    cur = (clock or {}).get("current") or {}
+    if not cur.get("started_at"):
+        return 0.0, cur
+    try:
+        started = datetime.fromisoformat(cur["started_at"].replace("Z", "+00:00"))
+    except Exception:
+        return 0.0, cur
+    return max(0.0, (datetime.now(timezone.utc) - started).total_seconds()), cur
+
+
+@api_router.get("/stream/now")
+async def stream_now():
+    """Verità unica su cosa sta suonando ORA. Il player Sync lo legge per
+    posizionarsi allo stesso istante degli altri ascoltatori."""
+    clock = await _clock_advance()   # self-heal se il pod ha dormito
+    offset, cur = _clock_now_offset(clock)
+    return {
+        "server_time": datetime.now(timezone.utc).isoformat(),
+        "current": {
+            "id": cur.get("id"),
+            "title": cur.get("title"),
+            "artist": cur.get("artist"),
+            "audio_url": cur.get("audio_url"),
+            "duration_sec": cur.get("duration_sec"),
+            "started_at": cur.get("started_at"),
+            "offset_sec": offset,
+            "remaining_sec": max(0.0, float(cur.get("duration_sec") or 180) - offset),
+        } if cur else None,
+        "next": [{
+            "id": t.get("id"), "title": t.get("title"), "artist": t.get("artist"),
+            "audio_url": t.get("audio_url"), "duration_sec": t.get("duration_sec"),
+        } for t in (clock.get("queue") or [])[:5]],
+    }
+
+
+@api_router.post("/admin/stream/skip")
+async def admin_stream_skip():
+    """Salta il brano corrente forzando l'advance. Solo admin."""
+    clock = await _clock_advance(force=True)
+    _, cur = _clock_now_offset(clock)
+    return {"ok": True, "current_id": (cur or {}).get("id")}
+
 
 
 # ============================================================================
@@ -5470,6 +5675,12 @@ async def on_startup():
     # sospende se FM_MODE è OFF, quindi zero costi in economy.
     asyncio.create_task(_pillole_scheduler())
     logger.info("[startup] Pillole auto-scheduler running (gated by FM_MODE)")
+    # v13.6 · TRUE BROADCASTER — clock ticker (avanza il brano corrente).
+    # Su Tier 0 il pod dorme senza traffico: alla riattivazione il primo GET
+    # su /api/stream/now o /api/stream/live.m3u8 richiama _clock_advance() e
+    # ripristina lo stato coerente. Zero costi API ricorrenti.
+    asyncio.create_task(_clock_ticker())
+    logger.info("[startup] Station clock ticker running (in-pod, tier0-tolerant)")
 
 
 async def _suno_integrity_check():

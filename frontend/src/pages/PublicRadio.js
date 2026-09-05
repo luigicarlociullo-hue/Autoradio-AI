@@ -19,6 +19,7 @@ import Cue from "@/components/Cue";
 import BigCue from "@/components/BigCue";
 import LiveBrainTicker from "@/components/LiveBrainTicker";
 import RadioscopoWidget from "@/components/RadioscopoWidget";
+import SyncLivePlayer from "@/components/SyncLivePlayer";
 import ChatMini from "@/components/ChatMini";
 import CueThinking from "@/components/CueThinking";
 import ServicesDock from "@/components/ServicesDock";
@@ -781,6 +782,11 @@ export default function PublicRadio() {
         )}
 
       </section>
+
+      {/* ================ SYNC LIVE PLAYER — v13.6 TRUE BROADCASTER ================ */}
+      <div className="max-w-7xl mx-auto px-4 pt-1 pb-0 relative z-10">
+        <SyncLivePlayer />
+      </div>
 
       {/* ================ LE STELLE DI NEURONI — barretta spie tra hero e team (v13.5) ================ */}
       <div data-testid="radioscope-section" className="relative z-10">
