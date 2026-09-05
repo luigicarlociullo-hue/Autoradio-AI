@@ -634,7 +634,7 @@ export default function PublicRadio() {
       </header>
 
       {/* ================ HERO — Cruscotto 3-col (Above the Fold) ================ */}
-      <section className="max-w-7xl mx-auto px-4 pt-2 pb-2 relative z-10">
+      <section className="max-w-7xl mx-auto px-4 pt-2 pb-0 relative z-10">
         <div className="grid lg:grid-cols-12 gap-3 items-start">
           {/* Colonna SX (5/12): LEDWALL Visualizzatore.
               order-2 su mobile (ticket 239289): sotto lg questo blocco
@@ -781,8 +781,13 @@ export default function PublicRadio() {
 
       </section>
 
-      {/* ================ TEAM STRIP — respiro maggiore (v13.4) ================ */}
-      <section className="max-w-7xl mx-auto px-4 pt-4 pb-3 relative z-10" data-testid="rai-team-strip">
+      {/* ================ LE STELLE DI NEURONI — barretta spie tra hero e team (v13.5) ================ */}
+      <div data-testid="radioscope-section" className="relative z-10">
+        <RadioscopoWidget />
+      </div>
+
+      {/* ================ TEAM STRIP — attaccato al mixer (v13.5) ================ */}
+      <section className="max-w-7xl mx-auto px-4 pt-1 pb-2 relative z-10" data-testid="rai-team-strip">
         <div
           className="flex items-center gap-3 rounded-xl px-4 py-3 overflow-x-auto"
           style={{
@@ -889,11 +894,6 @@ export default function PublicRadio() {
       </section>
 
       {/* ================ R-A.I. TEAM — 3 SPEAKER + 3 DJ CLUB, compatto orizzontale ================ */}
-      {/* ================ LE STELLE DI NEURONI — oroscopo tech compatto (v13.4) ================ */}
-      <section className="max-w-3xl mx-auto px-6 pt-1 pb-2 relative z-10" data-testid="radioscope-section">
-        <RadioscopoWidget />
-      </section>
-
       {/* ================ SPONSOR CTA — DIVENTA PARTNER (sponsor-grade) ================ */}
       <section className="max-w-7xl mx-auto px-6 py-1 relative z-10" data-testid="sponsor-cta-section">
         <Link

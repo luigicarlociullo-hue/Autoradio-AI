@@ -8,15 +8,15 @@ const ZODIAC_ICONS = {
 };
 
 /**
- * RadioscopoWidget — v13.2
- * Griglia 12 segni con hover neon; click apre la previsione del giorno.
- * Cache backend giornaliera → costo ~0 dopo la prima apertura.
+ * StelleStripBar — v13.5
+ * "Barretta di spie luminose" incastrata tra Visualizzatore e Team strip.
+ * Layout: label sinistra · 12 icone in un'unica riga stretta · data destra.
+ * Click su un segno → apre una riga sottile sotto con la previsione del giorno.
  */
 export default function RadioscopoWidget() {
   const [signs, setSigns] = useState([]);
   const [selected, setSelected] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [expanded, setExpanded] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -25,129 +25,113 @@ export default function RadioscopoWidget() {
         const r = await api.get("/radioscope");
         if (!alive) return;
         setSigns(r.data.signs || []);
-      } catch (e) {
-      } finally {
-        if (alive) setLoading(false);
-      }
+      } catch (e) {}
+      finally { if (alive) setLoading(false); }
     })();
     return () => { alive = false; };
   }, []);
 
-  if (loading || signs.length === 0) {
-    return (
-      <div
-        className="rounded-xl p-4 border font-mono text-[11px]"
-        style={{
-          background: "linear-gradient(180deg, rgba(20,0,40,0.7), rgba(0,10,25,0.85))",
-          borderColor: "rgba(200,80,255,0.28)",
-          color: "#B8A6FF",
-        }}
-        data-testid="radioscope-loading"
-      >
-        Sincronizzazione vibrazioni neurali...
-      </div>
-    );
-  }
-
   return (
-    <section
-      className="rounded-xl p-3 border relative overflow-hidden"
-      data-testid="radioscope-widget"
+    <div
+      className="w-full"
+      data-testid="stelle-strip-bar"
       style={{
-        background: "linear-gradient(160deg, rgba(30,0,60,0.85), rgba(0,10,30,0.9))",
-        borderColor: "rgba(200,80,255,0.35)",
-        boxShadow: "0 0 24px rgba(160,0,220,0.25), inset 0 0 30px rgba(80,0,120,0.35)",
+        // Nessun margine nero: si "incastra" alle sezioni sopra/sotto.
+        background: "linear-gradient(90deg, rgba(30,0,60,0.55), rgba(0,10,25,0.7) 40%, rgba(0,10,25,0.7) 60%, rgba(30,0,60,0.55))",
+        borderTop: "1px solid rgba(200,80,255,0.28)",
+        borderBottom: "1px solid rgba(200,80,255,0.28)",
+        boxShadow: "inset 0 0 10px rgba(160,0,220,0.15)",
       }}
     >
-      <div
-        aria-hidden
-        className="absolute inset-0 pointer-events-none opacity-30"
-        style={{
-          background: "radial-gradient(circle at 20% 10%, rgba(255,0,180,0.15), transparent 40%), radial-gradient(circle at 80% 90%, rgba(0,229,255,0.12), transparent 45%)",
-        }}
-      />
-      <div className="relative flex items-center justify-between mb-2">
-        <div>
+      <div className="max-w-7xl mx-auto px-3 py-1.5 flex items-center gap-3">
+        {/* Label sinistra */}
+        <div className="shrink-0 min-w-[112px]">
           <div
-            className="font-display font-black text-lg tracking-wider leading-none"
-            style={{
-              color: "#E5B8FF",
-              textShadow: "0 0 10px rgba(200,80,255,0.7)",
-            }}
+            className="font-display font-black text-[11px] tracking-wider leading-none"
+            style={{ color: "#E5B8FF", textShadow: "0 0 6px rgba(200,80,255,0.6)" }}
           >
             LE STELLE DI NEURONI
           </div>
-          <div className="text-[9.5px] font-mono uppercase tracking-widest text-purple-300/70 mt-0.5">
-            L'oroscopo tech di R-A.I.
+          <div className="text-[8px] font-mono uppercase tracking-widest text-purple-300/60 leading-none mt-0.5">
+            Oroscopo tech · R-A.I.
           </div>
         </div>
-        <div className="text-[9px] font-mono uppercase tracking-widest text-purple-300/50 text-right leading-tight">
-          Frequenze cosmiche<br />{new Date().toLocaleDateString("it-IT")}
-        </div>
-      </div>
 
-      <div className="relative grid grid-cols-6 gap-1 mb-2">
-        {signs.map((s) => {
-          const active = selected?.key === s.key;
-          return (
-            <button
-              key={s.key}
-              onClick={() => { setSelected(s); setExpanded(true); }}
-              data-testid={`radioscope-sign-${s.key}`}
-              title={s.name}
-              className="rounded flex flex-col items-center justify-center transition-all hover:scale-110 h-14"
-              style={{
-                background: active
-                  ? "linear-gradient(135deg, rgba(255,20,220,0.35), rgba(0,229,255,0.25))"
-                  : "rgba(255,255,255,0.03)",
-                border: `1px solid ${active ? "rgba(255,20,220,0.8)" : "rgba(200,80,255,0.2)"}`,
-                boxShadow: active ? "0 0 10px rgba(255,20,220,0.5)" : "none",
-              }}
-            >
-              <span
-                className="text-base leading-none"
+        {/* Barra 12 spie */}
+        <div className="flex-1 grid grid-cols-12 gap-0.5">
+          {(loading ? new Array(12).fill(null) : signs).map((s, i) => {
+            const active = s && selected?.key === s.key;
+            const disabled = !s;
+            return (
+              <button
+                key={s?.key || i}
+                onClick={() => s && setSelected(selected?.key === s.key ? null : s)}
+                disabled={disabled}
+                data-testid={s ? `radioscope-sign-${s.key}` : `radioscope-slot-${i}`}
+                title={s?.name || ""}
+                className="h-7 rounded flex flex-col items-center justify-center transition-all hover:scale-110"
                 style={{
-                  color: active ? "#fff" : "#D8B4FF",
-                  textShadow: active ? "0 0 6px rgba(255,255,255,0.9)" : "0 0 3px rgba(200,80,255,0.5)",
+                  background: active
+                    ? "linear-gradient(180deg, rgba(255,20,220,0.5), rgba(0,229,255,0.35))"
+                    : disabled ? "rgba(255,255,255,0.02)" : "rgba(255,255,255,0.04)",
+                  border: `1px solid ${active ? "rgba(255,20,220,0.9)" : "rgba(200,80,255,0.22)"}`,
+                  boxShadow: active ? "0 0 8px rgba(255,20,220,0.7)" : "inset 0 0 4px rgba(160,0,220,0.15)",
                 }}
               >
-                {ZODIAC_ICONS[s.key] || "★"}
-              </span>
-              <span className="text-[8px] font-mono uppercase mt-0.5 text-purple-200/70 leading-none tracking-tight">
-                {s.name.slice(0, 4)}
-              </span>
-            </button>
-          );
-        })}
+                <span
+                  className="text-[12px] leading-none"
+                  style={{
+                    color: active ? "#fff" : "#D8B4FF",
+                    textShadow: active ? "0 0 5px rgba(255,255,255,0.9)" : "0 0 2px rgba(200,80,255,0.5)",
+                  }}
+                >
+                  {s ? ZODIAC_ICONS[s.key] || "★" : "·"}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Data destra */}
+        <div className="shrink-0 text-right text-[9px] font-mono uppercase tracking-widest text-purple-300/60 leading-tight">
+          {new Date().toLocaleDateString("it-IT")}
+          <div className="text-[8px] text-purple-300/40">Frequenze cosmiche</div>
+        </div>
       </div>
 
-      {selected && expanded && (
+      {/* Riga sottile previsione: appare solo su click, dentro la stessa barra */}
+      {selected && (
         <div
-          className="relative rounded-lg p-3 text-sm leading-relaxed"
+          className="max-w-7xl mx-auto px-3 pb-2 pt-1 flex items-center gap-2"
           data-testid="radioscope-prediction"
           style={{
-            background: "rgba(10,0,20,0.85)",
-            border: "1px solid rgba(255,20,220,0.4)",
-            color: "#F0E8FF",
-            boxShadow: "inset 0 0 12px rgba(200,80,255,0.15)",
+            borderTop: "1px dashed rgba(200,80,255,0.2)",
+            background: "rgba(10,0,25,0.7)",
           }}
         >
-          <div
-            className="text-xs font-mono uppercase tracking-widest mb-1"
+          <span
+            className="text-[13px] leading-none"
+            style={{ color: "#FF7ACC", textShadow: "0 0 5px rgba(255,20,220,0.6)" }}
+          >
+            {ZODIAC_ICONS[selected.key]}
+          </span>
+          <span
+            className="text-[9px] font-mono uppercase font-bold shrink-0"
             style={{ color: "#FF7ACC" }}
           >
-            {ZODIAC_ICONS[selected.key]} {selected.name}
-          </div>
-          <p>{selected.text}</p>
+            {selected.name}
+          </span>
+          <span className="text-[11px] text-zinc-200 leading-tight flex-1 truncate md:whitespace-normal md:truncate-none">
+            {selected.text}
+          </span>
           <button
-            onClick={() => setExpanded(false)}
-            className="absolute top-2 right-2 text-purple-300/60 hover:text-white text-xs"
+            onClick={() => setSelected(null)}
+            className="text-purple-300/60 hover:text-white text-[11px] shrink-0"
             data-testid="radioscope-close"
-          >
-            ✕
-          </button>
+            aria-label="Chiudi"
+          >✕</button>
         </div>
       )}
-    </section>
+    </div>
   );
 }
