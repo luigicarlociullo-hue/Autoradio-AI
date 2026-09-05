@@ -141,7 +141,7 @@ export default function LiveBrainTicker({ current }) {
         }}
       >
         {lines.map((ln, i) => (
-          <div key={i} className="truncate" style={{
+          <div key={i} className="break-words" style={{
             color: ln.kind === "hb" ? "#7FD8FF" : "#39FF14",
             textShadow: ln.kind === "hb"
               ? "0 0 4px rgba(0,229,255,0.7)"
