@@ -90,47 +90,76 @@ export default function SyncLivePlayer() {
 
   return (
     <div
-      className="rounded-lg p-2.5 border flex items-center gap-3"
+      className="rounded-xl p-4 border relative overflow-hidden"
       data-testid="sync-live-player"
       style={{
         background: active
-          ? "linear-gradient(90deg, rgba(255,20,147,0.15), rgba(0,229,255,0.1))"
-          : "rgba(0,10,25,0.6)",
-        borderColor: active ? "rgba(255,20,147,0.5)" : "rgba(0,229,255,0.3)",
-        boxShadow: active ? "0 0 14px rgba(255,20,147,0.35)" : "none",
+          ? "linear-gradient(135deg, rgba(255,20,147,0.18), rgba(0,229,255,0.12))"
+          : "linear-gradient(135deg, rgba(0,229,255,0.10), rgba(0,10,25,0.7))",
+        borderColor: active ? "rgba(255,20,147,0.6)" : "rgba(0,229,255,0.45)",
+        boxShadow: active
+          ? "0 0 26px rgba(255,20,147,0.45), inset 0 0 24px rgba(0,229,255,0.15)"
+          : "0 0 18px rgba(0,229,255,0.25), inset 0 0 18px rgba(0,229,255,0.08)",
       }}
     >
       <audio ref={audioRef} preload="none" className="hidden" data-testid="sync-live-audio" />
+      <div className="flex items-center gap-2 mb-2">
+        <Radio className="w-3.5 h-3.5" style={{ color: "#00E5FF" }} />
+        <span className="text-[10px] font-mono uppercase tracking-widest text-cyan-300">
+          {active ? "IN DIRETTA · SINCRONIZZATO" : "BROADCASTER · HLS UNIVERSALE"}
+        </span>
+      </div>
+
       <button
         onClick={active ? stopSync : startSync}
         disabled={status === "loading"}
         data-testid="sync-live-toggle"
-        className="w-10 h-10 rounded-full flex items-center justify-center shrink-0"
+        className="w-full rounded-lg py-3 px-4 flex items-center justify-center gap-3 transition-all hover:scale-[1.02] active:scale-[0.98]"
         style={{
           background: active
-            ? "linear-gradient(135deg, #FF1493, #00E5FF)"
-            : "linear-gradient(135deg, #00E5FF, #0080FF)",
-          boxShadow: active ? "0 0 14px rgba(255,20,147,0.6)" : "0 0 10px rgba(0,229,255,0.4)",
+            ? "linear-gradient(90deg, #FF1493 0%, #FF3EA5 50%, #00E5FF 100%)"
+            : "linear-gradient(90deg, #00E5FF 0%, #00A9FF 50%, #FF1493 100%)",
           color: "#000",
+          fontWeight: 900,
+          letterSpacing: "0.08em",
+          boxShadow: active
+            ? "0 0 22px rgba(255,20,147,0.7), inset 0 -2px 0 rgba(0,0,0,0.15)"
+            : "0 0 18px rgba(0,229,255,0.55), inset 0 -2px 0 rgba(0,0,0,0.15)",
+          opacity: status === "loading" ? 0.7 : 1,
         }}
       >
-        {status === "loading" ? <Loader2 className="w-4 h-4 animate-spin" /> :
-         active ? <ZapOff className="w-4 h-4" /> : <Zap className="w-4 h-4" />}
+        {status === "loading" ? (
+          <>
+            <Loader2 className="w-6 h-6 animate-spin" />
+            <span className="text-lg">SINCRONIZZO...</span>
+          </>
+        ) : active ? (
+          <>
+            <ZapOff className="w-6 h-6" />
+            <span className="text-lg sm:text-xl">⏹ ESCI DALLA DIRETTA</span>
+          </>
+        ) : (
+          <>
+            <Zap className="w-6 h-6" />
+            <span className="text-lg sm:text-xl">⚡ ENTRA IN DIRETTA</span>
+          </>
+        )}
       </button>
-      <div className="min-w-0 flex-1">
-        <div className="text-[10px] font-mono uppercase tracking-widest text-cyan-300/70 flex items-center gap-1">
-          <Radio className="w-3 h-3" />
-          {active ? "SYNC LIVE · IN DIRETTA" : "SYNC LIVE · HLS UNIVERSALE"}
-        </div>
-        <div className="text-[13px] text-white font-bold truncate leading-tight">
-          {nowInfo?.title ? `${nowInfo.artist || ""} — ${nowInfo.title}` : "In attesa del clock…"}
+
+      <div className="mt-3 min-h-[36px]">
+        <div className="text-[13px] text-white font-bold truncate leading-tight" data-testid="sync-live-title">
+          {nowInfo?.title ? `${nowInfo.artist || "R-A.I."} — ${nowInfo.title}` : "Aggancio al clock del server…"}
         </div>
         {nowInfo?.duration_sec ? (
-          <div className="text-[10px] font-mono text-zinc-400 leading-none mt-0.5">
+          <div className="text-[10px] font-mono text-cyan-300/80 leading-none mt-1">
             {Math.floor((nowInfo.offset_sec || 0))}s / {Math.floor(nowInfo.duration_sec)}s ·
-            <span className="text-cyan-300"> tutti sincronizzati sullo stesso frame</span>
+            <span className="text-zinc-400"> tutti gli ascoltatori sullo stesso frame</span>
           </div>
-        ) : null}
+        ) : (
+          <div className="text-[10px] font-mono text-zinc-500 leading-none mt-1">
+            HLS pronto — premi il tasto per agganciarti
+          </div>
+        )}
       </div>
     </div>
   );
