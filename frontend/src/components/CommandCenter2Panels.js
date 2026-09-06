@@ -206,6 +206,9 @@ export function MagazzinoUniversale() {
   const [voice, setVoice] = useState([]);
   const [busy, setBusy] = useState(false);
   const fileRef = useRef(null);
+  const [uploadForm, setUploadForm] = useState({
+    name: "", sponsor_note: "", start_date: "", end_date: "", is_stinger: false,
+  });
 
   const load = async () => {
     try {
@@ -233,14 +236,21 @@ export function MagazzinoUniversale() {
     try {
       const fd = new FormData();
       fd.append("file", file);
-      fd.append("name", file.name);
-      const r = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/admin/ledwall/upload-video`, {
+      fd.append("name", uploadForm.name || file.name);
+      if (uploadForm.sponsor_note) fd.append("sponsor_note", uploadForm.sponsor_note);
+      if (uploadForm.start_date)   fd.append("start_date",   uploadForm.start_date);
+      if (uploadForm.end_date)     fd.append("end_date",     uploadForm.end_date);
+      if (uploadForm.is_stinger)   fd.append("is_stinger",   "true");
+      // v13.9 · endpoint UNIFICATO che accetta sia mp3 che mp4
+      const r = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/admin/media/upload`, {
         method: "POST", body: fd, credentials: "include",
       });
       if (!r.ok) throw new Error(await r.text());
-      toast.success("Video caricato su Object Storage");
+      const d = await r.json();
+      toast.success(`${d.type === "audio" ? "Audio" : "Video"} caricato su Object Storage${d.type === "video" && d.video?.duration_sec ? ` (${Math.round(d.video.duration_sec)}s)` : ""}`);
+      setUploadForm({ name: "", sponsor_note: "", start_date: "", end_date: "", is_stinger: false });
       load();
-    } catch (e) { toast.error("Upload fallito: " + e.message.slice(0,120)); }
+    } catch (e) { toast.error("Upload fallito: " + String(e.message || e).slice(0,120)); }
     finally { setBusy(false); if (fileRef.current) fileRef.current.value = ""; }
   };
 
@@ -261,7 +271,7 @@ export function MagazzinoUniversale() {
 
   const tabs = [
     { k: "audio", label: `🎵 MP3 (${tracks.length})`, color: "#00E5FF" },
-    { k: "video", label: `🎬 MP4 (${videos.length})`, color: "#FFB84D" },
+    { k: "video", label: `📤 Upload MP3/MP4 (${videos.length})`, color: "#FFB84D" },
     { k: "trash", label: `🗑️ Cestino (${trash.length})`, color: "#FF6BAA" },
     { k: "voice", label: `🎙️ Vocali (${voice.length})`, color: "#D080FF" },
   ];
@@ -319,27 +329,74 @@ export function MagazzinoUniversale() {
 
       {tab === "video" && (
         <div>
-          <div className="flex items-center gap-2 mb-3 p-2 rounded bg-orange-500/10 border border-orange-500/30">
-            <input
-              ref={fileRef}
-              type="file"
-              accept="video/mp4,video/webm,video/quicktime"
-              onChange={(e) => uploadVideo(e.target.files?.[0])}
-              className="flex-1 text-xs text-white file:mr-2 file:py-1 file:px-2 file:rounded file:border-0 file:bg-orange-500 file:text-black file:font-bold"
-              data-testid="magazzino-video-upload"
-              title="Carica un mp4/webm sul LedWall"
-              disabled={busy}
-            />
-            <Upload className="w-4 h-4 text-orange-400 shrink-0" />
+          <div className="mb-3 p-2 rounded bg-orange-500/10 border border-orange-500/30 space-y-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <input
+                type="text" value={uploadForm.name}
+                onChange={(e) => setUploadForm({...uploadForm, name: e.target.value})}
+                placeholder="Nome display (opzionale)"
+                className="bg-black border border-white/10 rounded px-2 py-1 text-xs text-white"
+                data-testid="upload-name"
+                title="Nome mostrato in libreria"
+              />
+              <input
+                type="text" value={uploadForm.sponsor_note}
+                onChange={(e) => setUploadForm({...uploadForm, sponsor_note: e.target.value})}
+                placeholder="📝 Note sponsor (es. Cliente X, campagna estiva)"
+                className="bg-black border border-white/10 rounded px-2 py-1 text-xs text-white"
+                data-testid="upload-sponsor-note"
+                title="Metadata libera per sponsor/campagna"
+              />
+              <input
+                type="datetime-local" value={uploadForm.start_date}
+                onChange={(e) => setUploadForm({...uploadForm, start_date: e.target.value})}
+                className="bg-black border border-white/10 rounded px-2 py-1 text-xs text-white"
+                data-testid="upload-start-date"
+                title="Data/ora di inizio validità (opz.)"
+              />
+              <input
+                type="datetime-local" value={uploadForm.end_date}
+                onChange={(e) => setUploadForm({...uploadForm, end_date: e.target.value})}
+                className="bg-black border border-white/10 rounded px-2 py-1 text-xs text-white"
+                data-testid="upload-end-date"
+                title="Data/ora di fine validità (opz.)"
+              />
+            </div>
+            <label className="flex items-center gap-2 text-xs text-orange-300 font-mono cursor-pointer" title="Se ON, il video entra nella rotazione HLS sincrona (stinger)">
+              <input type="checkbox" checked={uploadForm.is_stinger}
+                     onChange={(e) => setUploadForm({...uploadForm, is_stinger: e.target.checked})}
+                     data-testid="upload-is-stinger" />
+              🎬 Aggiungi alla rotazione video sincrona (stinger clip)
+            </label>
+            <div className="flex items-center gap-2">
+              <input
+                ref={fileRef}
+                type="file"
+                accept="audio/*,video/*"
+                onChange={(e) => uploadVideo(e.target.files?.[0])}
+                className="flex-1 text-xs text-white file:mr-2 file:py-1 file:px-2 file:rounded file:border-0 file:bg-orange-500 file:text-black file:font-bold"
+                data-testid="magazzino-video-upload"
+                title="Upload UNIFICATO: MP3, WAV, M4A, OGG, FLAC · MP4, WEBM, MOV, M4V"
+                disabled={busy}
+              />
+              <Upload className="w-4 h-4 text-orange-400 shrink-0" />
+            </div>
+            <div className="text-[9px] font-mono text-orange-300/60">
+              Endpoint unificato /api/admin/media/upload · sniffa mime, route su Track (audio) o ledwall_videos (video)
+            </div>
           </div>
-          <div className="max-h-[380px] overflow-y-auto space-y-1" data-testid="magazzino-list-video">
+          <div className="max-h-[320px] overflow-y-auto space-y-1" data-testid="magazzino-list-video">
             {videos.map((v) => (
               <div key={v.id} className="flex items-center gap-2 p-2 rounded bg-white/5 border border-white/8 text-sm">
                 <Film className="w-3 h-3 text-orange-400 shrink-0" />
                 <div className="flex-1 min-w-0">
                   <div className="text-white truncate">{v.display_name || v.filename}</div>
                   <div className="text-[10px] text-zinc-500 font-mono">
-                    {Math.round((v.size || 0) / 1024)}KB · {v.mime}
+                    {v.duration_sec ? Math.round(v.duration_sec) + "s · " : ""}
+                    {v.width && v.height ? `${v.width}×${v.height} · ` : ""}
+                    {Math.round((v.size || 0) / 1024)}KB
+                    {v.is_stinger && <span className="text-orange-400"> · stinger</span>}
+                    {v.sponsor_note && <span className="text-cyan-300"> · 📝 {v.sponsor_note}</span>}
                   </div>
                 </div>
                 <a href={v.url} target="_blank" rel="noreferrer"
@@ -352,7 +409,7 @@ export function MagazzinoUniversale() {
                 ><Trash2 className="w-3.5 h-3.5 text-red-400" /></button>
               </div>
             ))}
-            {videos.length === 0 && <div className="text-zinc-500 text-sm py-8 text-center">Nessun video · carica sopra</div>}
+            {videos.length === 0 && <div className="text-zinc-500 text-sm py-8 text-center">Nessun video · usa il form sopra</div>}
           </div>
         </div>
       )}

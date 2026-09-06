@@ -25,6 +25,7 @@ import suno_service
 import elevenlabs_service
 import object_storage
 import bpm_service
+import video_service
 
 
 async def synth_speech(text: str, voice_key: str = "female-1", kind: str = ""):
@@ -5462,6 +5463,16 @@ async def _clock_pick_track() -> Optional[dict]:
     dp = ({"$or": [{"daypart_night": {"$ne": False}}, {"daypart_night": {"$exists": False}}]}
           if is_night else
           {"$or": [{"daypart_day": {"$ne": False}}, {"daypart_day": {"$exists": False}}]})
+    # v13.9 · Finestra temporale (start_date/end_date) per campagne/sponsor
+    _now_iso_s = datetime.now(timezone.utc).isoformat()
+    _window = {
+        "$or": [{"start_date": {"$exists": False}}, {"start_date": None},
+                {"start_date": {"$lte": _now_iso_s}}],
+    }
+    _window_end = {
+        "$or": [{"end_date": {"$exists": False}}, {"end_date": None},
+                {"end_date": {"$gte": _now_iso_s}}],
+    }
     # Se Human Priority ON, prova prima UNA sola community track non ancora
     # suonata di recente
     if _ai.get("ai_human_priority"):
@@ -5481,7 +5492,7 @@ async def _clock_pick_track() -> Optional[dict]:
         "$and": [
             {"$or": [{"is_anthem": {"$exists": False}}, {"is_anthem": False}]},
             {"$or": [{"is_jingle": {"$exists": False}}, {"is_jingle": False}]},
-            dp,
+            dp, _window, _window_end,
         ],
     }
     # Pesca il meno recente per rotazione FIFO — poi aggiorniamo last_played_at
@@ -5626,6 +5637,264 @@ async def admin_stream_skip():
     clock = await _clock_advance(force=True)
     _, cur = _clock_now_offset(clock)
     return {"ok": True, "current_id": (cur or {}).get("id")}
+
+
+# ============================================================================
+# v13.9 · VIDEO CLOCK — rotazione stinger clip sincrona (HLS)
+# ============================================================================
+# Come `station_clock` per l'audio, ma per i mini-clip video (stinger/startup).
+# Gli utenti connessi all'endpoint `/api/stream/video.m3u8` vedono la stessa
+# clip allo stesso offset perché la playlist include `#EXT-X-START:TIME-OFFSET`.
+_VIDEO_QUEUE_LOOKAHEAD = 5
+
+async def _video_pick_clip() -> Optional[dict]:
+    """Pesca un mp4 dalla libreria `ledwall_videos` marcato `is_stinger=true`
+    o, in mancanza, uno qualsiasi. Rispetta finestre start_date/end_date."""
+    now_iso_s = datetime.now(timezone.utc).isoformat()
+    q = {
+        "$or": [
+            {"start_date": {"$exists": False}}, {"start_date": None}, {"start_date": {"$lte": now_iso_s}},
+        ],
+        "$and": [{"$or": [
+            {"end_date": {"$exists": False}}, {"end_date": None}, {"end_date": {"$gte": now_iso_s}},
+        ]}],
+    }
+    # Preferisci stinger
+    tr = await db.ledwall_videos.find_one({**q, "is_stinger": True}, {"_id": 0}, sort=[("last_played_at", 1)])
+    if not tr:
+        tr = await db.ledwall_videos.find_one(q, {"_id": 0}, sort=[("last_played_at", 1)])
+    if not tr:
+        return None
+    tr["duration_sec"] = float(tr.get("duration_sec") or 12.0)
+    return tr
+
+
+async def _video_advance(force: bool = False) -> dict:
+    now = datetime.now(timezone.utc)
+    clock = await db.station_video_clock.find_one({"_id": "video_clock"})
+    changed = False
+    if not clock:
+        clock = {"_id": "video_clock", "current": None, "queue": [], "updated_at": now.isoformat()}
+        changed = True
+
+    def _expired(cur):
+        if not cur or not cur.get("started_at"):
+            return True
+        try:
+            st = datetime.fromisoformat(cur["started_at"].replace("Z", "+00:00"))
+        except Exception:
+            return True
+        return (now - st).total_seconds() >= float(cur.get("duration_sec") or 12)
+
+    while force or _expired(clock.get("current")):
+        force = False
+        q = clock.get("queue") or []
+        promo = q.pop(0) if q else None
+        if not promo:
+            promo = await _video_pick_clip()
+        if not promo:
+            break
+        promo = dict(promo)
+        promo["started_at"] = now.isoformat()
+        clock["current"] = promo
+        clock["queue"] = q
+        changed = True
+        try:
+            await db.ledwall_videos.update_one({"id": promo.get("id")}, {"$set": {"last_played_at": now.isoformat()}})
+        except Exception:
+            pass
+    while len(clock.get("queue") or []) < _VIDEO_QUEUE_LOOKAHEAD:
+        p = await _video_pick_clip()
+        if not p:
+            break
+        recent = {(clock.get("current") or {}).get("id")}
+        for t in (clock.get("queue") or [])[-2:]:
+            recent.add(t.get("id"))
+        if p.get("id") in recent:
+            break
+        clock.setdefault("queue", []).append(p)
+        changed = True
+    if changed:
+        clock["updated_at"] = now.isoformat()
+        await db.station_video_clock.update_one({"_id": "video_clock"}, {"$set": clock}, upsert=True)
+    return clock
+
+
+def _video_now_offset(clock: dict) -> tuple[float, dict]:
+    cur = (clock or {}).get("current") or {}
+    if not cur.get("started_at"):
+        return 0.0, cur
+    try:
+        st = datetime.fromisoformat(cur["started_at"].replace("Z", "+00:00"))
+    except Exception:
+        return 0.0, cur
+    return max(0.0, (datetime.now(timezone.utc) - st).total_seconds()), cur
+
+
+@api_router.get("/stream/video-now")
+async def stream_video_now():
+    """Verità unica sul clip video ora in onda."""
+    clock = await _video_advance()
+    off, cur = _video_now_offset(clock)
+    return {
+        "server_time": datetime.now(timezone.utc).isoformat(),
+        "current": {
+            "id": cur.get("id"), "url": cur.get("url"),
+            "duration_sec": cur.get("duration_sec"),
+            "started_at": cur.get("started_at"),
+            "offset_sec": off,
+            "remaining_sec": max(0.0, float(cur.get("duration_sec") or 12) - off),
+        } if cur.get("id") else None,
+        "next": [{"id": t.get("id"), "url": t.get("url"),
+                  "duration_sec": t.get("duration_sec")}
+                 for t in (clock.get("queue") or [])[:3]],
+    }
+
+
+@api_router.get("/stream/video.m3u8")
+async def stream_video_hls(request: Request):
+    """HLS Live Playlist per i clip video (stinger rotation) — sincronizzata
+    server-side via video_clock. Latenza ≈ durata di uno stinger."""
+    clock = await _video_advance()
+    off, cur = _video_now_offset(clock)
+    proto = request.headers.get("x-forwarded-proto", "https")
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host") or ""
+    base = f"{proto}://{host}"
+    if not cur or not cur.get("url"):
+        empty = "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:12\n#EXT-X-MEDIA-SEQUENCE:0\n#EXT-X-PLAYLIST-TYPE:EVENT\n#EXT-X-ENDLIST\n"
+        return Response(content=empty, media_type="application/vnd.apple.mpegurl",
+                        headers={"Cache-Control": "no-store", "Access-Control-Allow-Origin": "*"})
+    entries = [cur] + [t for t in (clock.get("queue") or [])[:3]]
+    lines = [
+        "#EXTM3U", "#EXT-X-VERSION:3", "#EXT-X-TARGETDURATION:60",
+        "#EXT-X-MEDIA-SEQUENCE:0", "#EXT-X-PLAYLIST-TYPE:EVENT",
+        f"#EXT-X-START:TIME-OFFSET={off:.3f},PRECISE=YES",
+    ]
+    try:
+        run_dt = datetime.fromisoformat((cur.get("started_at") or "").replace("Z", "+00:00"))
+    except Exception:
+        run_dt = datetime.now(timezone.utc)
+    for t in entries:
+        dur = float(t.get("duration_sec") or 12)
+        url = t.get("url") or ""
+        if url.startswith("/"):
+            url = f"{base.rstrip('/')}{url}"
+        lines.append(f"#EXT-X-PROGRAM-DATE-TIME:{run_dt.isoformat().replace('+00:00','Z')}")
+        lines.append(f"#EXTINF:{dur:.3f},clip-{t.get('id','')}")
+        lines.append(url)
+        run_dt = run_dt + timedelta(seconds=dur)
+    lines.append("")
+    return Response(content="\n".join(lines), media_type="application/vnd.apple.mpegurl",
+                    headers={"Cache-Control": "no-store", "Access-Control-Allow-Origin": "*"})
+
+
+# ============================================================================
+# v13.9 · UPLOAD UNIFICATO MP3+MP4 con metadata sponsor/finestra temporale
+# ============================================================================
+@api_router.post("/admin/media/upload")
+async def admin_media_upload(
+    file: UploadFile = File(...),
+    name: Optional[str] = Form(None),
+    sponsor_note: Optional[str] = Form(None),
+    start_date: Optional[str] = Form(None),   # ISO date/datetime (validità inizio)
+    end_date: Optional[str] = Form(None),     # ISO date/datetime (validità fine)
+    is_stinger: Optional[str] = Form(None),   # 'true' → mp4 va nella rotazione video
+    daypart_day: Optional[str] = Form("true"),
+    daypart_night: Optional[str] = Form("true"),
+):
+    """Endpoint UNIFICATO: sniffa il mime del file caricato e lo instrada:
+      • audio/* → Track (`source=admin_upload`) su Object Storage 'suno/'
+      • video/* → ledwall_videos su Object Storage 'ledwall/'
+    Metadata comuni: `sponsor_note`, `start_date`, `end_date` (validità in
+    palinsesto e rotazione), `is_stinger` (solo per video), `daypart_*`."""
+    if not file:
+        raise HTTPException(400, "File mancante")
+    data = await file.read()
+    if len(data) > 200 * 1024 * 1024:
+        raise HTTPException(413, "File troppo grande (max 200MB)")
+    if not object_storage.is_enabled():
+        raise HTTPException(503, "Object Storage disabilitato")
+    orig_name = (file.filename or "media").lower()
+    ext = orig_name.rsplit(".", 1)[-1] if "." in orig_name else ""
+    audio_exts = {"mp3", "wav", "m4a", "ogg", "flac"}
+    video_exts = {"mp4", "webm", "mov", "m4v"}
+    is_audio = ext in audio_exts
+    is_video = ext in video_exts
+    if not (is_audio or is_video):
+        raise HTTPException(415, f"Estensione non supportata: {ext}")
+    _bool = lambda v: str(v or "").strip().lower() in ("1", "true", "yes", "on")
+    now_dt = datetime.now(timezone.utc)
+    common = {
+        "sponsor_note": (sponsor_note or "").strip()[:400] or None,
+        "start_date": (start_date or "").strip() or None,
+        "end_date":   (end_date or "").strip() or None,
+    }
+
+    if is_audio:
+        # Analog to legacy Suno-admin upload — but simplified: goes to Tracks
+        track_id = str(uuid.uuid4())
+        local_name = f"track_{track_id}.mp3"
+        stored = await object_storage.put_mp3(f"suno/{local_name}", data)
+        if not stored:
+            raise HTTPException(502, "Upload audio fallito")
+        # BPM
+        detected_bpm = None
+        try: detected_bpm = await bpm_service.detect_bpm_from_bytes(data, "." + ext)
+        except Exception: pass
+        doc = {
+            "id": track_id,
+            "title": (name or orig_name.rsplit(".", 1)[0])[:80],
+            "artist": "R-A.I. Upload",
+            "source": "admin_upload",
+            "kind": "music",
+            "audio_url": f"/api/suno_audio/{local_name}",
+            "status": "ready",
+            "on_air": True,
+            "daypart_day": _bool(daypart_day if daypart_day is not None else "true"),
+            "daypart_night": _bool(daypart_night if daypart_night is not None else "true"),
+            "bpm": detected_bpm,
+            "bpm_source": ("server" if detected_bpm else None),
+            "duration_sec": None,   # opzionale, sarà popolato al primo play
+            "created_at": now_dt.isoformat(),
+            "updated_at": now_dt.isoformat(),
+            "deleted_at": None,
+            **common,
+        }
+        await db.tracks.insert_one(doc.copy())
+        doc.pop("_id", None)
+        return {"ok": True, "type": "audio", "track": doc}
+
+    # is_video
+    vid_id = uuid.uuid4().hex[:12]
+    local_name = f"ledwall_{vid_id}.{ext}"
+    mime = {"mp4": "video/mp4", "webm": "video/webm",
+            "mov": "video/quicktime", "m4v": "video/x-m4v"}[ext]
+    stored = await object_storage.put_bytes(f"ledwall/{local_name}", data, mime)
+    if not stored:
+        raise HTTPException(502, "Upload video fallito")
+    probe = None
+    try: probe = await video_service.probe_video_from_bytes(data, "." + ext)
+    except Exception: pass
+    doc = {
+        "id": vid_id,
+        "filename": local_name,
+        "display_name": (name or orig_name)[:80],
+        "url": f"/api/ledwall_video/{local_name}",
+        "size": len(data),
+        "mime": mime,
+        "duration_sec": (probe or {}).get("duration_sec"),
+        "width": (probe or {}).get("width"),
+        "height": (probe or {}).get("height"),
+        "video_codec": (probe or {}).get("video_codec"),
+        "audio_codec": (probe or {}).get("audio_codec"),
+        "is_stinger": _bool(is_stinger),
+        "uploaded_at": now_dt.isoformat(),
+        "last_played_at": None,
+        **common,
+    }
+    await db.ledwall_videos.insert_one(doc.copy())
+    doc.pop("_id", None)
+    return {"ok": True, "type": "video", "video": doc}
 
 
 
@@ -5948,6 +6217,16 @@ async def on_startup():
     # ripristina lo stato coerente. Zero costi API ricorrenti.
     asyncio.create_task(_clock_ticker())
     logger.info("[startup] Station clock ticker running (in-pod, tier0-tolerant)")
+    # v13.9 · VIDEO CLOCK ticker (stinger rotation sincrona HLS)
+    async def _video_ticker():
+        while True:
+            try:
+                await asyncio.sleep(3)
+                await _video_advance()
+            except asyncio.CancelledError: break
+            except Exception as e: logger.debug(f"[video-clock] {e}")
+    asyncio.create_task(_video_ticker())
+    logger.info("[startup] Video clock ticker running (HLS stinger rotation)")
 
 
 async def _suno_integrity_check():
