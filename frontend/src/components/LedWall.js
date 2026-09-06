@@ -55,6 +55,18 @@ export default function LedWall({
   // v13.8 · LedWall Video Overlay — legge /api/ledwall/state e mostra un
   // <video> reale sopra al canvas quando video_source ≠ 'effects'.
   const [ledState, setLedState] = useState({ video_source: "effects", video_url: null });
+  // v13.10 · Playing runtime — quando il Sync Live parte il canvas passa da
+  // standby (immagine fissa) a modalità musica (onde+stelle) anche se il
+  // vecchio radioEngine non lo sa.
+  const [syncPlaying, setSyncPlaying] = useState(false);
+  useEffect(() => {
+    const onSync = (e) => setSyncPlaying(!!e?.detail?.playing);
+    window.addEventListener("rai:sync:play", onSync);
+    return () => window.removeEventListener("rai:sync:play", onSync);
+  }, []);
+  // Override della prop `isPlaying` col segnale del Sync Live
+  const effectivePlaying = isPlaying || syncPlaying;
+
   useEffect(() => {
     let alive = true;
     const fetchState = async () => {
@@ -115,7 +127,7 @@ export default function LedWall({
             particle: "120,220,255", accent: "#00E5FF", scan: "rgba(0,229,255,0.85)" };
 
       // --- Fade fluido tra modi ---
-      const target = detectMode(current, isPlaying);
+      const target = detectMode(current, effectivePlaying);
       const alphas = modeAlphaRef.current;
       const FADE = 0.045;
       ["music","talk","clock","standby"].forEach(m => {
@@ -422,7 +434,7 @@ export default function LedWall({
 
     rafRef.current = requestAnimationFrame(draw);
     return () => { cancelAnimationFrame(rafRef.current); ro.disconnect(); };
-  }, [isPlaying, current, trackOverlay, djs]);
+  }, [isPlaying, syncPlaying, current, trackOverlay, djs]);
 
   return (
     <div
@@ -435,15 +447,21 @@ export default function LedWall({
         boxShadow: "0 0 0 1px rgba(0,229,255,0.25) inset, 0 0 40px rgba(0,191,255,0.25)",
       }}
     >
-      {/* v13.8 · VIDEO OVERLAY REALE — quando Master Clock imposta video/cam */}
+      {/* v13.8 · VIDEO OVERLAY REALE — quando Master Clock imposta video/cam
+          v13.10 · Fade automatico: 600ms transition-opacity in entrata/uscita,
+          onEnded triggera un poll immediato dello state per fallback effetti */}
       {(ledState.video_source === "video" || ledState.video_source === "cam") && ledState.video_url && (
         <video
           key={ledState.video_url}
           src={ledState.video_url}
           autoPlay muted loop playsInline
+          onEnded={() => {
+            // Fallback: se non è in loop (o loop rimosso in futuro), forza refetch
+            setLedState((s) => ({ ...s, video_source: "effects", video_url: null }));
+          }}
           data-testid="ledwall-video"
-          className="absolute inset-0 w-full h-full object-cover z-30"
-          style={{ backgroundColor: "#000" }}
+          className="absolute inset-0 w-full h-full object-cover z-30 transition-opacity duration-500"
+          style={{ backgroundColor: "#000", opacity: 1 }}
         />
       )}
       {/* L-1 · NEBULOSA profondità (CSS gradient, opacità 0.12) — dietro tutto */}

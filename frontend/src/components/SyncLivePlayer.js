@@ -68,6 +68,7 @@ export default function SyncLivePlayer() {
         audio.load();
         await audio.play();
         setStatus("playing");
+        window.dispatchEvent(new CustomEvent("rai:sync:play", { detail: { playing: true } }));
         toast.success("Sync Live ON — Safari native");
         return;
       }
@@ -89,6 +90,7 @@ export default function SyncLivePlayer() {
         });
         await audio.play();
         setStatus("playing");
+        window.dispatchEvent(new CustomEvent("rai:sync:play", { detail: { playing: true } }));
         toast.success("Sync Live ON — hls.js");
         return;
       }
@@ -98,6 +100,7 @@ export default function SyncLivePlayer() {
       try {
         await attachDirect();
         setStatus("playing");
+        window.dispatchEvent(new CustomEvent("rai:sync:play", { detail: { playing: true } }));
         toast.success("Sync Live ON — aggancio diretto");
         return;
       } catch (_e2) {
@@ -111,6 +114,7 @@ export default function SyncLivePlayer() {
     try { audioRef.current?.pause(); } catch {}
     if (hlsRef.current) { try { hlsRef.current.destroy(); } catch {} hlsRef.current = null; }
     setStatus("idle");
+    window.dispatchEvent(new CustomEvent("rai:sync:play", { detail: { playing: false } }));
     toast.info("Sync Live OFF");
   };
 
