@@ -97,6 +97,14 @@ async def download_and_save_suno_audio(audio_url: str, track_id: str) -> Optiona
         return None
     local_name = f"track_{track_id}.mp3"
     local_path = SUNO_AUDIO_DIR / local_name
+    # v13.7 · Gate AI Master Control: se SUNO ENGINE OFF, non generare/scaricare.
+    try:
+        _ai = await _get_ai_controls()
+        if not _ai.get("ai_suno_engine"):
+            logger.info(f"[suno] auto-download {track_id} bloccato: AI SUNO ENGINE OFF")
+            return None
+    except Exception:
+        pass
     # Already on disk (lazy cache) or already in Object Storage → skip re-download.
     if local_path.exists() and local_path.stat().st_size > 0:
         # Ensure objstore has it (idempotent, storage is source of truth for prod).
@@ -383,14 +391,15 @@ async def llm_generate(provider: str, model: str, system_prompt: str, user_promp
     fallback silenzioso (che produrrebbe testo hardcoded/vuoto). I chiamanti
     critici (batch di generazione musicale, `generate_track`) DEVONO passare
     `raise_on_budget=True` per evitare di sprecare crediti Suno."""
-    # FM_MODE override (v13.1): il toggle master "FM MODE" nella Regia
-    # sostituisce provider/model runtime senza toccare le DJ persona:
-    #   • ON  → Claude Sonnet 4.5 (massima qualità radio vera)
-    #   • OFF → Gemini 3 Flash (massimo risparmio, default)
+    # FM_MODE override (v13.1) + AI MASTER CONTROL (v13.7):
+    # Il toggle Claude Brain ha priorità di sicurezza: se OFF blocca ogni
+    # chiamata Claude anche in FM MODE, ricadendo su Gemini Flash (economy).
     try:
+        ai = await _get_ai_controls()
         st = await db.station.find_one({"_id": "state"}, {"fm_mode": 1})
         fm_on = bool(st and st.get("fm_mode"))
-        if fm_on:
+        claude_allowed = bool(ai.get("ai_claude_brain"))
+        if fm_on and claude_allowed:
             provider, model = "anthropic", "claude-sonnet-4-5-20250929"
         else:
             provider, model = "gemini", "gemini-3-flash-preview"
@@ -4058,6 +4067,90 @@ async def set_fm_mode(payload: dict):
     return {"ok": True, "fm_mode": enabled}
 
 
+# ============================================================================
+# v13.7 · AI MASTER CONTROL — 7 interruttori indipendenti per controllo costi
+# ============================================================================
+# Ogni toggle è un booleano in station.state, default OFF ad ogni startup
+# (safety-first). Il server consulta questi stati PRIMA di ogni chiamata API
+# o file upload. Cache breve in-process per evitare roundtrip Mongo su ogni
+# generazione LLM/TTS.
+_AI_CONTROLS_KEYS = [
+    "ai_suno_engine",       # generazione automatica musica via Suno API
+    "ai_openai_talk",       # interventi parlati base (OpenAI TTS)
+    "ai_claude_brain",      # ragionamento d'élite Claude (FM Mode LLM premium)
+    "ai_voice_to_air",      # microfono ascoltatori + Whisper + broadcast
+    "ai_atmospheric_fx",    # beds + fx automatici nei segmenti
+    "ai_advertising",       # rotazione spot pubblicitari
+    "ai_human_priority",    # precedenza ai brani caricati da utenti
+]
+
+_ai_controls_cache: dict = {"ts": 0.0, "data": None}
+
+
+async def _get_ai_controls() -> dict:
+    """Cache in-process 3s per non martellare Mongo su ogni segmento."""
+    import time
+    now = time.time()
+    if _ai_controls_cache["data"] is not None and (now - _ai_controls_cache["ts"]) < 3.0:
+        return _ai_controls_cache["data"]
+    proj = {k: 1 for k in _AI_CONTROLS_KEYS}
+    st = await db.station.find_one({"_id": "state"}, proj) or {}
+    data = {k: bool(st.get(k)) for k in _AI_CONTROLS_KEYS}
+    _ai_controls_cache["ts"] = now
+    _ai_controls_cache["data"] = data
+    return data
+
+
+def _invalidate_ai_controls_cache():
+    _ai_controls_cache["ts"] = 0.0
+    _ai_controls_cache["data"] = None
+
+
+@api_router.get("/admin/ai-controls")
+async def get_ai_controls():
+    """Stato dei 7 interruttori AI. Default OFF ad ogni avvio."""
+    data = await _get_ai_controls()
+    return {
+        "controls": data,
+        "labels": {
+            "ai_suno_engine":    "🎵 SUNO ENGINE",
+            "ai_openai_talk":    "🎙️ OPENAI TALK",
+            "ai_claude_brain":   "🧠 CLAUDE BRAIN",
+            "ai_voice_to_air":   "🎙️ VOICE-TO-AIR",
+            "ai_atmospheric_fx": "🌀 ATMOSPHERIC FX",
+            "ai_advertising":    "💰 ADVERTISING LOOP",
+            "ai_human_priority": "⚖️ HUMAN PRIORITY",
+        },
+        "descriptions": {
+            "ai_suno_engine":    "Generazione automatica di musica via Suno API",
+            "ai_openai_talk":    "Interventi parlate base (Economy Mode)",
+            "ai_claude_brain":   "Ragionamento d'élite per i DJ (FM Mode)",
+            "ai_voice_to_air":   "Microfono ascoltatori + Whisper + messa in onda",
+            "ai_atmospheric_fx": "Transizioni e sottofondi sonori automatici",
+            "ai_advertising":    "Programmazione degli spot pubblicitari",
+            "ai_human_priority": "Precedenza immediata ai brani caricati dagli utenti",
+        },
+    }
+
+
+@api_router.patch("/admin/ai-controls")
+async def set_ai_controls(payload: dict):
+    """Aggiorna uno o più toggle. Body: {ai_suno_engine: true, ...}."""
+    updates = {}
+    for k in _AI_CONTROLS_KEYS:
+        if k in payload:
+            updates[k] = bool(payload[k])
+    if not updates:
+        raise HTTPException(400, "Nessun toggle valido")
+    await db.station.update_one({"_id": "state"}, {"$set": updates}, upsert=True)
+    _invalidate_ai_controls_cache()
+    logger.info(f"[ai-controls] updated: {updates}")
+    return {"ok": True, "updated": updates}
+
+
+
+
+
 @api_router.get("/admin/tts/provider")
 async def get_tts_provider():
     st = await db.station.find_one({"_id": "state"}) or {}
@@ -4459,6 +4552,10 @@ async def voice_transcribe(file: UploadFile = File(...), lang: Optional[str] = F
     """Trascrive un vocale via OpenAI Whisper e (best-effort) lo salva su
     /app/backend/static/voice + collection `voice_messages` con status=pending.
     Ritorna {text, id, audio_url}."""
+    # v13.7 · Gate AI Master Control: se VOICE-TO-AIR è OFF blocca la funzione
+    _ai = await _get_ai_controls()
+    if not _ai.get("ai_voice_to_air"):
+        raise HTTPException(403, "Voice-to-Air disabilitato dal Master Control della Regia")
     if not file:
         raise HTTPException(400, "File mancante")
     data = await file.read()
@@ -5202,6 +5299,15 @@ _CLOCK_QUEUE_LOOKAHEAD = 8   # numero di brani in coda dopo il current
 
 async def _clock_pick_track() -> Optional[dict]:
     """Pesca il prossimo brano rispettando day/night. Non decrementa altro."""
+    # v13.7 · Human Priority: se ON, community tracks in cima
+    try:
+        _ai = await _get_ai_controls()
+    except Exception:
+        _ai = {}
+    if _ai.get("ai_human_priority"):
+        _sources = ["community", "suno", "admin_upload"]
+    else:
+        _sources = ["suno", "admin_upload"]
     try:
         from zoneinfo import ZoneInfo
         now_local = datetime.now(ZoneInfo("Europe/Rome"))
@@ -5211,8 +5317,20 @@ async def _clock_pick_track() -> Optional[dict]:
     dp = ({"$or": [{"daypart_night": {"$ne": False}}, {"daypart_night": {"$exists": False}}]}
           if is_night else
           {"$or": [{"daypart_day": {"$ne": False}}, {"daypart_day": {"$exists": False}}]})
+    # Se Human Priority ON, prova prima UNA sola community track non ancora
+    # suonata di recente
+    if _ai.get("ai_human_priority"):
+        tr_com = await db.tracks.find_one(
+            {"source": "community", "status": "ready", "audio_url": {"$ne": None},
+             "on_air": {"$ne": False}, "deleted_at": None, **dp},
+            {"_id": 0, "id": 1, "title": 1, "artist": 1, "audio_url": 1, "duration_sec": 1, "bpm": 1},
+            sort=[("last_played_at", 1)],
+        )
+        if tr_com:
+            tr_com["duration_sec"] = int(tr_com.get("duration_sec") or 180)
+            return tr_com
     q = {
-        "source": {"$in": ["suno", "admin_upload"]},
+        "source": {"$in": _sources},
         "status": "ready", "audio_url": {"$ne": None},
         "on_air": {"$ne": False}, "deleted_at": None,
         "$and": [
@@ -5226,7 +5344,6 @@ async def _clock_pick_track() -> Optional[dict]:
                                        "audio_url": 1, "duration_sec": 1, "bpm": 1},
                                    sort=[("last_played_at", 1)])
     if not tr:
-        # Fallback: qualsiasi track ready
         tr = await db.tracks.find_one(
             {"status": "ready", "audio_url": {"$ne": None}, "on_air": {"$ne": False}, "deleted_at": None},
             {"_id": 0, "id": 1, "title": 1, "artist": 1, "audio_url": 1, "duration_sec": 1, "bpm": 1},
@@ -5660,6 +5777,11 @@ async def on_startup():
     # consumo AI premium finché l'admin non lo attiva esplicitamente).
     await db.station.update_one({"_id": "state"}, {"$set": {"fm_mode": False}}, upsert=True)
     logger.info("[startup] FM_MODE reset → OFF (economy default)")
+    # v13.7 · AI MASTER CONTROL — reset a OFF di tutti i 7 toggle ad ogni startup.
+    _ai_reset = {k: False for k in _AI_CONTROLS_KEYS}
+    await db.station.update_one({"_id": "state"}, {"$set": _ai_reset}, upsert=True)
+    _invalidate_ai_controls_cache()
+    logger.info("[startup] AI Master Control reset → tutti OFF (safety default)")
     # Kill switch globale per i cicli AI in background (Suno filler,
     # integrity check, time_signal pregen). Default: DISABILITATO.
     # Riattiva da regia via PATCH /api/admin/background-tasks.

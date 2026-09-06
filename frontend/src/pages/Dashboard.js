@@ -8,6 +8,7 @@ import BrandName from "@/components/BrandName";
 import MasterClockPanel from "@/components/MasterClockPanel";
 import BroadcasterPanel from "@/components/BroadcasterPanel";
 import StellePanel from "@/components/StellePanel";
+import AIMasterControlPanel from "@/components/AIMasterControlPanel";
 import { toast } from "sonner";
 
 const STUDIO_BG = "https://images.unsplash.com/photo-1781865202636-0adef1d06cce?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDQ2MzR8MHwxfHNlYXJjaHwzfHxmdXR1cmlzdGljJTIwcmFkaW8lMjBzdHVkaW8lMjBuaWdodHxlbnwwfHx8fDE3ODM4MDAwMjl8MA&ixlib=rb-4.1.0&q=85";
@@ -157,6 +158,9 @@ export default function Dashboard() {
 
         {/* MASTER SWITCH · FM MODE (Radio Vera vs Economy) — default OFF ad ogni restart */}
         <FmModePanel />
+
+        {/* AI MASTER CONTROL · 7 interruttori indipendenti (v13.7) */}
+        <AIMasterControlPanel />
 
         {/* MASTER CLOCK · Palinsesto orario 24H (v13.2) */}
         <MasterClockPanel />

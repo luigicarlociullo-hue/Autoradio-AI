@@ -68,6 +68,19 @@ async def _synth_openai(text: str, voice_key: str) -> bytes | None:
     """OpenAI TTS-1-HD via Emergent gateway (fallback). Ritorna bytes mp3 o None."""
     if not OPENAI_API_KEY or not OPENAI_BASE_URL:
         return None
+    # v13.7 · Gate AI Master Control: OPENAI TALK OFF → non chiamare l'API
+    try:
+        from motor.motor_asyncio import AsyncIOMotorClient
+        _murl = os.environ.get("MONGO_URL"); _dbn = os.environ.get("DB_NAME")
+        if _murl and _dbn:
+            _c = AsyncIOMotorClient(_murl)
+            _s = await _c[_dbn].station.find_one({"_id": "state"}, {"ai_openai_talk": 1})
+            _c.close()
+            if not (_s and _s.get("ai_openai_talk")):
+                logger.info("[TTS] OpenAI TALK bloccato: AI OPENAI TALK OFF")
+                return None
+    except Exception:
+        pass
     voice = VOICE_KEY_TO_OPENAI.get(voice_key, "nova")
     url = f"{OPENAI_BASE_URL}/audio/speech"
     body = {"model": "tts-1-hd", "voice": voice, "input": text[:4000]}
