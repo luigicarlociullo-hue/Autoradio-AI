@@ -6192,11 +6192,19 @@ async def on_startup():
     # consumo AI premium finché l'admin non lo attiva esplicitamente).
     await db.station.update_one({"_id": "state"}, {"$set": {"fm_mode": False}}, upsert=True)
     logger.info("[startup] FM_MODE reset → OFF (economy default)")
-    # v13.7 · AI MASTER CONTROL — reset a OFF di tutti i 7 toggle ad ogni startup.
-    _ai_reset = {k: False for k in _AI_CONTROLS_KEYS}
-    await db.station.update_one({"_id": "state"}, {"$set": _ai_reset}, upsert=True)
+    # v13.7 → v13.12 · AI MASTER CONTROL — PERSISTENTE su MongoDB.
+    # Non forziamo più i toggle a OFF ad ogni startup: si conserva l'ultima
+    # configurazione impostata dall'admin. Alla prima installazione i campi
+    # sono assenti e `_get_ai_controls()` restituisce bool(None)=False in
+    # automatico, quindi il comportamento default resta "tutti OFF".
+    _st_ai = await db.station.find_one({"_id": "state"}, {k: 1 for k in _AI_CONTROLS_KEYS}) or {}
+    _persisted = {k: bool(_st_ai.get(k)) for k in _AI_CONTROLS_KEYS}
+    _active = [k for k, v in _persisted.items() if v]
     _invalidate_ai_controls_cache()
-    logger.info("[startup] AI Master Control reset → tutti OFF (safety default)")
+    if _active:
+        logger.info(f"[startup] AI Master Control caricato da Mongo · {len(_active)}/7 ATTIVI: {_active}")
+    else:
+        logger.info("[startup] AI Master Control caricato da Mongo · tutti OFF (persistente)")
     # Kill switch globale per i cicli AI in background (Suno filler,
     # integrity check, time_signal pregen). Default: DISABILITATO.
     # Riattiva da regia via PATCH /api/admin/background-tasks.
