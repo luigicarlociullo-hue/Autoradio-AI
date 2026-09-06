@@ -6188,10 +6188,11 @@ async def on_startup():
     await ensure_seeded()
     await _seed_admin(db)   # seed admin Regia (idempotente)
     await telegram_bot.start(db)
-    # FM_MODE reset a OFF ad ogni avvio/restart (safety-first: nessun
-    # consumo AI premium finché l'admin non lo attiva esplicitamente).
-    await db.station.update_one({"_id": "state"}, {"$set": {"fm_mode": False}}, upsert=True)
-    logger.info("[startup] FM_MODE reset → OFF (economy default)")
+    # v13.13 · FM_MODE PERSISTENTE — se l'admin lo accende, resta acceso
+    # anche dopo restart/chiusura app finché non lo spegne manualmente.
+    _st_fm = await db.station.find_one({"_id": "state"}, {"fm_mode": 1}) or {}
+    _fm_on = bool(_st_fm.get("fm_mode"))
+    logger.info(f"[startup] FM_MODE caricato da Mongo · {'ON (Radio Vera premium)' if _fm_on else 'OFF (economy)'}")
     # v13.7 → v13.12 · AI MASTER CONTROL — PERSISTENTE su MongoDB.
     # Non forziamo più i toggle a OFF ad ogni startup: si conserva l'ultima
     # configurazione impostata dall'admin. Alla prima installazione i campi
