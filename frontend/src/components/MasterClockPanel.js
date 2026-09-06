@@ -16,6 +16,11 @@ const KIND_COLOR = {
   future_pill: "#80FFB4",
   rubric: "#FF6BAA",
 };
+const VIDEO_SOURCE_LABEL = {
+  effects: "🌀 Effetti",
+  video: "🎬 Video file",
+  cam: "📹 Cam Live",
+};
 
 /**
  * MasterClockPanel — v13.2
@@ -51,6 +56,8 @@ export default function MasterClockPanel() {
         title: editing.title || "",
         subject: editing.subject || "",
         kind: editing.kind || "music",
+        video_source: editing.video_source || "effects",
+        video_url: editing.video_url || "",
       });
       toast.success(`${String(editing.hour).padStart(2, "0")}:00 salvato`);
       setEditing(null);
@@ -124,6 +131,12 @@ export default function MasterClockPanel() {
               >
                 {KIND_LABEL[s.kind] || s.kind}
               </div>
+              {s.video_source && s.video_source !== "effects" && (
+                <div className="text-[8px] mt-0.5 truncate text-cyan-300"
+                     title={`Video: ${VIDEO_SOURCE_LABEL[s.video_source]}`}>
+                  {s.video_source === "cam" ? "📹" : "🎬"}
+                </div>
+              )}
               {s.title && (
                 <div className="text-[9px] mt-0.5 truncate text-zinc-300">
                   {s.title}
@@ -156,19 +169,49 @@ export default function MasterClockPanel() {
             </button>
           </div>
 
-          <label className="label-mono block mb-1">Tipo rubrica</label>
+          <label className="label-mono block mb-1" title="Tipo di contenuto che verrà generato o mostrato durante questa fascia oraria">Tipo rubrica</label>
           <select
             value={editing.kind}
             onChange={(e) => setEditing({ ...editing, kind: e.target.value })}
             className="w-full bg-black border border-white/10 rounded px-2 py-1.5 text-sm text-white mb-3"
             data-testid="clock-edit-kind"
+            title="Scegli cosa suonare/dire in quest'ora"
           >
             {Object.entries(KIND_LABEL).map(([k, v]) => (
               <option key={k} value={k}>{v}</option>
             ))}
           </select>
 
-          <label className="label-mono block mb-1">Titolo</label>
+          <label className="label-mono block mb-1" title="Cosa mostra il LedWall in quest'ora">Sorgente Video LedWall</label>
+          <select
+            value={editing.video_source || "effects"}
+            onChange={(e) => setEditing({ ...editing, video_source: e.target.value })}
+            className="w-full bg-black border border-white/10 rounded px-2 py-1.5 text-sm text-white mb-3"
+            data-testid="clock-edit-video-source"
+            title="Effetti audio-reattivi (default) · File video statico · Cam/stream live"
+          >
+            {Object.entries(VIDEO_SOURCE_LABEL).map(([k, v]) => (
+              <option key={k} value={k}>{v}</option>
+            ))}
+          </select>
+
+          {(editing.video_source === "video" || editing.video_source === "cam") && (
+            <>
+              <label className="label-mono block mb-1" title="URL del video mp4/webm o stream HLS/mp4">
+                URL video/stream
+              </label>
+              <input
+                type="url"
+                value={editing.video_url || ""}
+                onChange={(e) => setEditing({ ...editing, video_url: e.target.value })}
+                placeholder={editing.video_source === "cam" ? "https://.../live.m3u8" : "https://.../clip.mp4"}
+                className="w-full bg-black border border-white/10 rounded px-2 py-1.5 text-sm text-white mb-3 font-mono"
+                data-testid="clock-edit-video-url"
+              />
+            </>
+          )}
+
+          <label className="label-mono block mb-1" title="Titolo mostrato nel palinsesto della Home">Titolo</label>
           <input
             type="text"
             value={editing.title || ""}

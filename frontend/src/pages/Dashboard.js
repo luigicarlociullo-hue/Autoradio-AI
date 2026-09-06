@@ -154,22 +154,32 @@ export default function Dashboard() {
         </div>
       </header>
 
-      <main className="max-w-[1400px] mx-auto px-6 py-8 grid grid-cols-1 lg:grid-cols-4 gap-6">
+      <main className="max-w-[1400px] mx-auto px-6 py-6 space-y-8">
 
-        {/* MASTER SWITCH · FM MODE (Radio Vera vs Economy) — default OFF ad ogni restart */}
-        <FmModePanel />
+        {/* ══════════════════════════════════════════════════════════════════
+            FASCIA ALTA · POTERE AI — tutti i toggle neon raggruppati
+            ══════════════════════════════════════════════════════════════════ */}
+        <BandHeader icon="⚡" title="POTERE AI" subtitle="Interruttori di consumo · default OFF ad ogni startup" color="#FF8A3D" />
+        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+          <FmModePanel />
+          <AIMasterControlPanel />
+        </div>
 
-        {/* AI MASTER CONTROL · 7 interruttori indipendenti (v13.7) */}
-        <AIMasterControlPanel />
+        {/* ══════════════════════════════════════════════════════════════════
+            FASCIA CENTRALE · TEMPI & PENSIERO — Master Clock + Live Brain
+            ══════════════════════════════════════════════════════════════════ */}
+        <BandHeader icon="🕰️" title="TEMPI & PENSIERO" subtitle="Palinsesto 24H + monitor pensiero server-side" color="#00E5FF" />
+        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+          <MasterClockPanel />
+          <BroadcasterPanel />
+          <StellePanel />
+        </div>
 
-        {/* MASTER CLOCK · Palinsesto orario 24H (v13.2) */}
-        <MasterClockPanel />
-
-        {/* BROADCASTER · HLS interno + Icecast esterno + Dual-Brain (v13.3) */}
-        <BroadcasterPanel />
-
-        {/* LE STELLE DI NEURONI · Regia oroscopo (v13.4) */}
-        <StellePanel />
+        {/* ══════════════════════════════════════════════════════════════════
+            FASCIA BASSA · RISORSE — magazzino, cestino, vocali, comandi
+            ══════════════════════════════════════════════════════════════════ */}
+        <BandHeader icon="📚" title="RISORSE" subtitle="Magazzino universale, comandi broadcast, coda vocali" color="#D080FF" />
+        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
 
         {/* NEW: Broadcast control bar — Play/Pause/Skip/Jingle propagated
             to every public listener via /api/admin/command */}
@@ -561,7 +571,46 @@ export default function Dashboard() {
             ))}
           </div>
         </section>
+        </div> {/* fine FASCIA BASSA · RISORSE */}
       </main>
+    </div>
+  );
+}
+
+/**
+ * BandHeader — v13.8
+ * Intestazione visiva glassmorphism per raggruppare i pannelli in 3 fasce.
+ */
+function BandHeader({ icon, title, subtitle, color = "#00E5FF" }) {
+  return (
+    <div
+      className="flex items-center gap-3 px-4 py-2 rounded-xl"
+      data-testid={`band-header-${title.toLowerCase().replace(/\s+/g, '-')}`}
+      style={{
+        background: `linear-gradient(90deg, ${color}18, rgba(0,0,0,0.4))`,
+        border: `1px solid ${color}55`,
+        backdropFilter: "blur(12px)",
+        WebkitBackdropFilter: "blur(12px)",
+        boxShadow: `0 0 18px ${color}22, inset 0 1px 0 rgba(255,255,255,0.05)`,
+      }}
+    >
+      <div
+        className="text-2xl leading-none"
+        style={{ filter: `drop-shadow(0 0 6px ${color}88)` }}
+      >
+        {icon}
+      </div>
+      <div className="min-w-0 flex-1">
+        <div
+          className="font-display font-black text-lg tracking-wider leading-none"
+          style={{ color, textShadow: `0 0 8px ${color}66` }}
+        >
+          {title}
+        </div>
+        <div className="text-[10px] font-mono uppercase tracking-widest text-zinc-400 mt-0.5">
+          {subtitle}
+        </div>
+      </div>
     </div>
   );
 }

@@ -17,7 +17,7 @@
 // Night mode 22:00–04:00 → palette rosso/viola neon + strobo su bass alto.
 // Cross-fade fluido tra modi (α interpolata).
 // ============================================================================
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import radioEngine from "@/lib/radioEngine";
 
 // Palette per DJ (override rispetto a accent_color dal DB)
@@ -51,6 +51,24 @@ export default function LedWall({
   const particlesRef = useRef([]);
   const strobeRef = useRef(0);
   const modeAlphaRef = useRef({ music: 0, talk: 0, clock: 0, standby: 1 });
+
+  // v13.8 · LedWall Video Overlay — legge /api/ledwall/state e mostra un
+  // <video> reale sopra al canvas quando video_source ≠ 'effects'.
+  const [ledState, setLedState] = useState({ video_source: "effects", video_url: null });
+  useEffect(() => {
+    let alive = true;
+    const fetchState = async () => {
+      try {
+        const r = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/ledwall/state`);
+        const d = await r.json();
+        if (!alive) return;
+        setLedState({ video_source: d.video_source || "effects", video_url: d.video_url || null });
+      } catch {}
+    };
+    fetchState();
+    const iv = setInterval(fetchState, 12000);   // poll ogni 12s
+    return () => { alive = false; clearInterval(iv); };
+  }, []);
 
   useEffect(() => {
     const cvs = canvasRef.current;
@@ -417,6 +435,17 @@ export default function LedWall({
         boxShadow: "0 0 0 1px rgba(0,229,255,0.25) inset, 0 0 40px rgba(0,191,255,0.25)",
       }}
     >
+      {/* v13.8 · VIDEO OVERLAY REALE — quando Master Clock imposta video/cam */}
+      {(ledState.video_source === "video" || ledState.video_source === "cam") && ledState.video_url && (
+        <video
+          key={ledState.video_url}
+          src={ledState.video_url}
+          autoPlay muted loop playsInline
+          data-testid="ledwall-video"
+          className="absolute inset-0 w-full h-full object-cover z-30"
+          style={{ backgroundColor: "#000" }}
+        />
+      )}
       {/* L-1 · NEBULOSA profondità (CSS gradient, opacità 0.12) — dietro tutto */}
       <div
         aria-hidden

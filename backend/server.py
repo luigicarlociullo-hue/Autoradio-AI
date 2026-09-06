@@ -4767,7 +4767,12 @@ async def admin_set_track_daypart(track_id: str, payload: dict):
 #   • "past_pill"   → Pillole dal Passato (Leo · fatti storici REALI)
 #   • "future_pill" → Pillole dal Futuro (Aria · trend scientifici)
 #   • "rubric"      → Rubrica libera (autore definisce titolo+subject)
+# v13.8 · `video_source` sceglie cosa mostra il LedWall in quell'ora:
+#   • "effects" → visualizer Canvas audio-reattivo (default)
+#   • "video"   → riproduce un file video statico (video_url)
+#   • "cam"     → riproduce uno stream live (video_url, es. HLS/mp4)
 _SCHEDULE_KINDS = {"music", "radioscope", "past_pill", "future_pill", "rubric"}
+_VIDEO_SOURCES = {"effects", "video", "cam"}
 
 
 @api_router.get("/admin/schedule")
@@ -4784,6 +4789,8 @@ async def admin_get_schedule():
                 "title": None,
                 "subject": None,
                 "kind": "music",
+                "video_source": "effects",
+                "video_url": None,
                 "updated_at": now_iso(),
             })
         rows = await db.program_schedule.find({}, {"_id": 0}).sort("hour", 1).to_list(30)
@@ -4792,21 +4799,69 @@ async def admin_get_schedule():
 
 @api_router.patch("/admin/schedule/{hour}")
 async def admin_set_schedule_hour(hour: int, payload: dict):
-    """Aggiorna uno slot orario. Body: {title, subject, kind}."""
+    """Aggiorna uno slot orario. Body: {title, subject, kind, video_source, video_url}."""
     if hour < 0 or hour > 23:
         raise HTTPException(400, "hour deve essere 0..23")
     kind = (payload.get("kind") or "music").strip()
     if kind not in _SCHEDULE_KINDS:
         raise HTTPException(400, f"kind deve essere in {sorted(_SCHEDULE_KINDS)}")
+    video_source = (payload.get("video_source") or "effects").strip()
+    if video_source not in _VIDEO_SOURCES:
+        raise HTTPException(400, f"video_source deve essere in {sorted(_VIDEO_SOURCES)}")
     doc = {
         "hour": hour,
         "title": (payload.get("title") or "").strip()[:120] or None,
         "subject": (payload.get("subject") or "").strip()[:2000] or None,
         "kind": kind,
+        "video_source": video_source,
+        "video_url": (payload.get("video_url") or "").strip()[:500] or None,
         "updated_at": now_iso(),
     }
     await db.program_schedule.update_one({"hour": hour}, {"$set": doc}, upsert=True)
     return {"ok": True, "slot": doc}
+
+
+@api_router.get("/ledwall/state")
+async def get_ledwall_state():
+    """Stato corrente del LedWall: cosa mostrare ORA in base al Master Clock.
+    Ritorna {video_source, video_url}. Il frontend consulta questo endpoint
+    per decidere se rendere Canvas audio-reattivo o video reale."""
+    try:
+        from zoneinfo import ZoneInfo
+        now_local = datetime.now(ZoneInfo("Europe/Rome"))
+    except Exception:
+        now_local = datetime.now(timezone.utc)
+    hour = now_local.hour
+    slot = await db.program_schedule.find_one({"hour": hour}, {"_id": 0}) or {}
+    # Override manuale immediato (bypass palinsesto)
+    st = await db.station.find_one({"_id": "state"}, {"ledwall_override": 1}) or {}
+    override = st.get("ledwall_override") or {}
+    src = override.get("video_source") or slot.get("video_source") or "effects"
+    url = override.get("video_url") or slot.get("video_url")
+    if src not in _VIDEO_SOURCES:
+        src = "effects"
+    return {"hour": hour, "video_source": src, "video_url": url,
+            "from_override": bool(override.get("video_source"))}
+
+
+@api_router.patch("/admin/ledwall/override")
+async def admin_ledwall_override(payload: dict):
+    """Override manuale immediato dello stato LedWall (bypass palinsesto).
+    Body: {video_source: 'effects'|'video'|'cam'|null, video_url?: str}.
+    Passa {video_source: null} per rimuovere l'override."""
+    src = payload.get("video_source")
+    if src not in (None, "", *_VIDEO_SOURCES):
+        raise HTTPException(400, "video_source non valido")
+    if src in (None, ""):
+        await db.station.update_one({"_id": "state"}, {"$unset": {"ledwall_override": ""}})
+        return {"ok": True, "override": None}
+    override = {
+        "video_source": src,
+        "video_url": (payload.get("video_url") or "").strip()[:500] or None,
+        "set_at": now_iso(),
+    }
+    await db.station.update_one({"_id": "state"}, {"$set": {"ledwall_override": override}}, upsert=True)
+    return {"ok": True, "override": override}
 
 
 # ============================================================================
