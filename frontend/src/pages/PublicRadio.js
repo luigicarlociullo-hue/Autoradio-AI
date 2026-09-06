@@ -715,28 +715,10 @@ export default function PublicRadio() {
               <Waveform active={isPlaying} />
             </div>
 
-            {/* v13.14 · RIPRISTINO MOTORE DJ — Play/Pause/Skip via radioEngine
-                che pesca da /api/segments/next (musica + interventi Leo/Aria/Max).
-                Il SyncLive HLS bypassava questo flusso, per questo la radio era muta. */}
-            <div className="mt-4 flex items-center gap-3 flex-wrap">
-              <button
-                data-testid="play-pause-button"
-                onClick={handlePlay}
-                className="btn-primary flex items-center gap-2 focusable !text-base !px-6 !py-3"
-                aria-label={isPlaying ? "Metti in pausa" : "Ascolta ora"}
-              >
-                {isPlaying ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5" />}
-                <span>{isPlaying ? "PAUSE" : "ASCOLTA"}</span>
-              </button>
-              <button
-                data-testid="skip-button"
-                onClick={() => { radioEngine.stopAll(); }}
-                className="btn-outline focusable flex items-center gap-2 !px-3 !py-3"
-                title="Salta al prossimo segmento (DJ o brano)"
-                aria-label="Salta"
-              >
-                <SkipForward className="w-4 h-4" />
-              </button>
+            {/* v13.15 · BROADCASTER PREDEFINITO — SyncLive HLS alimentato dal
+                station_clock server-side. Sincronizzato per tutti gli ascoltatori. */}
+            <div className="mt-4">
+              <SyncLivePlayer />
             </div>
             <div className="mt-3 grid grid-cols-3 gap-2">
               <MiniDisplay icon={Users}    label="LIVE"    value={station.listeners || 0} />
