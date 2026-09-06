@@ -5260,8 +5260,16 @@ async def hls_live_playlist(request: Request):
         _ = i
     lines.append("")
     playlist = "\n".join(lines)
+    # v13.16 · OTTIMIZZAZIONE PER MIGLIAIA DI CLIENT
+    # `s-maxage=1` = CDN edge riusa la stessa m3u8 per 1s → 1000+ client → 1 backend hit
+    # `stale-while-revalidate=3` = serve la versione stale mentre revalida in background
+    # `Access-Control-Allow-Origin=*` = domini custom possono consumare il flusso
     return Response(content=playlist, media_type="application/vnd.apple.mpegurl",
-                    headers={"Cache-Control": "no-store", "Access-Control-Allow-Origin": "*"})
+                    headers={
+                        "Cache-Control": "public, max-age=1, s-maxage=1, stale-while-revalidate=3",
+                        "Access-Control-Allow-Origin": "*",
+                        "Access-Control-Expose-Headers": "*",
+                    })
 
 
 @api_router.get("/admin/external-stream")
@@ -5442,6 +5450,28 @@ async def chat_generate_avatar(payload: dict):
 # che sarebbero già finite, ripartendo dalla successiva coerente.
 
 _CLOCK_QUEUE_LOOKAHEAD = 8   # numero di brani in coda dopo il current
+_DJ_EVERY_N_TRACKS = 3       # v13.16 · un jingle DJ ogni 3 brani musicali
+
+
+async def _clock_pick_dj_jingle() -> Optional[dict]:
+    """Pesca un jingle DJ dalla libreria (`tracks.is_jingle=true`). Sono file
+    audio brevi (10-25s) preregistrati con le voci Leo/Aria/Max — permettono
+    di avere la voce dei DJ nel flusso HLS senza dipendere da TTS live."""
+    _now_iso_s = datetime.now(timezone.utc).isoformat()
+    q = {
+        "is_jingle": True, "status": "ready", "audio_url": {"$ne": None},
+        "on_air": {"$ne": False}, "deleted_at": None,
+        "$or": [{"start_date": {"$exists": False}}, {"start_date": None}, {"start_date": {"$lte": _now_iso_s}}],
+        "$and": [{"$or": [{"end_date": {"$exists": False}}, {"end_date": None}, {"end_date": {"$gte": _now_iso_s}}]}],
+    }
+    tr = await db.tracks.find_one(q, {"_id": 0, "id": 1, "title": 1, "artist": 1,
+                                       "audio_url": 1, "duration_sec": 1},
+                                   sort=[("last_played_at", 1)])
+    if not tr:
+        return None
+    tr["duration_sec"] = int(tr.get("duration_sec") or 20)
+    tr["is_dj_jingle"] = True
+    return tr
 
 
 async def _clock_pick_track() -> Optional[dict]:
@@ -5515,12 +5545,16 @@ async def _clock_pick_track() -> Optional[dict]:
 async def _clock_advance(force: bool = False) -> dict:
     """Fa avanzare il clock se il brano corrente è scaduto (o se `force`).
     Ripopola `queue` fino a `_CLOCK_QUEUE_LOOKAHEAD`. Restituisce il clock aggiornato.
-    NB: safe in caso di race — l'update Mongo è atomico sul singolo doc."""
+    NB: safe in caso di race — l'update Mongo è atomico sul singolo doc.
+
+    v13.16 · DJ INJECTION: ogni `_DJ_EVERY_N_TRACKS` brani musicali viene
+    inserito un jingle DJ (dalla libreria `tracks.is_jingle=true`) nella
+    queue → il flusso HLS unico contiene voce+musica sincronizzata per tutti."""
     now = datetime.now(timezone.utc)
     clock = await db.station_clock.find_one({"_id": "clock"})
     changed = False
     if not clock:
-        clock = {"_id": "clock", "current": None, "queue": [], "updated_at": now.isoformat()}
+        clock = {"_id": "clock", "current": None, "queue": [], "music_counter": 0, "updated_at": now.isoformat()}
         changed = True
     # Se non c'è current o è scaduto → promuovi dalla coda o pesca dal catalogo
     def _is_expired(cur):
@@ -5554,9 +5588,19 @@ async def _clock_advance(force: bool = False) -> dict:
         # Se il current sarebbe ancora scaduto (advance grande dopo sleep pod),
         # il loop while continuerà a girare a costo trascurabile.
 
-    # Riempi la queue fino al lookahead
+    # Riempi la queue fino al lookahead con injection DJ ogni N brani
     while len(clock.get("queue") or []) < _CLOCK_QUEUE_LOOKAHEAD:
-        picked = await _clock_pick_track()
+        # Decidi se inserire un jingle DJ o un brano musicale
+        counter = int(clock.get("music_counter") or 0)
+        need_dj = (counter > 0 and counter % _DJ_EVERY_N_TRACKS == 0)
+        picked = None
+        if need_dj:
+            picked = await _clock_pick_dj_jingle()
+        if not picked:
+            picked = await _clock_pick_track()
+            # incrementa counter musicale solo quando aggiungiamo musica reale
+            if picked:
+                clock["music_counter"] = counter + 1
         if not picked:
             break
         # Evita duplicati back-to-back col current e ultimi 2 in coda
@@ -5564,7 +5608,6 @@ async def _clock_advance(force: bool = False) -> dict:
         for t in (clock.get("queue") or [])[-2:]:
             recent_ids.add(t.get("id"))
         if picked["id"] in recent_ids:
-            # ne pesca un altro (fino a 3 tentativi)
             found_alt = False
             for _ in range(3):
                 alt = await _clock_pick_track()
