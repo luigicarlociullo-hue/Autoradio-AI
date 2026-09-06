@@ -16,17 +16,49 @@ import { toast } from "sonner";
 export default function SyncLivePlayer() {
   const [status, setStatus] = useState("idle"); // idle | loading | playing | error
   const [nowInfo, setNowInfo] = useState(null);
+  const [nextQueue, setNextQueue] = useState([]);
+  const [ducking, setDucking] = useState(false);
   const audioRef = useRef(null);
   const hlsRef = useRef(null);
   const nowPollRef = useRef(null);
+  const prevVolRef = useRef(null);
 
-  // Poll /api/stream/now ogni 5s per il display "cosa sta suonando"
+  // v13.11 · Ducking automatico per voce-in-chat.
+  // MicButton dispatcha `rai:voice-rec-start` / `rai:voice-rec-end`.
+  // Portiamo l'audio del Sync Live al 5% durante la registrazione, poi
+  // ripristiniamo il volume originale.
+  useEffect(() => {
+    const onStart = () => {
+      const a = audioRef.current;
+      if (!a) return;
+      prevVolRef.current = a.volume;
+      a.volume = Math.max(0.03, a.volume * 0.05);
+      setDucking(true);
+    };
+    const onEnd = () => {
+      const a = audioRef.current;
+      if (a && prevVolRef.current != null) {
+        a.volume = prevVolRef.current;
+        prevVolRef.current = null;
+      }
+      setDucking(false);
+    };
+    window.addEventListener("rai:voice-rec-start", onStart);
+    window.addEventListener("rai:voice-rec-end", onEnd);
+    return () => {
+      window.removeEventListener("rai:voice-rec-start", onStart);
+      window.removeEventListener("rai:voice-rec-end", onEnd);
+    };
+  }, []);
+
+  // Poll /api/stream/now ogni 5s per il display "cosa sta suonando" + coda
   useEffect(() => {
     const fetchNow = async () => {
       try {
         const r = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/stream/now`);
         const d = await r.json();
         setNowInfo(d.current || null);
+        setNextQueue(d.next || []);
       } catch {}
     };
     fetchNow();
@@ -75,9 +107,17 @@ export default function SyncLivePlayer() {
       // hls.js
       if (Hls.isSupported()) {
         const hls = new Hls({
+          // v13.11 · Transizioni senza troncamenti — larghi buffer per coprire
+          // pipeline lenta e cambi segmento gapless. hls.js gestisce già le
+          // transizioni EXT-X-DISCONTINUITY / EXTINF senza cutoff, ma
+          // abbassiamo la aggressività del live-sync per evitare micro-salti.
           liveSyncDurationCount: 3,
-          maxLiveSyncPlaybackRate: 1.1,
+          liveMaxLatencyDurationCount: 10,
+          maxLiveSyncPlaybackRate: 1.05,     // era 1.1 — meno pitch drift
           enableWorker: true,
+          backBufferLength: 30,               // permette lo scrub indietro
+          maxBufferLength: 90,                // ~1.5 minuti di lookahead
+          startPosition: -1,                  // parte da EXT-X-START (sincrono)
         });
         hlsRef.current = hls;
         hls.loadSource(hlsUrl);
@@ -186,6 +226,7 @@ export default function SyncLivePlayer() {
           <div className="text-[10px] font-mono text-cyan-300/80 leading-none mt-1">
             {Math.floor((nowInfo.offset_sec || 0))}s / {Math.floor(nowInfo.duration_sec)}s ·
             <span className="text-zinc-400"> tutti gli ascoltatori sullo stesso frame</span>
+            {ducking && <span className="ml-2 text-pink-400 font-bold" data-testid="sync-live-ducking">· 🎙️ MIC ATTIVO -95%</span>}
           </div>
         ) : (
           <div className="text-[10px] font-mono text-zinc-500 leading-none mt-1">
@@ -193,6 +234,24 @@ export default function SyncLivePlayer() {
           </div>
         )}
       </div>
+
+      {/* v13.11 · Coda di riproduzione (letta dal server clock, sincrona) */}
+      {nextQueue && nextQueue.length > 0 && (
+        <div className="mt-3 pt-2 border-t border-white/10" data-testid="sync-live-queue">
+          <div className="text-[9px] font-mono uppercase tracking-widest text-cyan-300/60 mb-1">
+            📻 In coda · sincrona per tutti
+          </div>
+          <ol className="space-y-0.5">
+            {nextQueue.slice(0, 3).map((t, i) => (
+              <li key={t.id || i} className="text-[11px] text-zinc-300 truncate flex items-center gap-2" data-testid={`sync-live-queue-${i}`}>
+                <span className="text-cyan-500/60 font-mono w-4 shrink-0">{i + 1}.</span>
+                <span className="truncate">{t.artist || "R-A.I."} — {t.title || t.audio_url}</span>
+                {t.duration_sec && <span className="text-zinc-500 font-mono text-[9px] shrink-0">{Math.floor(t.duration_sec)}s</span>}
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
     </div>
   );
 }
