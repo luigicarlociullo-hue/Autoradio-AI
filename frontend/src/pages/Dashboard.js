@@ -9,6 +9,7 @@ import MasterClockPanel from "@/components/MasterClockPanel";
 import BroadcasterPanel from "@/components/BroadcasterPanel";
 import StellePanel from "@/components/StellePanel";
 import AIMasterControlPanel from "@/components/AIMasterControlPanel";
+import { GoLivePanel, LedWallMiniPreview, MagazzinoUniversale } from "@/components/CommandCenter2Panels";
 import { toast } from "sonner";
 
 const STUDIO_BG = "https://images.unsplash.com/photo-1781865202636-0adef1d06cce?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDQ2MzR8MHwxfHNlYXJjaHwzfHxmdXR1cmlzdGljJTIwcmFkaW8lMjBzdHVkaW8lMjBuaWdodHxlbnwwfHx8fDE3ODM4MDAwMjl8MA&ixlib=rb-4.1.0&q=85";
@@ -173,6 +174,8 @@ export default function Dashboard() {
           <MasterClockPanel />
           <BroadcasterPanel />
           <StellePanel />
+          <GoLivePanel />
+          <LedWallMiniPreview />
         </div>
 
         {/* ══════════════════════════════════════════════════════════════════
@@ -180,6 +183,7 @@ export default function Dashboard() {
             ══════════════════════════════════════════════════════════════════ */}
         <BandHeader icon="📚" title="RISORSE" subtitle="Magazzino universale, comandi broadcast, coda vocali" color="#D080FF" />
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+          <MagazzinoUniversale />
 
         {/* NEW: Broadcast control bar — Play/Pause/Skip/Jingle propagated
             to every public listener via /api/admin/command */}

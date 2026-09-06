@@ -4436,6 +4436,24 @@ async def admin_restore_track(track_id: str):
     return {"ok": True, "restored": track_id}
 
 
+@api_router.get("/admin/tracks/trash")
+async def admin_trash_list():
+    """Elenca le tracce nel cestino (deleted_at ≠ null)."""
+    rows = await db.tracks.find(
+        {"deleted_at": {"$ne": None}},
+        {"_id": 0, "id": 1, "title": 1, "artist": 1, "source": 1,
+         "duration_sec": 1, "audio_url": 1, "deleted_at": 1, "kind": 1},
+    ).sort("deleted_at", -1).limit(200).to_list(200)
+    return {"trash": rows, "count": len(rows)}
+
+
+@api_router.delete("/admin/tracks/{track_id}/purge-trash")
+async def admin_purge_trash_track(track_id: str):
+    """HARD DELETE definitivo (usare con cautela). Solo per tracce già nel cestino."""
+    r = await db.tracks.delete_one({"id": track_id, "deleted_at": {"$ne": None}})
+    return {"ok": r.deleted_count > 0}
+
+
 @api_router.delete("/admin/tracks/{track_id}/purge")
 async def admin_purge_track(track_id: str):
     """CANCELLA DEFINITIVAMENTE (bypassa cestino). Rimuove file locale."""
@@ -4862,6 +4880,78 @@ async def admin_ledwall_override(payload: dict):
     }
     await db.station.update_one({"_id": "state"}, {"$set": {"ledwall_override": override}}, upsert=True)
     return {"ok": True, "override": override}
+
+
+@api_router.post("/admin/ledwall/upload-video")
+async def admin_ledwall_upload_video(file: UploadFile = File(...), name: Optional[str] = Form(None)):
+    """Upload MP4/WebM su Object Storage. Ritorna URL utilizzabile in
+    Master Clock (`video_source=video`) o negli override."""
+    if not file:
+        raise HTTPException(400, "File mancante")
+    data = await file.read()
+    if len(data) > 200 * 1024 * 1024:
+        raise HTTPException(413, "File troppo grande (max 200MB)")
+    fname_orig = (file.filename or "video.mp4").lower()
+    ext = fname_orig.rsplit(".", 1)[-1] if "." in fname_orig else "mp4"
+    if ext not in ("mp4", "webm", "mov", "m4v"):
+        raise HTTPException(415, f"Estensione non supportata: {ext}")
+    vid_id = uuid.uuid4().hex[:12]
+    local_name = f"ledwall_{vid_id}.{ext}"
+    mime = {"mp4": "video/mp4", "webm": "video/webm",
+            "mov": "video/quicktime", "m4v": "video/x-m4v"}.get(ext, "video/mp4")
+    if not object_storage.is_enabled():
+        raise HTTPException(503, "Object Storage disabilitato")
+    stored = await object_storage.put_bytes(f"ledwall/{local_name}", data, mime)
+    if not stored:
+        raise HTTPException(502, "Upload fallito")
+    video_url = f"/api/ledwall_video/{local_name}"
+    doc = {
+        "id": vid_id,
+        "filename": local_name,
+        "display_name": (name or fname_orig)[:80],
+        "url": video_url,
+        "size": len(data),
+        "mime": mime,
+        "uploaded_at": now_iso(),
+    }
+    await db.ledwall_videos.insert_one(doc.copy())
+    doc.pop("_id", None)
+    return {"ok": True, "video": doc}
+
+
+@api_router.get("/admin/ledwall/videos")
+async def admin_ledwall_list_videos():
+    """Elenca i video caricati per il LedWall (max 100 recenti)."""
+    rows = await db.ledwall_videos.find({}, {"_id": 0}).sort("uploaded_at", -1).limit(100).to_list(100)
+    return {"videos": rows}
+
+
+@api_router.delete("/admin/ledwall/videos/{video_id}")
+async def admin_ledwall_delete_video(video_id: str):
+    r = await db.ledwall_videos.delete_one({"id": video_id})
+    return {"ok": r.deleted_count > 0}
+
+
+@api_router.get("/ledwall_video/{filename}")
+async def get_ledwall_video(filename: str, request: Request):
+    """Serve video LedWall da Object Storage con supporto Range."""
+    if "/" in filename or ".." in filename:
+        raise HTTPException(400, "Invalid filename")
+    ext = filename.rsplit(".", 1)[-1].lower()
+    mime = {"mp4": "video/mp4", "webm": "video/webm",
+            "mov": "video/quicktime", "m4v": "video/x-m4v"}.get(ext, "video/mp4")
+    if not object_storage.is_enabled():
+        raise HTTPException(503, "Object Storage disabilitato")
+    streamed = await object_storage.stream_mp3(
+        f"ledwall/{filename}", cache_to=None, range_header=request.headers.get("range")
+    )
+    if not streamed:
+        raise HTTPException(404, "Video non trovato")
+    gen, content_length, status_code, content_range = streamed
+    headers = {"Cache-Control": "public, max-age=3600", "Accept-Ranges": "bytes"}
+    if content_length: headers["Content-Length"] = content_length
+    if content_range: headers["Content-Range"] = content_range
+    return StreamingResponse(gen, status_code=status_code, media_type=mime, headers=headers)
 
 
 # ============================================================================
