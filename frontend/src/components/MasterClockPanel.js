@@ -32,6 +32,7 @@ export default function MasterClockPanel() {
   const [editing, setEditing] = useState(null); // slot in edit
   const [saving, setSaving] = useState(false);
   const [nowHour, setNowHour] = useState(new Date().getHours());
+  const [videoLib, setVideoLib] = useState([]);
 
   const load = async () => {
     try {
@@ -40,6 +41,11 @@ export default function MasterClockPanel() {
     } catch (e) {
       toast.error("Errore caricamento palinsesto");
     }
+    // v13.9 · carica libreria video per "Link Partner dinamico" (dropdown)
+    try {
+      const v = await api.get("/admin/ledwall/videos");
+      setVideoLib(v.data.videos || []);
+    } catch (e) {}
   };
 
   useEffect(() => {
@@ -58,6 +64,7 @@ export default function MasterClockPanel() {
         kind: editing.kind || "music",
         video_source: editing.video_source || "effects",
         video_url: editing.video_url || "",
+        partner_link: editing.partner_link || "",
       });
       toast.success(`${String(editing.hour).padStart(2, "0")}:00 salvato`);
       setEditing(null);
@@ -197,19 +204,68 @@ export default function MasterClockPanel() {
 
           {(editing.video_source === "video" || editing.video_source === "cam") && (
             <>
+              {/* v13.9 · Link Partner dinamico — scegli dalla libreria mp4 caricati */}
+              {editing.video_source === "video" && videoLib.length > 0 && (
+                <>
+                  <label className="label-mono block mb-1" title="Scegli un video dalla libreria (Magazzino Universale) oppure incolla un URL sotto">
+                    🔗 Link Partner (video da libreria)
+                  </label>
+                  <select
+                    value={editing.video_url || ""}
+                    onChange={(e) => setEditing({ ...editing, video_url: e.target.value })}
+                    className="w-full bg-black border border-white/10 rounded px-2 py-1.5 text-sm text-white mb-2"
+                    data-testid="clock-edit-video-lib"
+                    title="Dropdown collegato ai file MP4 caricati nel Magazzino Universale"
+                  >
+                    <option value="">— URL manuale sotto —</option>
+                    {videoLib.map((v) => (
+                      <option key={v.id} value={v.url}>
+                        {v.display_name || v.filename}
+                        {v.duration_sec ? ` (${Math.round(v.duration_sec)}s)` : ""}
+                        {v.is_stinger ? " · stinger" : ""}
+                      </option>
+                    ))}
+                  </select>
+                </>
+              )}
               <label className="label-mono block mb-1" title="URL del video mp4/webm o stream HLS/mp4">
-                URL video/stream
+                URL video/stream (manuale)
               </label>
               <input
                 type="url"
                 value={editing.video_url || ""}
                 onChange={(e) => setEditing({ ...editing, video_url: e.target.value })}
-                placeholder={editing.video_source === "cam" ? "https://.../live.m3u8" : "https://.../clip.mp4"}
-                className="w-full bg-black border border-white/10 rounded px-2 py-1.5 text-sm text-white mb-3 font-mono"
+                placeholder={editing.video_source === "cam" ? "https://.../live.m3u8" : "https://.../clip.mp4 oppure /api/ledwall_video/..."}
+                className="w-full bg-black border border-white/10 rounded px-2 py-1.5 text-sm text-white mb-2 font-mono"
                 data-testid="clock-edit-video-url"
               />
+              {/* v13.9 · Mini preview del video scelto */}
+              {editing.video_url && (
+                <div className="mb-3 rounded overflow-hidden bg-black border border-cyan-500/30" style={{ maxHeight: 120 }}>
+                  <video
+                    key={editing.video_url}
+                    src={editing.video_url}
+                    autoPlay muted loop playsInline
+                    className="w-full max-h-[120px] object-cover"
+                    data-testid="clock-edit-video-preview"
+                    onError={() => toast.error("Preview: URL non riproducibile")}
+                  />
+                </div>
+              )}
             </>
           )}
+
+          <label className="label-mono block mb-1" title="URL sponsor/CTA cliccabile (opzionale)">
+            🎯 Link Partner sponsor (opzionale)
+          </label>
+          <input
+            type="url"
+            value={editing.partner_link || ""}
+            onChange={(e) => setEditing({ ...editing, partner_link: e.target.value })}
+            placeholder="https://sponsor-partner.example"
+            className="w-full bg-black border border-white/10 rounded px-2 py-1.5 text-sm text-white mb-3 font-mono"
+            data-testid="clock-edit-partner-link"
+          />
 
           <label className="label-mono block mb-1" title="Titolo mostrato nel palinsesto della Home">Titolo</label>
           <input

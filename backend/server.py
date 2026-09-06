@@ -4834,6 +4834,7 @@ async def admin_set_schedule_hour(hour: int, payload: dict):
         "kind": kind,
         "video_source": video_source,
         "video_url": (payload.get("video_url") or "").strip()[:500] or None,
+        "partner_link": (payload.get("partner_link") or "").strip()[:500] or None,
         "updated_at": now_iso(),
     }
     await db.program_schedule.update_one({"hour": hour}, {"$set": doc}, upsert=True)
