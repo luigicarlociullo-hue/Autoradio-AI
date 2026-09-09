@@ -8,7 +8,7 @@ import logging
 import asyncio
 import random
 from pathlib import Path
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, ValidationError
 from typing import List, Optional, Literal
 import uuid
 from datetime import datetime, timezone, timedelta
@@ -827,10 +827,22 @@ async def admin_broadcast_command(cmd_type: str = Form(...)):
 
 
 # ----------------------- Tracks -----------------------
-@api_router.get("/tracks", response_model=List[Track])
+@api_router.get("/tracks")
 async def list_tracks(limit: int = 500):
+    # One malformed doc (missing a required field like genre/mood/lyrics_excerpt/
+    # llm_provider/cover_seed/duration_sec - typically a manually-inserted test
+    # or partially-completed admin_upload record) used to 500 this endpoint for
+    # ALL tracks via response_model=List[Track] validating the whole batch at
+    # once. Validate per-document instead so one bad record can never take down
+    # the Home page / Dashboard for every other track.
     docs = await db.tracks.find({}, {"_id": 0}).sort("created_at", -1).to_list(limit)
-    return docs
+    tracks = []
+    for doc in docs:
+        try:
+            tracks.append(Track(**doc))
+        except ValidationError as e:
+            logger.warning("Skipping malformed track doc id=%s: %s", doc.get("id"), e)
+    return tracks
 
 
 @api_router.get("/tracks/daily")
