@@ -5465,6 +5465,78 @@ _CLOCK_QUEUE_LOOKAHEAD = 8   # numero di brani in coda dopo il current
 _DJ_EVERY_N_TRACKS = 3       # v13.16 · un jingle DJ ogni 3 brani musicali
 
 
+async def _clock_pick_spoken_segment() -> Optional[dict]:
+    """v13.17 · Pesca un segmento parlato pronto dalla priority_queue
+    (Dual-Brain, Pillole FM, Voice Live/community) e lo normalizza in un
+    elemento riproducibile dal clock sincronizzato (stesso shape usato da
+    _clock_pick_track/_clock_pick_dj_jingle: id/title/artist/audio_url/
+    duration_sec). Prima di questa fix i segmenti parlati restavano
+    intrappolati in priority_queue perché _clock_advance() leggeva solo
+    tracce musicali e jingle preregistrati, mai la coda prioritaria — quindi
+    la voce dei DJ non arrivava mai al player live anche con FM MODE attivo.
+
+    Se il documento contiene più voci (es. Dual-Brain Leo+Max) ne riproduce
+    una e rimette la restante in coda per il prossimo turno DJ."""
+    pq_doc = await db.priority_queue.find_one_and_delete({}, sort=[("created_at", 1)])
+    if not pq_doc:
+        return None
+
+    async def _dur(url: Optional[str], fallback: float = 20.0) -> float:
+        if not url or not url.startswith("/api/tts/"):
+            return fallback
+        try:
+            fname = url.replace("/api/tts/", "").split("?")[0]
+            path = elevenlabs_service.TTS_DIR / fname
+            if not path.exists():
+                return fallback
+            probe = await video_service.probe_video(str(path))
+            d = (probe or {}).get("duration_sec")
+            return float(d) if d else fallback
+        except Exception:
+            return fallback
+
+    kind = pq_doc.get("kind")
+    if kind == "dual_brain":
+        leo_url = pq_doc.get("leo_speech_url")
+        max_url = pq_doc.get("max_speech_url")
+        if leo_url:
+            if max_url:
+                # rimette Max in coda (created_at aggiornato) per il prossimo turno DJ
+                remainder = dict(pq_doc)
+                remainder["leo_speech_url"] = None
+                remainder["created_at"] = now_iso()
+                await db.priority_queue.insert_one(remainder)
+            return {
+                "id": f"{pq_doc['id']}-leo", "title": pq_doc.get("title") or "Dual-Brain · Leo",
+                "artist": "Leo", "audio_url": leo_url, "duration_sec": await _dur(leo_url),
+            }
+        if max_url:
+            return {
+                "id": f"{pq_doc['id']}-max", "title": pq_doc.get("title") or "Dual-Brain · Max",
+                "artist": "Max", "audio_url": max_url, "duration_sec": await _dur(max_url),
+            }
+        return None
+    if kind in ("pill_past", "pill_future"):
+        url = pq_doc.get("speech_url")
+        if not url:
+            return None
+        return {
+            "id": pq_doc["id"], "title": pq_doc.get("title") or "Pillola R-A.I.",
+            "artist": "R-A.I.", "audio_url": url, "duration_sec": await _dur(url),
+        }
+    # fallback generico: segmenti tipo "answer"/voice_live con audio già pronto
+    url = pq_doc.get("music_audio_url") or pq_doc.get("audio_url")
+    if not url:
+        return None
+    return {
+        "id": pq_doc.get("id") or str(uuid.uuid4()),
+        "title": pq_doc.get("title") or "Segmento DJ",
+        "artist": pq_doc.get("dj_name") or "R-A.I.",
+        "audio_url": url,
+        "duration_sec": float(pq_doc.get("duration_sec") or 30),
+    }
+
+
 async def _clock_pick_dj_jingle() -> Optional[dict]:
     """Pesca un jingle DJ dalla libreria (`tracks.is_jingle=true`). Sono file
     audio brevi (10-25s) preregistrati con le voci Leo/Aria/Max — permettono
@@ -5538,16 +5610,20 @@ async def _clock_pick_track() -> Optional[dict]:
             dp, _window, _window_end,
         ],
     }
-    # Pesca il meno recente per rotazione FIFO — poi aggiorniamo last_played_at
-    tr = await db.tracks.find_one(q, {"_id": 0, "id": 1, "title": 1, "artist": 1,
-                                       "audio_url": 1, "duration_sec": 1, "bpm": 1},
-                                   sort=[("last_played_at", 1)])
+    # v13.17 · Pesca a caso tra i brani meno recenti (pool + shuffle) invece
+    # del rigido "meno recente" (FIFO), che produceva un ordine fisso e
+    # prevedibile — poi aggiorniamo last_played_at come prima.
+    _pool_size = 15
+    tr_pool = await db.tracks.find(q, {"_id": 0, "id": 1, "title": 1, "artist": 1,
+                                        "audio_url": 1, "duration_sec": 1, "bpm": 1}) \
+                              .sort([("last_played_at", 1)]).limit(_pool_size).to_list(length=_pool_size)
+    tr = random.choice(tr_pool) if tr_pool else None
     if not tr:
-        tr = await db.tracks.find_one(
+        tr_pool = await db.tracks.find(
             {"status": "ready", "audio_url": {"$ne": None}, "on_air": {"$ne": False}, "deleted_at": None},
             {"_id": 0, "id": 1, "title": 1, "artist": 1, "audio_url": 1, "duration_sec": 1, "bpm": 1},
-            sort=[("last_played_at", 1)],
-        )
+        ).sort([("last_played_at", 1)]).limit(_pool_size).to_list(length=_pool_size)
+        tr = random.choice(tr_pool) if tr_pool else None
     if not tr:
         return None
     tr["duration_sec"] = int(tr.get("duration_sec") or 180)
@@ -5607,7 +5683,12 @@ async def _clock_advance(force: bool = False) -> dict:
         need_dj = (counter > 0 and counter % _DJ_EVERY_N_TRACKS == 0)
         picked = None
         if need_dj:
-            picked = await _clock_pick_dj_jingle()
+            # v13.17 · prova prima un vero segmento parlato (Dual-Brain/Pillole/
+            # Voice Live) dalla priority_queue; solo se non c'è nulla di pronto
+            # ripiega sul jingle preregistrato dalla libreria tracce.
+            picked = await _clock_pick_spoken_segment()
+            if not picked:
+                picked = await _clock_pick_dj_jingle()
         if not picked:
             picked = await _clock_pick_track()
             # incrementa counter musicale solo quando aggiungiamo musica reale
