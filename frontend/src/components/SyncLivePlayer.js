@@ -123,8 +123,8 @@ export default function SyncLivePlayer() {
         hls.loadSource(hlsUrl);
         hls.attachMedia(audio);
         await new Promise((resolve, reject) => {
-          hls.on(Hls.Events.MANIFEST_PARSED, resolve);
-          hls.on(Hls.Events.ERROR, (_e, data) => {
+          hls.once(Hls.Events.MANIFEST_PARSED, resolve);
+          hls.once(Hls.Events.ERROR, (_e, data) => {
             if (data.fatal) reject(new Error(data.details || "HLS fatal"));
           });
         });
@@ -132,6 +132,32 @@ export default function SyncLivePlayer() {
         setStatus("playing");
         window.dispatchEvent(new CustomEvent("rai:sync:play", { detail: { playing: true } }));
         toast.success("Sync Live ON — hls.js");
+
+        // v13.18 · Recupero persistente post-avvio. Prima di questa fix
+        // l'unico listener ERROR era quello sopra, usato solo per rigettare
+        // la promise di avvio: dopo l'avvio nessuno ascoltava più gli errori,
+        // quindi un errore fatale hls.js (segmento 404, stallo di rete dopo
+        // un jingle) fermava lo stream per sempre senza alcun recupero.
+        hls.on(Hls.Events.ERROR, (_e, data) => {
+          if (!data.fatal) return;
+          console.warn("[SyncLive] hls.js fatal error", data.type, data.details);
+          switch (data.type) {
+            case Hls.ErrorTypes.NETWORK_ERROR:
+              hls.startLoad();
+              break;
+            case Hls.ErrorTypes.MEDIA_ERROR:
+              hls.recoverMediaError();
+              break;
+            default:
+              // Non recuperabile sul posto: distruggi e riparti da capo.
+              try { hls.destroy(); } catch {}
+              hlsRef.current = null;
+              setStatus("error");
+              toast.error("Interruzione stream — riconnessione in corso…");
+              setTimeout(() => { startSync().catch(() => {}); }, 3000);
+              break;
+          }
+        });
         return;
       }
       throw new Error("HLS non supportato da questo browser");

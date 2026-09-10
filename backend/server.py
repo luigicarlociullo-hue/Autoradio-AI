@@ -5461,8 +5461,119 @@ async def chat_generate_avatar(payload: dict):
 # alla riattivazione l'advance-loop "salta" al presente saltando le tracce
 # che sarebbero già finite, ripartendo dalla successiva coerente.
 
+# ============================================================================
+# v13.17 · SMART FLOW TIMELINE — Coda a inserimento libero, soft-sync
+# ============================================================================
 _CLOCK_QUEUE_LOOKAHEAD = 8   # numero di brani in coda dopo il current
+# Sostituisce (o affianca) il Master Clock rigido 24h con una timeline
+# minuto-per-minuto. L'admin inserisce eventi con un timestamp preciso.
+# L'advance loop pesca eventi dovuti (scheduled_at <= now) SOLO quando il
+# brano corrente termina naturalmente (via `_is_expired` che rispetta
+# `duration_sec`). Zero troncamenti, mai su onEnded.
+
+async def _timeline_pick_due() -> Optional[dict]:
+    """Ritorna un evento timeline maturo (scheduled_at <= now) e lo marca
+    come `consumed` atomicamente. Ignora eventi troppo vecchi (>2h)."""
+    now = datetime.now(timezone.utc)
+    cutoff_old = (now - timedelta(hours=2)).isoformat()
+    now_iso_s = now.isoformat()
+    # find_one_and_update per atomicità (concorrenza safe)
+    doc = await db.timeline_events.find_one_and_update(
+        {"status": "pending",
+         "scheduled_at": {"$lte": now_iso_s, "$gte": cutoff_old}},
+        {"$set": {"status": "consumed", "consumed_at": now_iso_s}},
+        sort=[("scheduled_at", 1)],
+        return_document=True,
+        projection={"_id": 0},
+    )
+    if not doc:
+        return None
+    # Costruisce l'entry compatibile con la queue del clock
+    entry = {
+        "id": doc.get("id") or f"tl-{uuid.uuid4().hex[:10]}",
+        "title": doc.get("title") or "Timeline event",
+        "artist": doc.get("artist") or "R-A.I. Timeline",
+        "audio_url": doc.get("audio_url"),
+        "duration_sec": int(doc.get("duration_sec") or 30),
+        "is_timeline": True,
+        "timeline_kind": doc.get("kind"),
+    }
+    if not entry["audio_url"]:
+        # Se non c'è audio, marchiamo come skipped e riproviamo
+        await db.timeline_events.update_one({"id": doc.get("id")}, {"$set": {"status": "skipped_no_audio"}})
+        return None
+    return entry
+
+
+@api_router.post("/admin/timeline")
+async def admin_timeline_create(payload: dict):
+    """Inserisci un evento nella Smart Flow Timeline.
+    Body: {scheduled_at (ISO), kind, title?, artist?, audio_url, duration_sec?}.
+    Soft-sync: il server attenderà la fine naturale del brano prima di lanciarlo."""
+    sched = (payload.get("scheduled_at") or "").strip()
+    if not sched:
+        raise HTTPException(400, "scheduled_at richiesto (ISO datetime)")
+    try:
+        datetime.fromisoformat(sched.replace("Z", "+00:00"))
+    except Exception:
+        raise HTTPException(400, "scheduled_at non parsabile come ISO datetime")
+    audio_url = (payload.get("audio_url") or "").strip()
+    if not audio_url:
+        raise HTTPException(400, "audio_url richiesto")
+    ev = {
+        "id": f"tl-{uuid.uuid4().hex[:12]}",
+        "scheduled_at": sched,
+        "kind": (payload.get("kind") or "insert").strip()[:40],
+        "title": (payload.get("title") or "").strip()[:120] or None,
+        "artist": (payload.get("artist") or "").strip()[:120] or None,
+        "audio_url": audio_url,
+        "duration_sec": int(payload.get("duration_sec") or 30),
+        "status": "pending",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.timeline_events.insert_one(ev.copy())
+    ev.pop("_id", None)
+    return {"ok": True, "event": ev}
+
+
+@api_router.get("/admin/timeline")
+async def admin_timeline_list(status: str = "pending", limit: int = 100):
+    """Elenca gli eventi timeline. `status`: pending|consumed|skipped_no_audio|all."""
+    q = {} if status == "all" else {"status": status}
+    rows = await db.timeline_events.find(q, {"_id": 0}).sort("scheduled_at", 1).limit(min(limit, 500)).to_list(500)
+    return {"events": rows, "count": len(rows)}
+
+
+@api_router.delete("/admin/timeline/{event_id}")
+async def admin_timeline_delete(event_id: str):
+    r = await db.timeline_events.delete_one({"id": event_id})
+    return {"ok": r.deleted_count > 0}
+
+
+
 _DJ_EVERY_N_TRACKS = 3       # v13.16 · un jingle DJ ogni 3 brani musicali
+
+
+async def _probe_tts_duration(url: Optional[str]) -> Optional[float]:
+    """v13.18 · Ritorna la durata reale (ffprobe) di un file TTS locale, o
+    None se il file non esiste su disco — MAI un valore indovinato. Prima di
+    questa fix un file TTS mancante produceva comunque un elemento in coda
+    con una durata di ripiego, puntando a un URL che risponde 404: il player
+    hls.js andava in errore fatale a metà riproduzione e restava fermo per
+    sempre (nessun listener di recovery). Restituire None qui permette al
+    chiamante di scartare il segmento invece di mandarlo in onda."""
+    if not url or not url.startswith("/api/tts/"):
+        return None
+    try:
+        fname = url.replace("/api/tts/", "").split("?")[0]
+        path = elevenlabs_service.TTS_DIR / fname
+        if not path.exists():
+            return None
+        probe = await video_service.probe_video(str(path))
+        d = (probe or {}).get("duration_sec")
+        return float(d) if d else None
+    except Exception:
+        return None
 
 
 async def _clock_pick_spoken_segment() -> Optional[dict]:
@@ -5476,55 +5587,51 @@ async def _clock_pick_spoken_segment() -> Optional[dict]:
     la voce dei DJ non arrivava mai al player live anche con FM MODE attivo.
 
     Se il documento contiene più voci (es. Dual-Brain Leo+Max) ne riproduce
-    una e rimette la restante in coda per il prossimo turno DJ."""
+    una e rimette la restante in coda per il prossimo turno DJ. v13.18 · se
+    il file audio manca su disco il segmento viene scartato (mai una durata
+    indovinata su un URL che punta a un 404)."""
     pq_doc = await db.priority_queue.find_one_and_delete({}, sort=[("created_at", 1)])
     if not pq_doc:
         return None
-
-    async def _dur(url: Optional[str], fallback: float = 20.0) -> float:
-        if not url or not url.startswith("/api/tts/"):
-            return fallback
-        try:
-            fname = url.replace("/api/tts/", "").split("?")[0]
-            path = elevenlabs_service.TTS_DIR / fname
-            if not path.exists():
-                return fallback
-            probe = await video_service.probe_video(str(path))
-            d = (probe or {}).get("duration_sec")
-            return float(d) if d else fallback
-        except Exception:
-            return fallback
 
     kind = pq_doc.get("kind")
     if kind == "dual_brain":
         leo_url = pq_doc.get("leo_speech_url")
         max_url = pq_doc.get("max_speech_url")
         if leo_url:
-            if max_url:
-                # rimette Max in coda (created_at aggiornato) per il prossimo turno DJ
-                remainder = dict(pq_doc)
-                remainder["leo_speech_url"] = None
-                remainder["created_at"] = now_iso()
-                await db.priority_queue.insert_one(remainder)
-            return {
-                "id": f"{pq_doc['id']}-leo", "title": pq_doc.get("title") or "Dual-Brain · Leo",
-                "artist": "Leo", "audio_url": leo_url, "duration_sec": await _dur(leo_url),
-            }
+            dur = await _probe_tts_duration(leo_url)
+            if dur is not None:
+                if max_url:
+                    # rimette Max in coda (created_at aggiornato) per il prossimo turno DJ
+                    remainder = dict(pq_doc)
+                    remainder["leo_speech_url"] = None
+                    remainder["created_at"] = now_iso()
+                    await db.priority_queue.insert_one(remainder)
+                return {
+                    "id": f"{pq_doc['id']}-leo", "title": pq_doc.get("title") or "Dual-Brain · Leo",
+                    "artist": "Leo", "audio_url": leo_url, "duration_sec": dur,
+                }
+            leo_url = None  # file mancante: prova Max sotto
         if max_url:
-            return {
-                "id": f"{pq_doc['id']}-max", "title": pq_doc.get("title") or "Dual-Brain · Max",
-                "artist": "Max", "audio_url": max_url, "duration_sec": await _dur(max_url),
-            }
+            dur = await _probe_tts_duration(max_url)
+            if dur is not None:
+                return {
+                    "id": f"{pq_doc['id']}-max", "title": pq_doc.get("title") or "Dual-Brain · Max",
+                    "artist": "Max", "audio_url": max_url, "duration_sec": dur,
+                }
         return None
     if kind in ("pill_past", "pill_future"):
         url = pq_doc.get("speech_url")
-        if not url:
+        dur = await _probe_tts_duration(url)
+        if dur is None:
             return None
         return {
             "id": pq_doc["id"], "title": pq_doc.get("title") or "Pillola R-A.I.",
-            "artist": "R-A.I.", "audio_url": url, "duration_sec": await _dur(url),
+            "artist": "R-A.I.", "audio_url": url, "duration_sec": dur,
         }
     # fallback generico: segmenti tipo "answer"/voice_live con audio già pronto
+    # (musica caricata dall'utente / storage esterno, non un file TTS locale
+    # da probare — usiamo la duration_sec già presente sul documento)
     url = pq_doc.get("music_audio_url") or pq_doc.get("audio_url")
     if not url:
         return None
@@ -5534,6 +5641,40 @@ async def _clock_pick_spoken_segment() -> Optional[dict]:
         "artist": pq_doc.get("dj_name") or "R-A.I.",
         "audio_url": url,
         "duration_sec": float(pq_doc.get("duration_sec") or 30),
+    }
+
+
+_ON_DEMAND_DJ_RUBRICS = ["talk", "history", "interview", "joke", "motivation", "horoscope", "news"]
+
+
+async def _clock_pick_dj_voice_segment() -> Optional[dict]:
+    """v13.18 · Turno DJ: prova prima un vero segmento parlato già pronto in
+    priority_queue; se la coda è vuota (il caso comune — l'unico produttore
+    automatico, il pillole-scheduler, scrive in coda solo in poche ore
+    programmate del giorno), ne genera uno AL VOLO riusando la stessa
+    pipeline di /api/segments/generate (script LLM + TTS ElevenLabs) invece
+    di ripiegare subito sul jingle musicale preregistrato. Se la generazione
+    fallisce (es. credito LLM/TTS esaurito) o il file audio non risulta
+    valido su disco, ritorna None e lascia che il chiamante ripieghi sul
+    jingle — non manda mai in onda un segmento non verificato."""
+    picked = await _clock_pick_spoken_segment()
+    if picked:
+        return picked
+    try:
+        rubric = random.choice(_ON_DEMAND_DJ_RUBRICS)
+        seg = await generate_segment(kind=rubric)
+    except Exception as e:
+        logger.warning(f"[clock] on-demand DJ segment generation failed: {e}")
+        return None
+    if not seg or not seg.speech_audio_url:
+        return None
+    dur = await _probe_tts_duration(seg.speech_audio_url)
+    if dur is None:
+        return None
+    return {
+        "id": seg.id, "title": seg.title or "R-A.I. Talk",
+        "artist": seg.dj_name or "R-A.I.", "audio_url": seg.speech_audio_url,
+        "duration_sec": dur,
     }
 
 
@@ -5656,9 +5797,17 @@ async def _clock_advance(force: bool = False) -> dict:
 
     while force or _is_expired(clock.get("current")):
         force = False
-        # Promuovi head della queue → current
-        q = clock.get("queue") or []
-        promo = q.pop(0) if q else None
+        # v13.17 · Timeline priority — check eventi maturi PRIMA di pescare
+        # dalla queue standard. Soft-sync: entriamo qui solo quando il brano
+        # corrente è già terminato naturalmente (via _is_expired basato su
+        # duration_sec). Zero troncamenti.
+        promo = await _timeline_pick_due()
+        # Se nessun evento timeline dovuto, procedi con queue standard
+        if not promo:
+            q = clock.get("queue") or []
+            promo = q.pop(0) if q else None
+        else:
+            q = clock.get("queue") or []
         if not promo:
             promo = await _clock_pick_track()
         if not promo:
@@ -5676,19 +5825,33 @@ async def _clock_advance(force: bool = False) -> dict:
         # Se il current sarebbe ancora scaduto (advance grande dopo sleep pod),
         # il loop while continuerà a girare a costo trascurabile.
 
+    # v13.18 · Cadenza DJ configurabile dall'utente (Regia → "voce ogni N
+    # brani", campo station.state.dj_talk_every_n_songs). Prima di questa
+    # fix il live clock ignorava del tutto questa impostazione e usava
+    # sempre il valore fisso _DJ_EVERY_N_TRACKS=3 — la Regia non aveva
+    # alcun effetto sulla diretta.
+    try:
+        _station_state = await db.station.find_one({"_id": "state"}, {"dj_talk_every_n_songs": 1}) or {}
+        _dj_every_n = max(1, min(20, int(_station_state.get("dj_talk_every_n_songs") or _DJ_EVERY_N_TRACKS)))
+    except Exception:
+        _dj_every_n = _DJ_EVERY_N_TRACKS
+
     # Riempi la queue fino al lookahead con injection DJ ogni N brani
     while len(clock.get("queue") or []) < _CLOCK_QUEUE_LOOKAHEAD:
         # Decidi se inserire un jingle DJ o un brano musicale
         counter = int(clock.get("music_counter") or 0)
-        need_dj = (counter > 0 and counter % _DJ_EVERY_N_TRACKS == 0)
+        need_dj = (counter > 0 and counter % _dj_every_n == 0)
         picked = None
+        dj_slot_filled = False
         if need_dj:
-            # v13.17 · prova prima un vero segmento parlato (Dual-Brain/Pillole/
-            # Voice Live) dalla priority_queue; solo se non c'è nulla di pronto
-            # ripiega sul jingle preregistrato dalla libreria tracce.
-            picked = await _clock_pick_spoken_segment()
+            # v13.18 · prova prima un vero segmento parlato pronto, poi ne
+            # genera uno al volo se la coda è vuota, e solo come ultima
+            # risorsa ripiega sul jingle preregistrato dalla libreria tracce.
+            picked = await _clock_pick_dj_voice_segment()
             if not picked:
                 picked = await _clock_pick_dj_jingle()
+            if picked:
+                dj_slot_filled = True
         if not picked:
             picked = await _clock_pick_track()
             # incrementa counter musicale solo quando aggiungiamo musica reale
@@ -5696,6 +5859,14 @@ async def _clock_advance(force: bool = False) -> dict:
                 clock["music_counter"] = counter + 1
         if not picked:
             break
+        if dj_slot_filled:
+            # v13.18 · azzera il contatore dopo un turno DJ riuscito. Prima di
+            # questa fix il contatore non veniva mai azzerato qui: con una
+            # cadenza di 1 ("voce dopo ogni brano") e una generazione DJ che
+            # ora riesce quasi sempre (ID sempre nuovo, mai scartato dal
+            # dedup anti-ripetizione), il turno DJ sarebbe rimasto "dovuto"
+            # per sempre riempiendo l'intera coda di sola voce, zero musica.
+            clock["music_counter"] = 0
         # Evita duplicati back-to-back col current e ultimi 2 in coda
         recent_ids = {(clock.get("current") or {}).get("id")}
         for t in (clock.get("queue") or [])[-2:]:
@@ -5746,9 +5917,27 @@ def _clock_now_offset(clock: dict) -> tuple[float, dict]:
 @api_router.get("/stream/now")
 async def stream_now():
     """Verità unica su cosa sta suonando ORA. Il player Sync lo legge per
-    posizionarsi allo stesso istante degli altri ascoltatori."""
+    posizionarsi allo stesso istante degli altri ascoltatori.
+
+    v13.17 · Include `next_crossfade_ms` calcolato dai BPM di current→next
+    quando entrambi disponibili. Formula: base 2000ms · scala per la
+    differenza BPM (∆<8 = 3500ms, ∆<20 = 2500ms, altrimenti 1500ms).
+    Il client hls.js/radioEngine usa questo valore per crossfade intelligente."""
     clock = await _clock_advance()   # self-heal se il pod ha dormito
     offset, cur = _clock_now_offset(clock)
+    next_list = (clock.get("queue") or [])[:5]
+    # BPM crossfade suggestion
+    next_xfade_ms = None
+    if cur and next_list:
+        cur_bpm = cur.get("bpm")
+        nxt_bpm = next_list[0].get("bpm")
+        if cur_bpm and nxt_bpm:
+            delta = abs(int(cur_bpm) - int(nxt_bpm))
+            if delta < 8: next_xfade_ms = 3500
+            elif delta < 20: next_xfade_ms = 2500
+            else: next_xfade_ms = 1500
+        else:
+            next_xfade_ms = 2000
     return {
         "server_time": datetime.now(timezone.utc).isoformat(),
         "current": {
@@ -5760,11 +5949,15 @@ async def stream_now():
             "started_at": cur.get("started_at"),
             "offset_sec": offset,
             "remaining_sec": max(0.0, float(cur.get("duration_sec") or 180) - offset),
+            "bpm": cur.get("bpm"),
+            "is_timeline": bool(cur.get("is_timeline")),
         } if cur else None,
         "next": [{
             "id": t.get("id"), "title": t.get("title"), "artist": t.get("artist"),
             "audio_url": t.get("audio_url"), "duration_sec": t.get("duration_sec"),
-        } for t in (clock.get("queue") or [])[:5]],
+            "bpm": t.get("bpm"), "is_timeline": bool(t.get("is_timeline")),
+        } for t in next_list],
+        "next_crossfade_ms": next_xfade_ms,
     }
 
 
