@@ -5,6 +5,13 @@
 > zero rigenerazioni ridondanti. Riusare sempre asset esistenti prima di generare.
 > Le domande all'utente sono ammesse SOLO se bloccanti. Applicare a ogni sessione futura.
 
+## v13.17 · SMART FLOW TIMELINE · Coda elastica soft-sync (2026-02-10)
+- **Backend verificato via curl E2E**: `POST /api/admin/timeline` inserisce evento con `scheduled_at` ISO, `kind`, `audio_url`, `duration_sec`. `GET /api/admin/timeline?status=pending|consumed|all` lista in ordine cronologico. `DELETE /api/admin/timeline/{id}` rimuove.
+- **Soft-sync provato in produzione**: evento con `scheduled_at` nel passato è rimasto `pending` mentre "Lose Control Tonight" continuava (rem 69s → 9s), poi promosso a `current` (is_timeline=true) solo dopo fine naturale. Zero troncamenti. Coda ripristinata sul brano successivo.
+- **Frontend `<SmartFlowTimelinePanel/>`** sostituisce `<MasterClockPanel/>` in Dashboard fascia "Tempi & Pensiero": input `datetime-local`, dropdown Kind (jingle/past_pill/future_pill/rubric/insert/ad), dropdown Sorgente da `/admin/tracks/searchable`, durata, tabs "In coda / Storico" con auto-refresh 8s, rimozione evento singola. Live current in header con `remaining_sec`.
+- **File**: `/app/frontend/src/components/SmartFlowTimelinePanel.js`. Old `MasterClockPanel.js` conservato ma non più importato — candidato eliminazione.
+
+
 ## v13.4 · LE STELLE DI NEURONI · Perfezione Editoriale (2026-02-05)
 - **Rinominato ovunque** `RADIOSCOPO` → **LE STELLE DI NEURONI** con sottotitolo "L'oroscopo tech di R-A.I." (Home widget + Regia panel). API path `/api/radioscope` resta invariato per compatibilità interna.
 - **Widget compatto** in Home: max-w-3xl (era 7xl), altezza singolo segno h-14 (era aspect-square ~180px su desktop wide), 2 righe × 6 segni, celle piccole con icona base + label 4 caratteri. Sezione totale ~150px.

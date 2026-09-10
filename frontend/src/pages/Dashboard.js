@@ -5,7 +5,7 @@ import { Radio, Power, Trash2, Sparkles, Zap, Music2, Newspaper, MessageCircle, 
 import { lineInMixer } from "@/lib/lineInMixer";
 import { endpoints, api } from "@/lib/api";
 import BrandName from "@/components/BrandName";
-import MasterClockPanel from "@/components/MasterClockPanel";
+import SmartFlowTimelinePanel from "@/components/SmartFlowTimelinePanel";
 import BroadcasterPanel from "@/components/BroadcasterPanel";
 import StellePanel from "@/components/StellePanel";
 import AIMasterControlPanel from "@/components/AIMasterControlPanel";
@@ -169,9 +169,9 @@ export default function Dashboard() {
         {/* ══════════════════════════════════════════════════════════════════
             FASCIA CENTRALE · TEMPI & PENSIERO — Master Clock + Live Brain
             ══════════════════════════════════════════════════════════════════ */}
-        <BandHeader icon="🕰️" title="TEMPI & PENSIERO" subtitle="Palinsesto 24H + monitor pensiero server-side" color="#00E5FF" />
+        <BandHeader icon="🕰️" title="TEMPI & PENSIERO" subtitle="Timeline elastica soft-sync + monitor pensiero server-side" color="#00E5FF" />
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-          <MasterClockPanel />
+          <SmartFlowTimelinePanel />
           <BroadcasterPanel />
           <StellePanel />
           <GoLivePanel />
