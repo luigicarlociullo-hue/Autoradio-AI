@@ -5505,11 +5505,19 @@ async def _timeline_pick_due() -> Optional[dict]:
     entry = {
         "id": doc.get("id") or f"tl-{uuid.uuid4().hex[:10]}",
         "title": doc.get("title") or "Timeline event",
-        "artist": doc.get("artist") or "R-A.I. Timeline",
+        "artist": doc.get("artist") or doc.get("dj_name") or "R-A.I. Timeline",
         "audio_url": doc.get("audio_url"),
         "duration_sec": int(doc.get("duration_sec") or 30),
         "is_timeline": True,
         "timeline_kind": doc.get("kind"),
+        # v13.18 · DJ assegnato all'evento (Leo/Aria/Max/L&C) — usato dal
+        # frontend per mostrare l'avatar e dal player per il fade-in
+        "dj_id": doc.get("dj_id"),
+        "dj_name": doc.get("dj_name"),
+        "voice_key": doc.get("voice_key"),
+        # v13.18 · Silence padding: al player serve un'attesa buffer per
+        # non tagliare le prime sillabe del talk
+        "silence_pad_ms": int(doc.get("silence_pad_ms") or 350),
     }
     if not entry["audio_url"]:
         # Se non c'è audio, marchiamo come skipped e riproviamo
@@ -5521,8 +5529,11 @@ async def _timeline_pick_due() -> Optional[dict]:
 @api_router.post("/admin/timeline")
 async def admin_timeline_create(payload: dict):
     """Inserisci un evento nella Smart Flow Timeline.
-    Body: {scheduled_at (ISO), kind, title?, artist?, audio_url, duration_sec?}.
-    Soft-sync: il server attenderà la fine naturale del brano prima di lanciarlo."""
+    Body: {scheduled_at (ISO), kind, title?, artist?, audio_url, duration_sec?,
+           dj_id?, dj_name?, silence_pad_ms?}.
+    Soft-sync: il server attenderà la fine naturale del brano prima di lanciarlo.
+    Se `dj_id` è specificato, il record del DJ viene risolto in `dj_name` +
+    `voice_key` per il rendering dell'avatar nel player."""
     sched = (payload.get("scheduled_at") or "").strip()
     if not sched:
         raise HTTPException(400, "scheduled_at richiesto (ISO datetime)")
@@ -5533,6 +5544,17 @@ async def admin_timeline_create(payload: dict):
     audio_url = (payload.get("audio_url") or "").strip()
     if not audio_url:
         raise HTTPException(400, "audio_url richiesto")
+    # Risolvi DJ (opzionale) → recupera name + voice_key
+    dj_id = (payload.get("dj_id") or "").strip() or None
+    dj_name = (payload.get("dj_name") or "").strip() or None
+    voice_key = None
+    if dj_id or dj_name:
+        q = {"id": dj_id} if dj_id else {"name": dj_name}
+        dj_doc = await db.djs.find_one(q, {"_id": 0, "id": 1, "name": 1, "voice_key": 1})
+        if dj_doc:
+            dj_id = dj_doc.get("id")
+            dj_name = dj_doc.get("name")
+            voice_key = dj_doc.get("voice_key")
     ev = {
         "id": f"tl-{uuid.uuid4().hex[:12]}",
         "scheduled_at": sched,
@@ -5541,6 +5563,10 @@ async def admin_timeline_create(payload: dict):
         "artist": (payload.get("artist") or "").strip()[:120] or None,
         "audio_url": audio_url,
         "duration_sec": int(payload.get("duration_sec") or 30),
+        "dj_id": dj_id,
+        "dj_name": dj_name,
+        "voice_key": voice_key,
+        "silence_pad_ms": int(payload.get("silence_pad_ms") or 350),
         "status": "pending",
         "created_at": datetime.now(timezone.utc).isoformat(),
     }

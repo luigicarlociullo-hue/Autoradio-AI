@@ -253,8 +253,17 @@ class RadioEngine {
 
   getFakeAmplitude() {
     // Used by visualizer when speaking via Web Speech (no analyser access)
-    if (!this.synth) return 0;
-    return this.synth.speaking ? 0.55 + Math.random() * 0.4 : 0;
+    if (this.synth && this.synth.speaking) return 0.55 + Math.random() * 0.4;
+    // v13.18 · Fallback anche per lo Sync Live HLS: se il player è ON ma
+    // l'analyser è piatto (safari senza createMediaElementSource, MSE che
+    // non espone dati, ecc), il visualizer riceve comunque un segnale
+    // vivo (onda sinusoidale lenta + noise rosa) invece di restare fermo.
+    if (this._syncLivePlaying) {
+      const t = (typeof performance !== "undefined" ? performance.now() : Date.now()) / 1000;
+      const base = 0.30 + 0.14 * Math.sin(t * 1.7) + 0.10 * Math.sin(t * 4.3);
+      return Math.max(0.15, Math.min(0.95, base + Math.random() * 0.12));
+    }
+    return 0;
   }
 
   /**
@@ -1903,4 +1912,16 @@ class RadioEngine {
 }
 
 const engine = new RadioEngine();
+
+// v13.18 · Listener globale per il segnale del SyncLivePlayer.
+// Quando il player HLS parte/si ferma, il visualizer sa se deve usare il
+// fallback getFakeAmplitude() anche in assenza di analyser cablato.
+if (typeof window !== "undefined") {
+  try {
+    window.addEventListener("rai:sync:play", (e) => {
+      engine._syncLivePlaying = !!(e && e.detail && e.detail.playing);
+    });
+  } catch (_) {}
+}
+
 export default engine;

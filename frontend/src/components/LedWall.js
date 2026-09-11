@@ -116,6 +116,21 @@ export default function LedWall({
         high /= (60 * 255);
       }
 
+      // v13.18 · FALLBACK ampiezza: se l'analyser è piatto (MSE su Chrome
+      // senza cablaggio Web Audio, Safari nativo che non espone dati, oppure
+      // il player HLS non è ancora agganciato) ma il segnale
+      // `rai:sync:play` è ON, usa getFakeAmplitude() per animare comunque
+      // stelle cadenti, ologrammi e onde sinusoidali. Zero visual muti.
+      const analyserFlat = (bass + mid + high) < 0.02;
+      if (analyserFlat && (isPlaying || syncPlaying)) {
+        const fake = radioEngine.getFakeAmplitude?.() || 0;
+        if (fake > 0.05) {
+          bass = fake * 0.9;
+          mid = fake * 0.7;
+          high = fake * 0.5;
+        }
+      }
+
       const now = new Date();
       const hour = now.getHours();
       const nightMode = (hour >= 22 || hour < 4);

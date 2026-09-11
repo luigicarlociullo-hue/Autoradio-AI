@@ -57,6 +57,7 @@ export default function SmartFlowTimelinePanel() {
   const [pending, setPending] = useState([]);
   const [consumed, setConsumed] = useState([]);
   const [sources, setSources] = useState([]); // /admin/tracks/searchable
+  const [djs, setDjs] = useState([]);        // /djs
   const [tab, setTab] = useState("pending"); // pending | consumed
   const [busy, setBusy] = useState(false);
   const [form, setForm] = useState(() => {
@@ -69,6 +70,7 @@ export default function SmartFlowTimelinePanel() {
       audio_url: "",
       title: "",
       duration_sec: 30,
+      dj_id: "",
     };
   });
   const pollRef = useRef(null);
@@ -91,9 +93,17 @@ export default function SmartFlowTimelinePanel() {
       setSources(r.data.tracks || []);
     } catch {}
   };
+  const loadDjs = async () => {
+    try {
+      const r = await api.get(`/djs`);
+      // Solo DJ diurni (Leo, Aria, Max, L&C) — night_slot null/absent
+      const daytime = (r.data || []).filter((d) => !d.night_slot);
+      setDjs(daytime);
+    } catch {}
+  };
 
   useEffect(() => {
-    loadNow(); loadEvents("pending"); loadEvents("consumed"); loadSources();
+    loadNow(); loadEvents("pending"); loadEvents("consumed"); loadSources(); loadDjs();
     pollRef.current = setInterval(() => {
       loadNow();
       loadEvents("pending");
@@ -131,6 +141,7 @@ export default function SmartFlowTimelinePanel() {
         title: form.title || undefined,
         audio_url: form.audio_url,
         duration_sec: Number(form.duration_sec) || 30,
+        dj_id: form.dj_id || undefined,
       };
       await api.post("/admin/timeline", body);
       toast.success(`Evento inserito · ${fmtWhen(iso)}`);
@@ -138,6 +149,7 @@ export default function SmartFlowTimelinePanel() {
       setForm({
         scheduled_at: toLocalInput(t),
         kind: form.kind, source_id: "", audio_url: "", title: "", duration_sec: 30,
+        dj_id: form.dj_id,
       });
       loadEvents("pending");
     } catch (e) {
@@ -261,6 +273,25 @@ export default function SmartFlowTimelinePanel() {
             </select>
           </div>
 
+          <div className="md:col-span-1">
+            <label className="label-mono block mb-1" title="Speaker che intervierrà su questo evento. Determina voce ElevenLabs + avatar mostrato nel player.">
+              DJ speaker
+            </label>
+            <select
+              value={form.dj_id}
+              onChange={(e) => setForm({ ...form, dj_id: e.target.value })}
+              className="w-full bg-black border border-white/10 rounded px-2 py-1.5 text-sm text-white"
+              data-testid="timeline-input-dj"
+            >
+              <option value="">— nessuno (traccia pura) —</option>
+              {djs.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
           <div className="md:col-span-2">
             <label className="label-mono block mb-1">Titolo mostrato (opzionale)</label>
             <input
@@ -363,8 +394,18 @@ export default function SmartFlowTimelinePanel() {
               </div>
               <div className="flex-1 min-w-0">
                 <div className="truncate text-sm text-white">{ev.title || "—"}</div>
-                <div className="truncate text-[10px] font-mono text-zinc-500">
-                  {ev.audio_url}
+                <div className="truncate text-[10px] font-mono text-zinc-500 flex items-center gap-2">
+                  {ev.dj_name && (
+                    <span
+                      className="px-1.5 py-0.5 rounded uppercase tracking-wider"
+                      style={{ background: "rgba(0,229,255,0.14)", color: "#00E5FF", border: "1px solid rgba(0,229,255,0.4)" }}
+                      data-testid={`timeline-row-dj-${ev.id}`}
+                      title="Speaker assegnato all'evento"
+                    >
+                      🎙 {ev.dj_name}
+                    </span>
+                  )}
+                  <span className="truncate">{ev.audio_url}</span>
                 </div>
               </div>
               <div className="text-[10px] font-mono text-zinc-400 min-w-[80px] text-right">

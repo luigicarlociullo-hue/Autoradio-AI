@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { Radio, Loader2, Zap, ZapOff } from "lucide-react";
 import Hls from "hls.js";
 import { toast } from "sonner";
+import radioEngine from "../lib/radioEngine";
 
 /**
  * SyncLivePlayer — v13.6 TRUE BROADCASTER
@@ -22,6 +23,60 @@ export default function SyncLivePlayer() {
   const hlsRef = useRef(null);
   const nowPollRef = useRef(null);
   const prevVolRef = useRef(null);
+  // v13.18 · MediaElementSource creato UNA SOLA VOLTA per l'element audio:
+  // il browser lancia InvalidStateError se lo si crea due volte.
+  const wiredRef = useRef(false);
+
+  /**
+   * v13.18 · Silence Padding & Audio Wiring
+   *
+   * (1) Aggancia il tag <audio> al grafo Web Audio del radioEngine (musicBus)
+   *     così l'analyser vede l'ampiezza reale dello stream HLS e i visual
+   *     effects (stelle cadenti, ologrammi, onde) si accendono senza fake.
+   * (2) All'inizio del play alza il volume da 0 a 1 in ~500ms invece che
+   *     "d'un colpo": evita di tagliare la prima sillaba di un talk DJ
+   *     quando il buffer HLS non è ancora pieno.
+   */
+  const wireToRadioEngine = () => {
+    const audio = audioRef.current;
+    if (!audio || wiredRef.current) return;
+    try {
+      const ctx = radioEngine.ensureAudioCtx?.();
+      if (!ctx) return;
+      // createMediaElementSource è one-shot per elemento: guardia contro doppie chiamate
+      const src = ctx.createMediaElementSource(audio);
+      if (radioEngine.musicBus) {
+        src.connect(radioEngine.musicBus);
+      } else {
+        src.connect(ctx.destination);
+      }
+      wiredRef.current = true;
+      console.log("[SyncLive] audio wired to radioEngine.musicBus — analyser live");
+    } catch (e) {
+      // Alcuni browser lanciano se già collegato: OK, ignora.
+      console.warn("[SyncLive] wireToRadioEngine skipped:", e?.message || e);
+      wiredRef.current = true;
+    }
+  };
+
+  // Fade-in dolce: da 0 a target in `ms` millisecondi.
+  const fadeInPlayback = (targetVol = 1.0, ms = 500) => {
+    const a = audioRef.current;
+    if (!a) return;
+    try {
+      const steps = 20;
+      const stepMs = Math.max(10, Math.floor(ms / steps));
+      const start = 0.0;
+      a.volume = start;
+      let i = 0;
+      const iv = setInterval(() => {
+        i += 1;
+        const t = i / steps;
+        a.volume = Math.min(targetVol, start + (targetVol - start) * t);
+        if (i >= steps) clearInterval(iv);
+      }, stepMs);
+    } catch {}
+  };
 
   // v13.11 · Ducking automatico per voce-in-chat.
   // MicButton dispatcha `rai:voice-rec-start` / `rai:voice-rec-end`.
@@ -83,12 +138,17 @@ export default function SyncLivePlayer() {
       if (hlsRef.current) { try { hlsRef.current.destroy(); } catch {} hlsRef.current = null; }
       audio.src = `${process.env.REACT_APP_BACKEND_URL}${cur.audio_url}`;
       audio.load();
+      // v13.18 · Attende buffer completo (canplaythrough) invece del solo
+      // loadedmetadata: elimina il "taglio a metà frase" sui talk DJ corti.
       await new Promise((resolve, reject) => {
-        audio.addEventListener("loadedmetadata", resolve, { once: true });
+        audio.addEventListener("canplaythrough", resolve, { once: true });
+        audio.addEventListener("loadedmetadata", () => setTimeout(resolve, 300), { once: true });
         audio.addEventListener("error", () => reject(new Error("Errore caricamento audio")), { once: true });
       });
       try { audio.currentTime = cur.offset_sec || 0; } catch {}
       audio.addEventListener("ended", () => { attachDirect().catch(() => {}); }, { once: true });
+      wireToRadioEngine();
+      fadeInPlayback(1.0, 500);
       await audio.play();
     };
     try {
@@ -98,6 +158,8 @@ export default function SyncLivePlayer() {
       if (audio.canPlayType("application/vnd.apple.mpegurl")) {
         audio.src = hlsUrl;
         audio.load();
+        wireToRadioEngine();
+        fadeInPlayback(1.0, 500);
         await audio.play();
         setStatus("playing");
         window.dispatchEvent(new CustomEvent("rai:sync:play", { detail: { playing: true } }));
@@ -128,6 +190,8 @@ export default function SyncLivePlayer() {
             if (data.fatal) reject(new Error(data.details || "HLS fatal"));
           });
         });
+        wireToRadioEngine();
+        fadeInPlayback(1.0, 500);
         await audio.play();
         setStatus("playing");
         window.dispatchEvent(new CustomEvent("rai:sync:play", { detail: { playing: true } }));
