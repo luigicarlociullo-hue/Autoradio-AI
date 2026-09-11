@@ -71,6 +71,7 @@ export default function SmartFlowTimelinePanel() {
       title: "",
       duration_sec: 30,
       dj_id: "",
+      brief: "",
     };
   });
   const pollRef = useRef(null);
@@ -130,7 +131,12 @@ export default function SmartFlowTimelinePanel() {
 
   const submit = async () => {
     if (!form.scheduled_at) return toast.error("Orario richiesto");
-    if (!form.audio_url) return toast.error("Scegli una sorgente dal Magazzino");
+    // audio_url richiesta SOLO se non è stato scelto un DJ (percorso autonomo).
+    // Con DJ selezionato, il backend genera talk (LLM + TTS ElevenLabs) usando
+    // il brief se presente, oppure inventando un argomento intelligente.
+    if (!form.audio_url && !form.dj_id) {
+      return toast.error("Scegli una sorgente dal Magazzino OPPURE seleziona un DJ");
+    }
     setBusy(true);
     try {
       const localDate = fromLocalInput(form.scheduled_at);
@@ -139,17 +145,23 @@ export default function SmartFlowTimelinePanel() {
         scheduled_at: iso,
         kind: form.kind,
         title: form.title || undefined,
-        audio_url: form.audio_url,
+        audio_url: form.audio_url || undefined,
         duration_sec: Number(form.duration_sec) || 30,
         dj_id: form.dj_id || undefined,
+        brief: form.brief || undefined,
       };
-      await api.post("/admin/timeline", body);
-      toast.success(`Evento inserito · ${fmtWhen(iso)}`);
+      const r = await api.post("/admin/timeline", body);
+      const ev = r.data?.event || {};
+      if (ev.generated_script) {
+        toast.success(`🎙 Talk generato per ${ev.dj_name} · ${ev.duration_sec}s`);
+      } else {
+        toast.success(`Evento inserito · ${fmtWhen(iso)}`);
+      }
       const t = new Date(); t.setMinutes(t.getMinutes() + 5, 0, 0);
       setForm({
         scheduled_at: toLocalInput(t),
         kind: form.kind, source_id: "", audio_url: "", title: "", duration_sec: 30,
-        dj_id: form.dj_id,
+        dj_id: form.dj_id, brief: "",
       });
       loadEvents("pending");
     } catch (e) {
@@ -318,23 +330,48 @@ export default function SmartFlowTimelinePanel() {
           <div className="md:col-span-1 flex items-end">
             <button
               onClick={submit}
-              disabled={busy || !form.audio_url}
+              disabled={busy || (!form.audio_url && !form.dj_id)}
               data-testid="timeline-submit"
               className="w-full px-3 py-2 rounded text-sm font-bold text-black"
               style={{
                 background: KIND_COLOR[form.kind] || "#00E5FF",
                 boxShadow: `0 0 12px ${KIND_COLOR[form.kind] || "#00E5FF"}66`,
-                opacity: busy || !form.audio_url ? 0.55 : 1,
+                opacity: busy || (!form.audio_url && !form.dj_id) ? 0.55 : 1,
               }}
             >
-              {busy ? "Inserisco…" : "▸ Inserisci evento"}
+              {busy ? (form.dj_id && !form.audio_url ? "Genero talk…" : "Inserisco…") : "▸ Inserisci evento"}
             </button>
           </div>
         </div>
 
-        {form.audio_url && (
-          <div className="text-[10px] font-mono text-zinc-500 mt-2 truncate" title={form.audio_url}>
-            audio_url: {form.audio_url}
+        {/* Soggetto / Brief · attivo solo con DJ selezionato */}
+        {form.dj_id && (
+          <div className="mt-3">
+            <label
+              className="label-mono block mb-1"
+              title="Se scrivi qualcosa, il DJ parla di quello. Se lasci VUOTO, il DJ inventa un argomento coerente con la sua personalità."
+            >
+              🧠 Soggetto / Brief — vuoto = argomento casuale intelligente
+            </label>
+            <textarea
+              value={form.brief}
+              onChange={(e) => setForm({ ...form, brief: e.target.value })}
+              placeholder={`Es. "Tesla e le sfide di Musk 2026" · oppure lascia vuoto: ${
+                djs.find(d => d.id === form.dj_id)?.name || "il DJ"
+              } inventa da sé.`}
+              rows={2}
+              maxLength={400}
+              className="w-full bg-black border border-white/10 rounded px-2 py-1.5 text-sm text-white font-mono resize-none"
+              data-testid="timeline-input-brief"
+            />
+            <div className="text-[10px] font-mono text-zinc-500 mt-1 flex justify-between">
+              <span>
+                Modalità: <b style={{ color: form.brief ? "#00E5FF" : "#80FFB4" }}>
+                  {form.brief ? "🎯 GUIDATO (soggetto imposto)" : "🎲 AUTONOMO (l'AI sceglie)"}
+                </b>
+              </span>
+              <span>{form.brief.length}/400</span>
+            </div>
           </div>
         )}
       </div>

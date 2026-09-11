@@ -5529,11 +5529,22 @@ async def _timeline_pick_due() -> Optional[dict]:
 @api_router.post("/admin/timeline")
 async def admin_timeline_create(payload: dict):
     """Inserisci un evento nella Smart Flow Timeline.
-    Body: {scheduled_at (ISO), kind, title?, artist?, audio_url, duration_sec?,
-           dj_id?, dj_name?, silence_pad_ms?}.
+    Body: {scheduled_at (ISO), kind, title?, artist?, audio_url?, duration_sec?,
+           dj_id?, dj_name?, silence_pad_ms?, brief?}.
     Soft-sync: il server attenderà la fine naturale del brano prima di lanciarlo.
     Se `dj_id` è specificato, il record del DJ viene risolto in `dj_name` +
-    `voice_key` per il rendering dell'avatar nel player."""
+    `voice_key`.
+
+    v13.19 · AUTONOMIA & SOGGETTO
+    - Se è presente un DJ E manca `audio_url`, il server genera un talk
+      **al momento dell'inserimento** (LLM script + ElevenLabs TTS con la
+      voce Turbo v2.5 custom del DJ) e ne cattura la durata reale via
+      ffprobe. Zero pre-registrazione richiesta.
+    - Se `brief` è non-vuoto, il talk parla ESATTAMENTE di quel soggetto.
+    - Se `brief` è vuoto, l'LLM inventa un argomento intelligente,
+      calibrato sulla personalità del DJ (comportamento "autonomia totale":
+      posso lasciare il campo bianco e il sistema decide da sé).
+    """
     sched = (payload.get("scheduled_at") or "").strip()
     if not sched:
         raise HTTPException(400, "scheduled_at richiesto (ISO datetime)")
@@ -5541,31 +5552,111 @@ async def admin_timeline_create(payload: dict):
         datetime.fromisoformat(sched.replace("Z", "+00:00"))
     except Exception:
         raise HTTPException(400, "scheduled_at non parsabile come ISO datetime")
-    audio_url = (payload.get("audio_url") or "").strip()
-    if not audio_url:
-        raise HTTPException(400, "audio_url richiesto")
-    # Risolvi DJ (opzionale) → recupera name + voice_key
+
+    # Risolvi DJ (opzionale) → recupera name + voice_key + personality
     dj_id = (payload.get("dj_id") or "").strip() or None
     dj_name = (payload.get("dj_name") or "").strip() or None
     voice_key = None
+    dj_doc = None
     if dj_id or dj_name:
         q = {"id": dj_id} if dj_id else {"name": dj_name}
-        dj_doc = await db.djs.find_one(q, {"_id": 0, "id": 1, "name": 1, "voice_key": 1})
+        dj_doc = await db.djs.find_one(
+            q, {"_id": 0, "id": 1, "name": 1, "voice_key": 1,
+                "personality": 1, "llm_provider": 1, "llm_model": 1},
+        )
         if dj_doc:
             dj_id = dj_doc.get("id")
             dj_name = dj_doc.get("name")
             voice_key = dj_doc.get("voice_key")
+
+    audio_url = (payload.get("audio_url") or "").strip()
+    brief = (payload.get("brief") or "").strip()
+    dur_from_payload = int(payload.get("duration_sec") or 30)
+    title = (payload.get("title") or "").strip()[:120] or None
+    generated_script = None
+    generated_topic = None
+
+    if not audio_url:
+        # Percorso "autonomo": serve un DJ per generare voce
+        if not dj_doc:
+            raise HTTPException(
+                400,
+                "Serve `audio_url` OPPURE selezionare un DJ (con Brief opzionale) "
+                "per generare il talk automaticamente.",
+            )
+        # 1) Costruisci il prompt LLM
+        personality = dj_doc.get("personality") or ""
+        provider = dj_doc.get("llm_provider") or "openai"
+        model = dj_doc.get("llm_model") or "gpt-5.2"
+        if brief:
+            user_prompt = (
+                f"Prepara un intervento radiofonico breve (60-90 parole, max ~30 secondi "
+                f"di lettura) su questo argomento: \"{brief}\".\n"
+                f"Tono, voce e ironia devono essere fedeli alla tua personalità di DJ. "
+                f"Parla come se fossi in diretta su R-A.I., in prima persona, senza spiegare "
+                f"cosa stai per dire. Chiudi con una battuta o un cliffhanger. "
+                f"Solo il testo del parlato, nessuna didascalia scenica."
+            )
+            generated_topic = brief[:120]
+        else:
+            user_prompt = (
+                "Sei in diretta su R-A.I. Genera **spontaneamente** un intervento radiofonico "
+                "breve (60-90 parole, max ~30 secondi di lettura) su un argomento a tua scelta "
+                "coerente con la tua personalità: potrebbe essere una curiosità, un pensiero "
+                "provocatorio, un ricordo assurdo, una micro-rubrica scientifica o culturale, "
+                "una battuta di attualità. Parla in prima persona, con tono da radio live, "
+                "senza spiegare cosa stai per dire. Solo il testo del parlato, nessuna "
+                "didascalia scenica. Sorprendimi."
+            )
+        system_prompt = (
+            f"Sei {dj_doc.get('name')}, speaker di R-A.I. — {personality}\n"
+            f"Rispondi SOLO con il testo che pronuncerai in radio (max 90 parole)."
+        )
+        try:
+            script = await llm_generate(provider, model, system_prompt, user_prompt)
+        except Exception as e:
+            logger.warning(f"[TIMELINE] LLM generation failed: {e}")
+            script = ""
+        script = (script or "").strip()
+        if not script:
+            raise HTTPException(502, "LLM non ha prodotto testo (credit budget o rete)")
+        generated_script = script
+
+        # 2) TTS via ElevenLabs con la voce custom del DJ
+        # Nota: `synth_speech()` (wrapper server.py) ritorna (filename, subpath).
+        try:
+            fname, subpath = await synth_speech(script, voice_key=voice_key or "female-1", kind="answer")
+        except Exception as e:
+            logger.warning(f"[TIMELINE] TTS synth failed: {e}")
+            fname, subpath = None, None
+        if not fname:
+            raise HTTPException(502, "TTS non ha prodotto audio (ElevenLabs down o budget)")
+        audio_url = f"/api/{subpath or 'tts'}/{fname}"
+
+        # 3) Durata reale del file (ffprobe). Fallback stima 0.25s/parola.
+        real_dur = await _probe_tts_duration(audio_url)
+        if not real_dur:
+            words = max(1, len(script.split()))
+            real_dur = max(6.0, min(90.0, words * 0.42))
+        dur_from_payload = int(round(real_dur)) + 2  # +2s coda di sicurezza
+
+        if not title:
+            title = (brief[:60] if brief else f"{dj_doc.get('name')} · improvviso")
+
     ev = {
         "id": f"tl-{uuid.uuid4().hex[:12]}",
         "scheduled_at": sched,
         "kind": (payload.get("kind") or "insert").strip()[:40],
-        "title": (payload.get("title") or "").strip()[:120] or None,
-        "artist": (payload.get("artist") or "").strip()[:120] or None,
+        "title": title,
+        "artist": (payload.get("artist") or (dj_name and f"{dj_name}") or "").strip()[:120] or None,
         "audio_url": audio_url,
-        "duration_sec": int(payload.get("duration_sec") or 30),
+        "duration_sec": dur_from_payload,
         "dj_id": dj_id,
         "dj_name": dj_name,
         "voice_key": voice_key,
+        "brief": brief or None,
+        "generated_topic": generated_topic,
+        "generated_script": (generated_script[:500] if generated_script else None),
         "silence_pad_ms": int(payload.get("silence_pad_ms") or 350),
         "status": "pending",
         "created_at": datetime.now(timezone.utc).isoformat(),
