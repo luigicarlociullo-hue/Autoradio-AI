@@ -152,13 +152,37 @@ async def _synth_elevenlabs(text: str, voice_key: str, kind: str = "") -> bytes 
     # provider_mode == 'elevenlabs' oppure smart+answer → prosegui con ElevenLabs
     if not ELEVENLABS_API_KEY:
         return None
+    # v13.18 · Per-DJ override: se un record `djs` con lo stesso voice_key ha
+    # `eleven_voice_id`, `eleven_model` o `voice_settings` valorizzati, li usa
+    # (permette a Leo/Aria/Max/L&C di avere voci Turbo v2.5 custom senza
+    # patchare la mappa hardcoded). Fallback: mappa VOICE_KEY_TO_ELEVEN.
     voice_id = VOICE_KEY_TO_ELEVEN.get(voice_key, DEFAULT_ELEVEN_ID)
+    model_id = "eleven_multilingual_v2"
+    vs = {"stability": 0.4, "similarity_boost": 0.8, "style": 0.5, "use_speaker_boost": True}
+    try:
+        from motor.motor_asyncio import AsyncIOMotorClient
+        _murl = os.environ.get("MONGO_URL"); _dbn = os.environ.get("DB_NAME")
+        if _murl and _dbn:
+            _c = AsyncIOMotorClient(_murl)
+            _dj = await _c[_dbn].djs.find_one(
+                {"voice_key": voice_key},
+                {"_id": 0, "eleven_voice_id": 1, "eleven_model": 1, "voice_settings": 1},
+            )
+            _c.close()
+            if _dj:
+                if _dj.get("eleven_voice_id"): voice_id = _dj["eleven_voice_id"]
+                if _dj.get("eleven_model"):   model_id = _dj["eleven_model"]
+                if isinstance(_dj.get("voice_settings"), dict):
+                    vs.update({k: v for k, v in _dj["voice_settings"].items() if v is not None})
+    except Exception as e:
+        logger.debug(f"[TTS] per-DJ override lookup failed: {e}")
+
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
     headers = {"xi-api-key": ELEVENLABS_API_KEY, "Content-Type": "application/json", "Accept": "audio/mpeg"}
     body = {
         "text": text[:900],
-        "model_id": "eleven_multilingual_v2",
-        "voice_settings": {"stability": 0.4, "similarity_boost": 0.8, "style": 0.5, "use_speaker_boost": True},
+        "model_id": model_id,
+        "voice_settings": vs,
     }
     try:
         async with httpx.AsyncClient(timeout=45) as client:

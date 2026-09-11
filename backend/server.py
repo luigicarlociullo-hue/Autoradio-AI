@@ -544,6 +544,19 @@ DEFAULT_DJS = [
         "avatar_url": "/dj-avatars/max.png",
         "accent_color": "#ff2d95",
     },
+    {
+        # v13.18 · L&C — DIRETTORE PAZZO, capo di regia, voce sarcastica-visionaria
+        "name": "L&C",
+        "personality": (
+            "Direttore Pazzo · voce del capo, sarcastica, geniale, imprevedibile. "
+            "Interviene con verità taglienti, ordini di regia in diretta e battute che spiazzano l'ascoltatore."
+        ),
+        "voice_key": "male-4",
+        "llm_provider": "anthropic",
+        "llm_model": "claude-sonnet-4-5-20250929",
+        "avatar_url": "https://customer-assets-4nw71qhi.emergentagent.net/job_autoradio-ai/artifacts/c8vo9la7_testingiu%CC%80.jpg",
+        "accent_color": "#FF3355",
+    },
 ]
 
 
