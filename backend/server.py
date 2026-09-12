@@ -5684,14 +5684,22 @@ async def admin_timeline_delete(event_id: str):
 _DJ_EVERY_N_TRACKS = 3       # v13.16 · un jingle DJ ogni 3 brani musicali
 
 
-async def _probe_tts_duration(url: Optional[str]) -> Optional[float]:
+async def _probe_tts_duration(url: Optional[str], pad_sec: float = 0.0) -> Optional[float]:
     """v13.18 · Ritorna la durata reale (ffprobe) di un file TTS locale, o
     None se il file non esiste su disco — MAI un valore indovinato. Prima di
     questa fix un file TTS mancante produceva comunque un elemento in coda
     con una durata di ripiego, puntando a un URL che risponde 404: il player
     hls.js andava in errore fatale a metà riproduzione e restava fermo per
     sempre (nessun listener di recovery). Restituire None qui permette al
-    chiamante di scartare il segmento invece di mandarlo in onda."""
+    chiamante di scartare il segmento invece di mandarlo in onda.
+
+    v13.20 · `pad_sec` (default 0, stesso comportamento di prima per i
+    chiamanti esistenti che già applicano il proprio padding, es. la
+    Timeline). I chiamanti del clock DJ passano pad_sec=2.0 — stessa coda
+    di sicurezza già usata da `/api/admin/timeline` — perché ffprobe su
+    MP3 VBR può sottostimare la durata reale: senza il padding il clock
+    passava al segmento successivo un attimo prima che l'audio finisse
+    davvero, tagliando le ultime parole del DJ."""
     if not url or not url.startswith("/api/tts/"):
         return None
     try:
@@ -5701,7 +5709,7 @@ async def _probe_tts_duration(url: Optional[str]) -> Optional[float]:
             return None
         probe = await video_service.probe_video(str(path))
         d = (probe or {}).get("duration_sec")
-        return float(d) if d else None
+        return float(d) + pad_sec if d else None
     except Exception:
         return None
 
@@ -5729,7 +5737,7 @@ async def _clock_pick_spoken_segment() -> Optional[dict]:
         leo_url = pq_doc.get("leo_speech_url")
         max_url = pq_doc.get("max_speech_url")
         if leo_url:
-            dur = await _probe_tts_duration(leo_url)
+            dur = await _probe_tts_duration(leo_url, pad_sec=2.0)
             if dur is not None:
                 if max_url:
                     # rimette Max in coda (created_at aggiornato) per il prossimo turno DJ
@@ -5743,7 +5751,7 @@ async def _clock_pick_spoken_segment() -> Optional[dict]:
                 }
             leo_url = None  # file mancante: prova Max sotto
         if max_url:
-            dur = await _probe_tts_duration(max_url)
+            dur = await _probe_tts_duration(max_url, pad_sec=2.0)
             if dur is not None:
                 return {
                     "id": f"{pq_doc['id']}-max", "title": pq_doc.get("title") or "Dual-Brain · Max",
@@ -5752,7 +5760,7 @@ async def _clock_pick_spoken_segment() -> Optional[dict]:
         return None
     if kind in ("pill_past", "pill_future"):
         url = pq_doc.get("speech_url")
-        dur = await _probe_tts_duration(url)
+        dur = await _probe_tts_duration(url, pad_sec=2.0)
         if dur is None:
             return None
         return {
@@ -5775,37 +5783,68 @@ async def _clock_pick_spoken_segment() -> Optional[dict]:
 
 
 _ON_DEMAND_DJ_RUBRICS = ["talk", "history", "interview", "joke", "motivation", "horoscope", "news"]
+_dj_pregen_task: Optional[asyncio.Task] = None  # v13.20 · un solo pregen in volo alla volta
 
 
 async def _clock_pick_dj_voice_segment() -> Optional[dict]:
-    """v13.18 · Turno DJ: prova prima un vero segmento parlato già pronto in
-    priority_queue; se la coda è vuota (il caso comune — l'unico produttore
-    automatico, il pillole-scheduler, scrive in coda solo in poche ore
-    programmate del giorno), ne genera uno AL VOLO riusando la stessa
-    pipeline di /api/segments/generate (script LLM + TTS ElevenLabs) invece
-    di ripiegare subito sul jingle musicale preregistrato. Se la generazione
-    fallisce (es. credito LLM/TTS esaurito) o il file audio non risulta
-    valido su disco, ritorna None e lascia che il chiamante ripieghi sul
-    jingle — non manda mai in onda un segmento non verificato."""
-    picked = await _clock_pick_spoken_segment()
-    if picked:
-        return picked
+    """v13.20 · Turno DJ: legge SOLO un segmento parlato già pronto in
+    priority_queue (fast path, nessuna generazione bloccante). La coda viene
+    rifornita in anticipo da `_dj_pregen_ticker` in background, non più qui.
+
+    Prima della v13.20 la generazione on-demand (script LLM + TTS ElevenLabs,
+    ~4-5s) girava SINCRONA dentro `_clock_advance()`, che è chiamato da
+    `/api/stream/now` — l'endpoint che OGNI client polla per sincronizzarsi.
+    Se la coda era vuota nel momento esatto del turno DJ, quella richiesta
+    (e quindi lo stream per tutti) restava bloccata per la durata della
+    generazione, producendo il buco/silenzio segnalato dal cliente. Ora, se
+    la coda è vuota, si ripiega subito (non-bloccante) sul jingle preregistrato
+    e il pregen in background prepara la prossima voce in anticipo."""
+    return await _clock_pick_spoken_segment()
+
+
+async def _dj_pregen_ticker():
+    """v13.20 · Rifornisce priority_queue in background, MAI dentro una
+    richiesta HTTP. Gira ogni 5s; genera un nuovo segmento DJ on-demand solo
+    se la coda è sotto soglia e non c'è già una generazione in volo, così
+    _clock_pick_dj_voice_segment trova quasi sempre l'audio già pronto invece
+    di dover ripiegare sul jingle per il turno corrente."""
+    global _dj_pregen_task
+    _PREGEN_MIN_QUEUED = 1
+    while True:
+        try:
+            await asyncio.sleep(5)
+            if _dj_pregen_task and not _dj_pregen_task.done():
+                continue
+            queued = await db.priority_queue.count_documents({})
+            if queued >= _PREGEN_MIN_QUEUED:
+                continue
+            _dj_pregen_task = asyncio.create_task(_dj_pregen_once())
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.warning(f"[clock] dj pregen tick error: {e}")
+
+
+async def _dj_pregen_once():
+    """Genera un segmento DJ (script LLM + TTS ElevenLabs) e lo mette in
+    priority_queue per un turno DJ futuro. Fallisce in silenzio (es. credito
+    LLM/TTS esaurito) — il chiamante del turno corrente ripiega sul jingle
+    comunque, questa è solo pre-produzione best-effort."""
     try:
         rubric = random.choice(_ON_DEMAND_DJ_RUBRICS)
         seg = await generate_segment(kind=rubric)
+        if not seg or not seg.speech_audio_url:
+            return
+        dur = await _probe_tts_duration(seg.speech_audio_url, pad_sec=2.0)
+        if dur is None:
+            return
+        await db.priority_queue.insert_one({
+            "id": seg.id, "kind": "answer", "title": seg.title or "R-A.I. Talk",
+            "dj_name": seg.dj_name or "R-A.I.", "audio_url": seg.speech_audio_url,
+            "duration_sec": dur, "created_at": now_iso(),
+        })
     except Exception as e:
-        logger.warning(f"[clock] on-demand DJ segment generation failed: {e}")
-        return None
-    if not seg or not seg.speech_audio_url:
-        return None
-    dur = await _probe_tts_duration(seg.speech_audio_url)
-    if dur is None:
-        return None
-    return {
-        "id": seg.id, "title": seg.title or "R-A.I. Talk",
-        "artist": seg.dj_name or "R-A.I.", "audio_url": seg.speech_audio_url,
-        "duration_sec": dur,
-    }
+        logger.warning(f"[clock] on-demand DJ pregen failed: {e}")
 
 
 async def _clock_pick_dj_jingle() -> Optional[dict]:
@@ -6686,6 +6725,10 @@ async def on_startup():
     # ripristina lo stato coerente. Zero costi API ricorrenti.
     asyncio.create_task(_clock_ticker())
     logger.info("[startup] Station clock ticker running (in-pod, tier0-tolerant)")
+    # v13.20 · DJ voice pregen ticker — rifornisce priority_queue in background
+    # così /api/stream/now non genera mai audio TTS in modo sincrono/bloccante.
+    asyncio.create_task(_dj_pregen_ticker())
+    logger.info("[startup] DJ voice pregen ticker running (background, non-blocking)")
     # v13.9 · VIDEO CLOCK ticker (stinger rotation sincrona HLS)
     async def _video_ticker():
         while True:
