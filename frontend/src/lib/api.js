@@ -36,7 +36,6 @@ export const endpoints = {
   telegramStatus: () => api.get("/telegram/status").then(r => r.data),
   // ---- Community "A.I. Vs Umani" ----
   communitySubmit: (formData) => api.post("/community/submit", formData, {
-    headers: { "Content-Type": "multipart/form-data" },
     timeout: 120000,
   }).then(r => r.data),
   communityList: () => api.get("/admin/community").then(r => r.data),
@@ -46,14 +45,14 @@ export const endpoints = {
   communityConfigSet: (payload) => api.patch("/admin/community/config", payload).then(r => r.data),
   communityUploadJingle: (role, formData) => api.post(
     `/admin/community/config/jingle_${role}`, formData,
-    { headers: { "Content-Type": "multipart/form-data" }, timeout: 60000 }
+    { timeout: 60000 }
   ).then(r => r.data),
   // ---- Regia Audio ----
   mixGet: () => api.get("/station/mix").then(r => r.data),
   mixSet: (payload) => api.patch("/admin/mix", payload).then(r => r.data),
   bedsList: () => api.get("/admin/beds").then(r => r.data),
   bedUpload: (formData) => api.post("/admin/beds/upload", formData, {
-    headers: { "Content-Type": "multipart/form-data" }, timeout: 60000,
+    timeout: 60000,
   }).then(r => r.data),
   bedActivate: (id) => api.patch(`/admin/beds/${id}/activate`).then(r => r.data),
   bedDeactivate: () => api.patch("/admin/beds/deactivate").then(r => r.data),
