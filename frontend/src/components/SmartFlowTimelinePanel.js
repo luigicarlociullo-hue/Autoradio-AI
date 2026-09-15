@@ -64,6 +64,10 @@ export default function SmartFlowTimelinePanel() {
   // v13.22 · Config globale di Regia (soggetto default + video default)
   const [regiaCfg, setRegiaCfg] = useState({ default_subject: "", ledwall_default_video_url: "" });
   const [regiaBusy, setRegiaBusy] = useState(false);
+  // v13.24 · Sequenza Ora Esatta + Spot
+  const [hourly, setHourly] = useState({ config: { enabled: false }, next_event: null });
+  const [hourlyForm, setHourlyForm] = useState({ ora_esatta_source_id: "", spot_source_id: "" });
+  const [hourlyBusy, setHourlyBusy] = useState(false);
   const [form, setForm] = useState(() => {
     const t = new Date();
     t.setMinutes(t.getMinutes() + 5, 0, 0);
@@ -144,9 +148,48 @@ export default function SmartFlowTimelinePanel() {
       loadVideos();
     } catch { toast.error("Errore eliminazione video"); }
   };
+  // v13.24 · Sequenza Ora Esatta + Spot
+  const loadHourly = async () => {
+    try {
+      const r = await api.get(`/admin/timeline/ora-esatta`);
+      setHourly(r.data || { config: { enabled: false }, next_event: null });
+    } catch {}
+  };
+  const armHourly = async () => {
+    setHourlyBusy(true);
+    try {
+      const oraSrc = sources.find((s) => s.id === hourlyForm.ora_esatta_source_id);
+      const spotSrc = sources.find((s) => s.id === hourlyForm.spot_source_id);
+      const body = {};
+      if (oraSrc) { body.audio_url = oraSrc.audio_url; body.duration_sec = Math.max(6, Math.round(oraSrc.duration_sec || 12)); }
+      if (spotSrc) {
+        body.spot_audio_url = spotSrc.audio_url;
+        body.spot_title = spotSrc.title;
+        body.spot_artist = spotSrc.artist;
+        body.spot_duration_sec = Math.max(5, Math.round(spotSrc.duration_sec || 20));
+      }
+      const r = await api.post(`/admin/timeline/ora-esatta`, body);
+      toast.success(`🕐 Sequenza armata @ ${new Date(r.data.event.scheduled_at).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}`);
+      await loadHourly();
+      loadEvents("pending");
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Errore Sequenza");
+    } finally { setHourlyBusy(false); }
+  };
+  const disarmHourly = async () => {
+    if (!window.confirm("Disarmare la Sequenza Ora Esatta+Spot? Verrà rimossa da tutte le occorrenze future.")) return;
+    setHourlyBusy(true);
+    try {
+      await api.delete(`/admin/timeline/ora-esatta`);
+      toast.success("Sequenza disarmata");
+      await loadHourly();
+      loadEvents("pending");
+    } catch { toast.error("Errore disarmo"); }
+    finally { setHourlyBusy(false); }
+  };
 
   useEffect(() => {
-    loadNow(); loadEvents("pending"); loadEvents("consumed"); loadSources(); loadDjs(); loadVideos(); loadRegiaCfg();
+    loadNow(); loadEvents("pending"); loadEvents("consumed"); loadSources(); loadDjs(); loadVideos(); loadRegiaCfg(); loadHourly();
     pollRef.current = setInterval(() => {
       loadNow();
       loadEvents("pending");
@@ -289,27 +332,8 @@ export default function SmartFlowTimelinePanel() {
           <div className="label-mono" style={{ color: "#FFB84D" }}>
             🌐 REGIA · CONFIG UNIVERSALE
           </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={async () => {
-                try {
-                  const r = await api.post("/admin/timeline/ora-esatta", {});
-                  toast.success(`🕐 Ora Esatta programmata @ ${new Date(r.data.event.scheduled_at).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})} · hourly`);
-                  loadEvents("pending");
-                } catch (e) {
-                  toast.error(e?.response?.data?.detail || "Errore Ora Esatta");
-                }
-              }}
-              data-testid="regia-btn-ora-esatta"
-              className="px-2.5 py-1 rounded text-[10px] font-bold text-black"
-              style={{ background: "#00E5FF", boxShadow: "0 0 10px rgba(0,229,255,0.5)" }}
-              title="Programma 'Ora Esatta' come evento ricorrente orario. Il LedWall+audio suonano alle :00 di ogni ora fino a cancellazione."
-            >
-              🕐 Ora Esatta (hourly)
-            </button>
-            <div className="text-[10px] font-mono text-zinc-500">
-              si applica a QUALSIASI generazione AI + LedWall
-            </div>
+          <div className="text-[10px] font-mono text-zinc-500">
+            si applica a QUALSIASI generazione AI + LedWall
           </div>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
@@ -364,6 +388,96 @@ export default function SmartFlowTimelinePanel() {
             </div>
           </div>
         </div>
+      </div>
+
+      {/* v13.24 · SEQUENZA ORA ESATTA + SPOT — trigger ricorrente orario */}
+      <div
+        className="rounded-lg p-3 mb-4"
+        style={{
+          background: hourly.config?.enabled ? "rgba(0,229,255,0.06)" : "rgba(255,45,149,0.04)",
+          border: `1px solid ${hourly.config?.enabled ? "rgba(0,229,255,0.32)" : "rgba(255,255,255,0.10)"}`,
+        }}
+        data-testid="hourly-sequence-panel"
+      >
+        <div className="flex items-center justify-between mb-2">
+          <div className="label-mono" style={{ color: hourly.config?.enabled ? "#00E5FF" : "#FF6BAA" }}>
+            🕐 SEQUENZA ORA ESATTA + SPOT · ricorrenza oraria automatica
+          </div>
+          <div className="text-[10px] font-mono" style={{ color: hourly.config?.enabled ? "#80FFB4" : "#888" }}>
+            {hourly.config?.enabled
+              ? `ARMATA · prossima :00 → ${hourly.next_event ? new Date(hourly.next_event.scheduled_at).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : "—"}`
+              : "DISARMATA · scegli sorgenti e attiva"}
+          </div>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+          <div>
+            <label className="label-mono block mb-1" title="Audio dell'annuncio orario. Se vuoto, usa l'ultimo time-signal pre-generato.">
+              🎙 Audio Ora Esatta (opz.)
+            </label>
+            <select
+              value={hourlyForm.ora_esatta_source_id}
+              onChange={(e) => setHourlyForm({ ...hourlyForm, ora_esatta_source_id: e.target.value })}
+              className="w-full bg-black border border-white/10 rounded px-2 py-1.5 text-sm text-white"
+              data-testid="hourly-ora-esatta-source"
+            >
+              <option value="">— usa time-signal pre-generato —</option>
+              {sources.slice(0, 300).map((s) => (
+                <option key={s.id} value={s.id}>[{s.kind}] {s.title} ({Math.round(s.duration_sec || 0)}s)</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="label-mono block mb-1" title="Spot pubblicitario o jingle che parte SUBITO dopo l'Ora Esatta (zero-gap, pre-buffered).">
+              📢 Spot a seguire (concatenato)
+            </label>
+            <select
+              value={hourlyForm.spot_source_id}
+              onChange={(e) => setHourlyForm({ ...hourlyForm, spot_source_id: e.target.value })}
+              className="w-full bg-black border border-white/10 rounded px-2 py-1.5 text-sm text-white"
+              data-testid="hourly-spot-source"
+            >
+              <option value="">— nessuno spot associato —</option>
+              {sources.slice(0, 300).map((s) => (
+                <option key={s.id} value={s.id}>[{s.kind}] {s.title} — {s.artist} ({Math.round(s.duration_sec || 0)}s)</option>
+              ))}
+            </select>
+          </div>
+          <div className="flex items-end gap-2">
+            <button
+              onClick={armHourly}
+              disabled={hourlyBusy}
+              data-testid="hourly-arm-btn"
+              className="flex-1 px-3 py-2 rounded text-sm font-bold text-black"
+              style={{
+                background: hourly.config?.enabled ? "#80FFB4" : "#00E5FF",
+                opacity: hourlyBusy ? 0.55 : 1,
+                boxShadow: `0 0 12px ${hourly.config?.enabled ? "#80FFB4" : "#00E5FF"}66`,
+              }}
+            >
+              {hourlyBusy ? "…" : (hourly.config?.enabled ? "🔄 Aggiorna" : "▸ ARMA sequenza")}
+            </button>
+            {hourly.config?.enabled && (
+              <button
+                onClick={disarmHourly}
+                disabled={hourlyBusy}
+                data-testid="hourly-disarm-btn"
+                className="px-3 py-2 rounded text-sm font-bold text-white"
+                style={{ background: "rgba(255,45,149,0.25)", border: "1px solid rgba(255,45,149,0.6)" }}
+                title="Disarma la sequenza"
+              >
+                ✕
+              </button>
+            )}
+          </div>
+        </div>
+        {hourly.config?.enabled && (
+          <div className="text-[10px] font-mono text-zinc-400 mt-2 flex flex-wrap gap-3">
+            <span>⏱ Ora Esatta: {hourly.config.ora_esatta_audio_url ? hourly.config.ora_esatta_audio_url.split("/").slice(-1)[0] : "—"}</span>
+            {hourly.config.spot_audio_url && (
+              <span>📢 Spot: <b style={{ color: "#80FFB4" }}>{hourly.config.spot_title || hourly.config.spot_audio_url.split("/").slice(-1)[0]}</b> ({hourly.config.spot_duration_sec}s) · <b style={{color:"#00E5FF"}}>zero-gap</b> via follow-up</span>
+            )}
+          </div>
+        )}
       </div>
 
       {/* ── Form inserimento ───────────────────────────────────────────── */}

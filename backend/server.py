@@ -5086,19 +5086,26 @@ async def admin_regia_config_patch(payload: dict):
 @api_router.post("/admin/timeline/ora-esatta")
 async def admin_timeline_create_ora_esatta(payload: dict = None):
     """v13.23 · Programma "Ora Esatta" come evento Timeline ricorrente orario.
-    Crea un evento che scoccherà al minuto 0 dell'ora SUCCESSIVA e si
-    riproporrà ogni ora fino a cancellazione manuale.
-    Body opzionale: {audio_url?, video_url?, duration_sec?}.
-    Se audio_url manca, riutilizza il time-signal precache più recente (o
-    fallisce con 400 richiedendo un URL).
+    v13.24 · SEQUENZA COMPLETA: accetta `spot_audio_url` opzionale — se
+    valorizzato, subito dopo l'Ora Esatta parte lo Spot pubblicitario
+    associato (zero-gap via follow-up injection nella queue del clock).
+    
+    Body opzionale: {audio_url?, video_url?, duration_sec?,
+                     spot_audio_url?, spot_title?, spot_duration_sec?}.
+    Idempotente: elimina PRIMA eventuali eventi `kind=ora_esatta` pending,
+    così non si accumulano duplicati.
     """
     payload = payload or {}
+    # Pulisci eventuali eventi ora_esatta già pending (idempotenza)
+    try:
+        await db.timeline_events.delete_many({"kind": "ora_esatta", "status": "pending"})
+    except Exception as e:
+        logger.warning(f"[ora-esatta] cleanup pending failed: {e}")
     # Prossima ora esatta (:00:00) in UTC
     now_utc = datetime.now(timezone.utc)
     next_hour = (now_utc + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
     audio_url = (payload.get("audio_url") or "").strip()
     if not audio_url:
-        # Prova a riusare l'ultimo time-signal precache disponibile
         ts = await db.time_signal_cache.find_one(
             {"speech_audio_url": {"$exists": True, "$ne": None}},
             sort=[("_id", -1)],
@@ -5112,11 +5119,22 @@ async def admin_timeline_create_ora_esatta(payload: dict = None):
             "ne pre-generi uno, oppure passa audio_url nel body.",
         )
     event_video_url = (payload.get("video_url") or "").strip() or None
+    # v13.24 · Spot follow-up (opzionale)
+    spot_audio = (payload.get("spot_audio_url") or "").strip()
+    follow_up = None
+    if spot_audio:
+        follow_up = {
+            "audio_url": spot_audio,
+            "title": (payload.get("spot_title") or "Spot").strip()[:120],
+            "artist": (payload.get("spot_artist") or "R-A.I. Advertising").strip()[:120],
+            "duration_sec": int(payload.get("spot_duration_sec") or 20),
+            "video_url": (payload.get("spot_video_url") or "").strip() or None,
+        }
     ev = {
         "id": f"tl-{uuid.uuid4().hex[:12]}",
         "scheduled_at": next_hour.isoformat(),
         "kind": "ora_esatta",
-        "title": "🕐 Ora Esatta",
+        "title": "🕐 Ora Esatta" + (f" + Spot ({follow_up['title']})" if follow_up else ""),
         "artist": "R-A.I. Regia",
         "audio_url": audio_url,
         "duration_sec": int(payload.get("duration_sec") or 12),
@@ -5126,12 +5144,50 @@ async def admin_timeline_create_ora_esatta(payload: dict = None):
         "repeat_daily": False,
         "recurrence": "hourly",
         "silence_pad_ms": 200,
+        "follow_up": follow_up,
         "status": "pending",
         "created_at": now_utc.isoformat(),
     }
     await db.timeline_events.insert_one(ev.copy())
+    # v13.24 · Persisti anche la config in station.state così la Regia può
+    # rileggerla al riavvio o dopo delete/re-enable senza riscoprire i path.
+    await db.station.update_one(
+        {"_id": "state"},
+        {"$set": {"hourly_trigger": {
+            "enabled": True,
+            "ora_esatta_audio_url": audio_url,
+            "spot_audio_url": spot_audio or None,
+            "spot_title": (follow_up or {}).get("title"),
+            "spot_duration_sec": (follow_up or {}).get("duration_sec"),
+            "updated_at": now_utc.isoformat(),
+        }}},
+        upsert=True,
+    )
     ev.pop("_id", None)
-    return {"ok": True, "event": ev, "note": "Evento Ora Esatta ricorrente inserito (hourly)."}
+    return {"ok": True, "event": ev, "note": "Sequenza Ora Esatta+Spot armata (hourly)."}
+
+
+@api_router.get("/admin/timeline/ora-esatta")
+async def admin_timeline_ora_esatta_status():
+    """v13.24 · Ritorna la config armata della sequenza Ora Esatta + Spot,
+    inclusa la prossima occorrenza pending della Timeline."""
+    st = await db.station.find_one({"_id": "state"}, {"hourly_trigger": 1}) or {}
+    cfg = st.get("hourly_trigger") or {"enabled": False}
+    ev = await db.timeline_events.find_one(
+        {"kind": "ora_esatta", "status": "pending"},
+        {"_id": 0},
+        sort=[("scheduled_at", 1)],
+    )
+    return {"config": cfg, "next_event": ev}
+
+
+@api_router.delete("/admin/timeline/ora-esatta")
+async def admin_timeline_ora_esatta_disable():
+    """v13.24 · Disarma la sequenza: elimina tutti gli eventi `ora_esatta`
+    pending e rimuove la config da station.state."""
+    r = await db.timeline_events.delete_many({"kind": "ora_esatta", "status": "pending"})
+    await db.station.update_one({"_id": "state"}, {"$unset": {"hourly_trigger": ""}})
+    return {"ok": True, "removed": r.deleted_count}
 
 
 @api_router.get("/ledwall_video/{filename}")
@@ -5725,6 +5781,12 @@ async def _timeline_pick_due() -> Optional[dict]:
         # /api/ledwall/state lo mostra per tutta la durata dell'evento e
         # torna automaticamente al default appena l'audio scade.
         "video_url": doc.get("video_url"),
+        # v13.24 · Follow-up: quando l'evento entra in onda, il server
+        # inserisce SUBITO in cima alla queue del clock il segmento indicato,
+        # così la transizione Ora Esatta → Spot è zero-gap (pre-buffering
+        # HLS continuo). Il follow-up NON è ricorrente di suo — è agganciato
+        # al padre e ripete solo quando ripete il padre.
+        "follow_up": doc.get("follow_up") or None,
     }
     if not entry["audio_url"]:
         # Se non c'è audio, marchiamo come skipped e riproviamo
@@ -5797,6 +5859,19 @@ async def admin_timeline_create(payload: dict):
     if recurrence not in ("", "none", "hourly", "daily", "weekly"):
         recurrence = "none"
     repeat_daily = (recurrence == "daily")
+    # v13.24 · Follow-up: spec di uno spot/jingle da concatenare immediatamente
+    # dopo l'evento (zero gap). Il player HLS pre-buffera il segmento mentre
+    # l'evento è in onda.
+    follow_up_raw = payload.get("follow_up")
+    follow_up = None
+    if isinstance(follow_up_raw, dict) and (follow_up_raw.get("audio_url") or "").strip():
+        follow_up = {
+            "audio_url": follow_up_raw["audio_url"].strip(),
+            "title": (follow_up_raw.get("title") or "Spot").strip()[:120],
+            "artist": (follow_up_raw.get("artist") or "").strip()[:120] or None,
+            "duration_sec": int(follow_up_raw.get("duration_sec") or 20),
+            "video_url": (follow_up_raw.get("video_url") or "").strip() or None,
+        }
     dur_from_payload = int(payload.get("duration_sec") or 30)
     title = (payload.get("title") or "").strip()[:120] or None
     generated_script = None
@@ -5887,6 +5962,7 @@ async def admin_timeline_create(payload: dict):
         "video_url": event_video_url,
         "repeat_daily": repeat_daily,
         "recurrence": recurrence or "none",
+        "follow_up": follow_up,
         "status": "pending",
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -6266,6 +6342,24 @@ async def _clock_advance(force: bool = False) -> dict:
             break
         promo = dict(promo)
         promo["started_at"] = now.isoformat()
+        # v13.24 · Follow-up injection · se l'entry appena promossa (Timeline
+        # event, es. "Ora Esatta") ha un `follow_up`, spingi lo Spot in TESTA
+        # alla queue. La transizione Ora Esatta → Spot diventa "zero gap":
+        # il manifest HLS include già il segmento successivo mentre l'ora
+        # esatta è ancora in onda (pre-buffer client).
+        _followup = promo.pop("follow_up", None)
+        if _followup and isinstance(_followup, dict) and _followup.get("audio_url"):
+            fu_entry = {
+                "id": _followup.get("id") or f"fu-{uuid.uuid4().hex[:10]}",
+                "title": _followup.get("title") or "Spot",
+                "artist": _followup.get("artist") or "R-A.I. Advertising",
+                "audio_url": _followup["audio_url"],
+                "duration_sec": float(_followup.get("duration_sec") or 20),
+                "is_follow_up": True,
+                "parent_id": promo.get("id"),
+                "video_url": _followup.get("video_url"),
+            }
+            q = [fu_entry] + (q or [])
         clock["current"] = promo
         clock["queue"] = q
         changed = True
