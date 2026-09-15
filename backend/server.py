@@ -4896,15 +4896,25 @@ async def get_ledwall_state():
     override = st.get("ledwall_override") or {}
     default_video = (st.get("ledwall_default_video_url") or "").strip() or None
 
-    # 1) Evento Timeline in onda con video override — precedenza massima
+    # 1) Evento Timeline in onda con video override — precedenza massima.
+    # Supporta anche sentinel FX (es. "fx:effects") per un evento che vuole
+    # forzare gli effetti audio-reattivi.
     from_event = False
     clk = await db.station_clock.find_one({"_id": "clock"}, {"current": 1})
     cur = (clk or {}).get("current") or {}
     if cur.get("is_timeline") and cur.get("video_url"):
+        _vu = cur.get("video_url") or ""
+        if _vu.startswith("fx:"):
+            return {
+                "hour": hour, "video_source": "effects", "video_url": None,
+                "from_override": False, "from_event": True,
+                "event_id": cur.get("id"), "event_title": cur.get("title"),
+                "fx_name": _vu[3:] or None,
+            }
         return {
             "hour": hour,
             "video_source": "video",
-            "video_url": cur.get("video_url"),
+            "video_url": _vu,
             "from_override": False,
             "from_event": True,
             "event_id": cur.get("id"),
@@ -4926,8 +4936,13 @@ async def get_ledwall_state():
                 "video_url": slot.get("video_url"),
                 "from_override": False, "from_event": False}
 
-    # 4) Video di default della Regia
+    # 4) Video di default della Regia — può essere URL video reale o sentinel
+    # FX (es. "fx:effects"). In caso FX, il LedWall renderizza gli effetti.
     if default_video:
+        if default_video.startswith("fx:"):
+            return {"hour": hour, "video_source": "effects", "video_url": None,
+                    "from_override": False, "from_event": False,
+                    "from_default": True, "fx_name": default_video[3:] or None}
         return {"hour": hour, "video_source": "video",
                 "video_url": default_video,
                 "from_override": False, "from_event": False,
@@ -5066,6 +5081,57 @@ async def admin_regia_config_patch(payload: dict):
     if op:
         await db.station.update_one({"_id": "state"}, op, upsert=True)
     return await admin_regia_config_get()
+
+
+@api_router.post("/admin/timeline/ora-esatta")
+async def admin_timeline_create_ora_esatta(payload: dict = None):
+    """v13.23 · Programma "Ora Esatta" come evento Timeline ricorrente orario.
+    Crea un evento che scoccherà al minuto 0 dell'ora SUCCESSIVA e si
+    riproporrà ogni ora fino a cancellazione manuale.
+    Body opzionale: {audio_url?, video_url?, duration_sec?}.
+    Se audio_url manca, riutilizza il time-signal precache più recente (o
+    fallisce con 400 richiedendo un URL).
+    """
+    payload = payload or {}
+    # Prossima ora esatta (:00:00) in UTC
+    now_utc = datetime.now(timezone.utc)
+    next_hour = (now_utc + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+    audio_url = (payload.get("audio_url") or "").strip()
+    if not audio_url:
+        # Prova a riusare l'ultimo time-signal precache disponibile
+        ts = await db.time_signal_cache.find_one(
+            {"speech_audio_url": {"$exists": True, "$ne": None}},
+            sort=[("_id", -1)],
+        )
+        if ts and ts.get("speech_audio_url"):
+            audio_url = ts["speech_audio_url"]
+    if not audio_url:
+        raise HTTPException(
+            400,
+            "Nessun audio Ora Esatta disponibile. Attendi che `_time_signal_pregenerator` "
+            "ne pre-generi uno, oppure passa audio_url nel body.",
+        )
+    event_video_url = (payload.get("video_url") or "").strip() or None
+    ev = {
+        "id": f"tl-{uuid.uuid4().hex[:12]}",
+        "scheduled_at": next_hour.isoformat(),
+        "kind": "ora_esatta",
+        "title": "🕐 Ora Esatta",
+        "artist": "R-A.I. Regia",
+        "audio_url": audio_url,
+        "duration_sec": int(payload.get("duration_sec") or 12),
+        "dj_id": None, "dj_name": None, "voice_key": None,
+        "brief": None,
+        "video_url": event_video_url,
+        "repeat_daily": False,
+        "recurrence": "hourly",
+        "silence_pad_ms": 200,
+        "status": "pending",
+        "created_at": now_utc.isoformat(),
+    }
+    await db.timeline_events.insert_one(ev.copy())
+    ev.pop("_id", None)
+    return {"ok": True, "event": ev, "note": "Evento Ora Esatta ricorrente inserito (hourly)."}
 
 
 @api_router.get("/ledwall_video/{filename}")
@@ -5610,26 +5676,32 @@ async def _timeline_pick_due() -> Optional[dict]:
     )
     if not doc:
         return None
-    # v13.22 · Ripetizione giornaliera: se l'evento è ricorrente, clona
-    # PRIMA di ritornarlo così l'occorrenza di domani viene inserita
-    # automaticamente nella coda. Elimina manualmente il "template" per
-    # spezzare la catena.
+    # v13.22 → v13.23 · Ricorrenza (hourly / daily). Clone PRIMA di ritornare
+    # l'evento, così l'occorrenza successiva finisce subito in coda.
+    # Backward compat: `repeat_daily=true` è ancora accettato (mappato a daily).
     try:
-        if doc.get("repeat_daily"):
+        recurrence = (doc.get("recurrence") or ("daily" if doc.get("repeat_daily") else "none")).strip().lower()
+        if recurrence in ("hourly", "daily", "weekly"):
             try:
                 orig_dt = datetime.fromisoformat((doc.get("scheduled_at") or "").replace("Z", "+00:00"))
-                next_dt = orig_dt + timedelta(days=1)
+                if recurrence == "hourly":
+                    next_dt = orig_dt + timedelta(hours=1)
+                elif recurrence == "weekly":
+                    next_dt = orig_dt + timedelta(days=7)
+                else:  # daily
+                    next_dt = orig_dt + timedelta(days=1)
                 clone = {k: v for k, v in doc.items() if k != "_id"}
                 clone["id"] = f"tl-{uuid.uuid4().hex[:12]}"
                 clone["scheduled_at"] = next_dt.isoformat()
                 clone["status"] = "pending"
                 clone["parent_id"] = doc.get("id")
+                clone["recurrence"] = recurrence
                 clone["created_at"] = datetime.now(timezone.utc).isoformat()
                 clone.pop("consumed_at", None)
                 await db.timeline_events.insert_one(clone)
-                logger.info(f"[timeline] ripetuto giornaliero: {doc.get('id')} → {clone['id']} @ {clone['scheduled_at']}")
+                logger.info(f"[timeline] ricorrente {recurrence}: {doc.get('id')} → {clone['id']} @ {clone['scheduled_at']}")
             except Exception as e:
-                logger.warning(f"[timeline] repeat_daily clone failed: {e}")
+                logger.warning(f"[timeline] recurrence clone failed: {e}")
     except Exception:
         pass
     # Costruisce l'entry compatibile con la queue del clock
@@ -5717,9 +5789,14 @@ async def admin_timeline_create(payload: dict):
     # v13.22 · Video override per l'evento (LedWall lo mostra durante la
     # riproduzione, poi torna automaticamente al video di default).
     event_video_url = (payload.get("video_url") or "").strip() or None
-    # v13.22 · Ricorrenza giornaliera (idempotente: al soft-sync l'evento
-    # viene clonato per domani stessa ora fino a delete manuale).
-    repeat_daily = bool(payload.get("repeat_daily"))
+    # v13.22 → v13.23 · Ricorrenza: none / hourly / daily / weekly.
+    # Backward compat: `repeat_daily=true` mappa a "daily".
+    recurrence = (payload.get("recurrence") or "").strip().lower()
+    if not recurrence and payload.get("repeat_daily"):
+        recurrence = "daily"
+    if recurrence not in ("", "none", "hourly", "daily", "weekly"):
+        recurrence = "none"
+    repeat_daily = (recurrence == "daily")
     dur_from_payload = int(payload.get("duration_sec") or 30)
     title = (payload.get("title") or "").strip()[:120] or None
     generated_script = None
@@ -5809,6 +5886,7 @@ async def admin_timeline_create(payload: dict):
         "silence_pad_ms": int(payload.get("silence_pad_ms") or 350),
         "video_url": event_video_url,
         "repeat_daily": repeat_daily,
+        "recurrence": recurrence or "none",
         "status": "pending",
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -6615,6 +6693,13 @@ async def _pillole_scheduler():
             st = await db.station.find_one({"_id": "state"}, {"fm_mode": 1}) or {}
             if not st.get("fm_mode"):
                 continue
+            # v13.23 · KILL-SWITCH · non genera pillole se `ai_claude_brain` OFF.
+            try:
+                _ai_pl = await _get_ai_controls()
+            except Exception:
+                _ai_pl = {}
+            if not _ai_pl.get("ai_claude_brain"):
+                continue
             try:
                 from zoneinfo import ZoneInfo
                 now_local = datetime.now(ZoneInfo("Europe/Rome"))
@@ -7003,6 +7088,14 @@ async def _suno_library_filler():
                 # Kill-switch active: never call Suno automatically.
                 await asyncio.sleep(120)
                 continue
+            # v13.23 · KILL-SWITCH · rispetta anche `ai_suno_engine` regia.
+            try:
+                _ai_su = await _get_ai_controls()
+            except Exception:
+                _ai_su = {}
+            if not _ai_su.get("ai_suno_engine"):
+                await asyncio.sleep(120)
+                continue
             target = _suno_library_target()
             ready = await db.tracks.count_documents({"source": "suno", "status": "ready"})
             pending = await db.tracks.count_documents({"source": "suno", "status": "pending"})
@@ -7038,6 +7131,16 @@ async def _time_signal_pregenerator():
     await asyncio.sleep(10)
     while True:
         try:
+            # v13.23 · KILL-SWITCH — se `ai_openai_talk` è OFF, il pre-gen è
+            # completamente disabilitato: niente LLM, niente TTS, niente
+            # bruciare crediti quando la Regia è in economy.
+            try:
+                _ai_ts = await _get_ai_controls()
+            except Exception:
+                _ai_ts = {}
+            if not _ai_ts.get("ai_openai_talk"):
+                await asyncio.sleep(30)
+                continue
             from zoneinfo import ZoneInfo
             it_now = datetime.now(ZoneInfo("Europe/Rome"))
             seconds_left = 3600 - (it_now.minute * 60 + it_now.second)

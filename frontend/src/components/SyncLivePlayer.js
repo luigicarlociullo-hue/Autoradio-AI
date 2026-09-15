@@ -59,8 +59,10 @@ export default function SyncLivePlayer() {
     }
   };
 
-  // Fade-in dolce: da 0 a target in `ms` millisecondi.
-  const fadeInPlayback = (targetVol = 1.0, ms = 500) => {
+  // Fade-in dolce ma rapido (150ms): elimina il click di partenza SENZA
+  // introdurre gap percepibile tra evento e brano successivo. v13.23 ·
+  // riduzione da 500ms a 150ms per il target "zero silenzio".
+  const fadeInPlayback = (targetVol = 1.0, ms = 150) => {
     const a = audioRef.current;
     if (!a) return;
     try {
@@ -148,7 +150,7 @@ export default function SyncLivePlayer() {
       try { audio.currentTime = cur.offset_sec || 0; } catch {}
       audio.addEventListener("ended", () => { attachDirect().catch(() => {}); }, { once: true });
       wireToRadioEngine();
-      fadeInPlayback(1.0, 500);
+      fadeInPlayback(1.0, 150);
       await audio.play();
     };
     try {
@@ -159,7 +161,7 @@ export default function SyncLivePlayer() {
         audio.src = hlsUrl;
         audio.load();
         wireToRadioEngine();
-        fadeInPlayback(1.0, 500);
+        fadeInPlayback(1.0, 150);
         await audio.play();
         setStatus("playing");
         window.dispatchEvent(new CustomEvent("rai:sync:play", { detail: { playing: true } }));
@@ -191,7 +193,7 @@ export default function SyncLivePlayer() {
           });
         });
         wireToRadioEngine();
-        fadeInPlayback(1.0, 500);
+        fadeInPlayback(1.0, 150);
         await audio.play();
         setStatus("playing");
         window.dispatchEvent(new CustomEvent("rai:sync:play", { detail: { playing: true } }));
@@ -264,7 +266,7 @@ export default function SyncLivePlayer() {
           : "0 0 18px rgba(0,229,255,0.25), inset 0 0 18px rgba(0,229,255,0.08)",
       }}
     >
-      <audio ref={audioRef} preload="none" className="hidden" data-testid="sync-live-audio" />
+      <audio ref={audioRef} preload="auto" className="hidden" data-testid="sync-live-audio" />
       <div className="flex items-center gap-2 mb-2">
         <Radio className="w-3.5 h-3.5" style={{ color: "#00E5FF" }} />
         <span className="text-[10px] font-mono uppercase tracking-widest text-cyan-300">

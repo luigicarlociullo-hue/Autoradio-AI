@@ -77,7 +77,8 @@ export default function SmartFlowTimelinePanel() {
       dj_id: "",
       brief: "",
       video_url: "",      // v13.22 · override LedWall per l'evento
-      repeat_daily: false, // v13.22 · ricorrenza giornaliera
+      repeat_daily: false, // v13.22 · ricorrenza giornaliera (legacy)
+      recurrence: "none",  // v13.23 · none / hourly / daily / weekly
     };
   });
   const pollRef = useRef(null);
@@ -191,21 +192,23 @@ export default function SmartFlowTimelinePanel() {
         dj_id: form.dj_id || undefined,
         brief: form.brief || undefined,
         video_url: form.video_url || undefined,
-        repeat_daily: !!form.repeat_daily,
+        recurrence: form.recurrence || "none",
       };
       const r = await api.post("/admin/timeline", body);
       const ev = r.data?.event || {};
+      const _rec = ev.recurrence || (ev.repeat_daily ? "daily" : "none");
+      const _recBadge = _rec === "hourly" ? " · 🔁 ogni ora" : _rec === "daily" ? " · 🔁 ogni giorno" : _rec === "weekly" ? " · 🔁 settimanale" : "";
       if (ev.generated_script) {
-        toast.success(`🎙 Talk generato per ${ev.dj_name} · ${ev.duration_sec}s${ev.repeat_daily ? " · 🔁 ripete ogni giorno" : ""}`);
+        toast.success(`🎙 Talk generato per ${ev.dj_name} · ${ev.duration_sec}s${_recBadge}`);
       } else {
-        toast.success(`Evento inserito · ${fmtWhen(iso)}${ev.repeat_daily ? " · 🔁 daily" : ""}`);
+        toast.success(`Evento inserito · ${fmtWhen(iso)}${_recBadge}`);
       }
       const t = new Date(); t.setMinutes(t.getMinutes() + 5, 0, 0);
       setForm({
         scheduled_at: toLocalInput(t),
         kind: form.kind, source_id: "", audio_url: "", title: "", duration_sec: 30,
         dj_id: form.dj_id, brief: "",
-        video_url: form.video_url, repeat_daily: form.repeat_daily,
+        video_url: form.video_url, repeat_daily: false, recurrence: form.recurrence,
       });
       loadEvents("pending");
     } catch (e) {
@@ -286,8 +289,27 @@ export default function SmartFlowTimelinePanel() {
           <div className="label-mono" style={{ color: "#FFB84D" }}>
             🌐 REGIA · CONFIG UNIVERSALE
           </div>
-          <div className="text-[10px] font-mono text-zinc-500">
-            si applica a QUALSIASI generazione AI + LedWall
+          <div className="flex items-center gap-2">
+            <button
+              onClick={async () => {
+                try {
+                  const r = await api.post("/admin/timeline/ora-esatta", {});
+                  toast.success(`🕐 Ora Esatta programmata @ ${new Date(r.data.event.scheduled_at).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})} · hourly`);
+                  loadEvents("pending");
+                } catch (e) {
+                  toast.error(e?.response?.data?.detail || "Errore Ora Esatta");
+                }
+              }}
+              data-testid="regia-btn-ora-esatta"
+              className="px-2.5 py-1 rounded text-[10px] font-bold text-black"
+              style={{ background: "#00E5FF", boxShadow: "0 0 10px rgba(0,229,255,0.5)" }}
+              title="Programma 'Ora Esatta' come evento ricorrente orario. Il LedWall+audio suonano alle :00 di ogni ora fino a cancellazione."
+            >
+              🕐 Ora Esatta (hourly)
+            </button>
+            <div className="text-[10px] font-mono text-zinc-500">
+              si applica a QUALSIASI generazione AI + LedWall
+            </div>
           </div>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
@@ -317,8 +339,8 @@ export default function SmartFlowTimelinePanel() {
             </div>
           </div>
           <div>
-            <label className="label-mono block mb-1" title="Video mostrato dal LedWall quando non ci sono eventi con video override attivi. Loop continuo.">
-              🖥️ Video di default LedWall (loop)
+            <label className="label-mono block mb-1" title="Contenuto mostrato dal LedWall quando non ci sono eventi con video override attivi. Puoi scegliere un video caricato oppure gli effetti audio-reattivi.">
+              🖥️ LedWall di default (loop continuo)
             </label>
             <div className="flex gap-2">
               <select
@@ -327,12 +349,17 @@ export default function SmartFlowTimelinePanel() {
                 className="flex-1 bg-black border border-white/10 rounded px-2 py-1.5 text-sm text-white"
                 data-testid="regia-default-video"
               >
-                <option value="">— nessuno (effetti audio-reattivi) —</option>
-                {videos.map((v) => (
-                  <option key={v.id} value={v.url}>
-                    {v.display_name} ({Math.round((v.size || 0) / 1024 / 1024)}MB)
-                  </option>
-                ))}
+                <option value="">— non impostato (fallback effetti) —</option>
+                <optgroup label="🎆 Effetti Visuali (FX)">
+                  <option value="fx:effects">Effetti audio-reattivi (stelle + ologrammi + onde)</option>
+                </optgroup>
+                <optgroup label="🎬 Video caricati">
+                  {videos.map((v) => (
+                    <option key={v.id} value={v.url}>
+                      {v.display_name} ({Math.round((v.size || 0) / 1024 / 1024)}MB)
+                    </option>
+                  ))}
+                </optgroup>
               </select>
             </div>
           </div>
@@ -484,11 +511,11 @@ export default function SmartFlowTimelinePanel() {
           </div>
         )}
 
-        {/* v13.22 · Video override + Repeat Daily · sempre visibili */}
+        {/* v13.23 · Video override + Ricorrenza · sempre visibili */}
         <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3">
           <div className="md:col-span-2">
-            <label className="label-mono block mb-1" title="Se scegli un video, il LedWall lo mostra per tutta la durata dell'evento e torna automaticamente al default alla fine.">
-              🖥️ Video override LedWall (opzionale)
+            <label className="label-mono block mb-1" title="Se scegli un video o un effetto, il LedWall lo mostra per tutta la durata dell'evento e torna automaticamente al default alla fine.">
+              🖥️ LedWall override per l'evento (opzionale)
             </label>
             <select
               value={form.video_url}
@@ -497,31 +524,33 @@ export default function SmartFlowTimelinePanel() {
               data-testid="timeline-input-video"
             >
               <option value="">— nessuno (mantieni default LedWall) —</option>
-              {videos.map((v) => (
-                <option key={v.id} value={v.url}>
-                  {v.display_name} ({Math.round((v.size || 0) / 1024 / 1024)}MB)
-                </option>
-              ))}
+              <optgroup label="🎆 Effetti Visuali (FX)">
+                <option value="fx:effects">Effetti audio-reattivi</option>
+              </optgroup>
+              <optgroup label="🎬 Video caricati">
+                {videos.map((v) => (
+                  <option key={v.id} value={v.url}>
+                    {v.display_name} ({Math.round((v.size || 0) / 1024 / 1024)}MB)
+                  </option>
+                ))}
+              </optgroup>
             </select>
           </div>
-          <div className="flex items-end">
-            <label
-              className="w-full flex items-center gap-2 px-3 py-2 rounded border cursor-pointer"
-              title="Se attivo, l'evento si ricreerà automaticamente ogni giorno alla stessa ora fino a cancellazione manuale."
-              style={{
-                background: form.repeat_daily ? "rgba(0,229,255,0.15)" : "rgba(0,0,0,0.4)",
-                borderColor: form.repeat_daily ? "rgba(0,229,255,0.6)" : "rgba(255,255,255,0.10)",
-              }}
-              data-testid="timeline-input-repeat"
-            >
-              <input
-                type="checkbox"
-                checked={form.repeat_daily}
-                onChange={(e) => setForm({ ...form, repeat_daily: e.target.checked })}
-                className="accent-cyan-400"
-              />
-              <span className="text-sm text-white">🔁 Ripeti ogni giorno</span>
+          <div>
+            <label className="label-mono block mb-1" title="Frequenza di ripetizione dell'evento. Ogni ora / ogni giorno / ogni settimana. Elimina l'evento per interrompere la catena.">
+              🔁 Ricorrenza
             </label>
+            <select
+              value={form.recurrence}
+              onChange={(e) => setForm({ ...form, recurrence: e.target.value })}
+              className="w-full bg-black border border-white/10 rounded px-2 py-1.5 text-sm text-white"
+              data-testid="timeline-input-recurrence"
+            >
+              <option value="none">Nessuna (una volta sola)</option>
+              <option value="hourly">Ogni ora</option>
+              <option value="daily">Ogni giorno</option>
+              <option value="weekly">Ogni settimana</option>
+            </select>
           </div>
         </div>
       </div>
@@ -581,19 +610,19 @@ export default function SmartFlowTimelinePanel() {
               </div>
               <div className="flex-1 min-w-0">
                 <div className="truncate text-sm text-white flex items-center gap-1.5">
-                  {ev.repeat_daily && (
+                  {(ev.recurrence && ev.recurrence !== "none") || ev.repeat_daily ? (
                     <span
                       className="px-1.5 py-0.5 rounded text-[9px] font-mono uppercase tracking-wider"
                       style={{ background: "rgba(0,229,255,0.14)", color: "#00E5FF", border: "1px solid rgba(0,229,255,0.4)" }}
-                      title="Ricorrente ogni giorno alla stessa ora"
-                    >🔁 daily</span>
-                  )}
+                      title="Ricorrente"
+                    >🔁 {ev.recurrence === "hourly" ? "hourly" : ev.recurrence === "weekly" ? "weekly" : "daily"}</span>
+                  ) : null}
                   {ev.video_url && (
                     <span
                       className="px-1.5 py-0.5 rounded text-[9px] font-mono uppercase tracking-wider"
                       style={{ background: "rgba(128,255,180,0.14)", color: "#80FFB4", border: "1px solid rgba(128,255,180,0.4)" }}
-                      title="LedWall mostra questo video durante l'evento"
-                    >🖥️ video</span>
+                      title="LedWall override durante l'evento"
+                    >🖥️ {ev.video_url.startsWith("fx:") ? "fx" : "video"}</span>
                   )}
                   <span className="truncate">{ev.title || "—"}</span>
                 </div>
