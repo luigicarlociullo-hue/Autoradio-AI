@@ -5807,44 +5807,98 @@ async def _dj_pregen_ticker():
     richiesta HTTP. Gira ogni 5s; genera un nuovo segmento DJ on-demand solo
     se la coda è sotto soglia e non c'è già una generazione in volo, così
     _clock_pick_dj_voice_segment trova quasi sempre l'audio già pronto invece
-    di dover ripiegare sul jingle per il turno corrente."""
+    di dover ripiegare sul jingle per il turno corrente.
+
+    v13.21 · KILL-SWITCH & BACKOFF (SENZA SPRECHI):
+      • Se l'AI-switch `ai_openai_talk` è OFF, salta il tick senza toccare
+        LLM/TTS. Difesa contro il bug che aveva bruciato la Universal Key.
+      • Se il tick precedente è fallito (nessun audio prodotto), aspetta
+        5 minuti prima di riprovare invece dei 5 secondi standard: evita
+        di martellare provider LLM/TTS in disservizio.
+    """
     global _dj_pregen_task
     _PREGEN_MIN_QUEUED = 1
+    _last_task_failed = False
     while True:
         try:
-            await asyncio.sleep(5)
+            # Backoff: se l'ultima pregen è fallita, attesa lunga (5 min).
+            await asyncio.sleep(300 if _last_task_failed else 5)
+            # KILL-SWITCH: se il toggle "AI OpenAI Talk" è OFF, non chiamare
+            # generate_segment(), non chiamare alcun LLM. Passa al tick dopo.
+            try:
+                _ai = await _get_ai_controls()
+            except Exception:
+                _ai = {}
+            if not _ai.get("ai_openai_talk"):
+                # Log periodicamente (~ogni 5min) quando il kill-switch è attivo,
+                # così la regia ha prova che il ticker rispetta il toggle.
+                _last_task_failed = False
+                import time as _time
+                if int(_time.time()) % 300 < 6:
+                    logger.info("[dj-pregen] SKIP tick · ai_openai_talk=OFF (kill-switch attivo, zero LLM)")
+                continue
             if _dj_pregen_task and not _dj_pregen_task.done():
                 continue
             queued = await db.priority_queue.count_documents({})
             if queued >= _PREGEN_MIN_QUEUED:
+                _last_task_failed = False
                 continue
             _dj_pregen_task = asyncio.create_task(_dj_pregen_once())
+            # Osserva l'esito per decidere il backoff del prossimo giro.
+            async def _watch(t):
+                nonlocal_ref["failed"] = False
+                try:
+                    r = await t
+                    nonlocal_ref["failed"] = not bool(r)
+                except Exception:
+                    nonlocal_ref["failed"] = True
+            nonlocal_ref = {"failed": False}
+            try:
+                await _watch(_dj_pregen_task)
+            except Exception:
+                nonlocal_ref["failed"] = True
+            _last_task_failed = bool(nonlocal_ref.get("failed"))
         except asyncio.CancelledError:
             break
         except Exception as e:
             logger.warning(f"[clock] dj pregen tick error: {e}")
+            _last_task_failed = True
 
 
 async def _dj_pregen_once():
     """Genera un segmento DJ (script LLM + TTS ElevenLabs) e lo mette in
     priority_queue per un turno DJ futuro. Fallisce in silenzio (es. credito
     LLM/TTS esaurito) — il chiamante del turno corrente ripiega sul jingle
-    comunque, questa è solo pre-produzione best-effort."""
+    comunque, questa è solo pre-produzione best-effort.
+
+    Ritorna `True` se ha effettivamente prodotto e accodato un segmento,
+    `False` altrimenti (usato dal ticker per attivare il backoff 5min).
+    """
+    # v13.21 · KILL-SWITCH DIFENSIVO — anche se il ticker ci chiama, ricontrolla
+    # l'AI switch all'inizio: nessun LLM/TTS se `ai_openai_talk` è OFF.
+    try:
+        _ai = await _get_ai_controls()
+    except Exception:
+        _ai = {}
+    if not _ai.get("ai_openai_talk"):
+        return False
     try:
         rubric = random.choice(_ON_DEMAND_DJ_RUBRICS)
         seg = await generate_segment(kind=rubric)
         if not seg or not seg.speech_audio_url:
-            return
+            return False
         dur = await _probe_tts_duration(seg.speech_audio_url, pad_sec=2.0)
         if dur is None:
-            return
+            return False
         await db.priority_queue.insert_one({
             "id": seg.id, "kind": "answer", "title": seg.title or "R-A.I. Talk",
             "dj_name": seg.dj_name or "R-A.I.", "audio_url": seg.speech_audio_url,
             "duration_sec": dur, "created_at": now_iso(),
         })
+        return True
     except Exception as e:
         logger.warning(f"[clock] on-demand DJ pregen failed: {e}")
+        return False
 
 
 async def _clock_pick_dj_jingle() -> Optional[dict]:
@@ -6712,7 +6766,11 @@ async def on_startup():
         asyncio.create_task(_suno_library_filler())
         asyncio.create_task(_suno_integrity_check())
         asyncio.create_task(_time_signal_pregenerator())
-        logger.info("[startup] Background AI tasks ENABLED (Suno filler, integrity, time_signal pregen)")
+        # v13.21 · DJ voice pregen ticker — gated dal kill-switch di regia:
+        # come gli altri background task, parte solo se BACKGROUND_TASKS_ENABLED
+        # è ON, così una regia in economy non brucia crediti LLM/TTS di nascosto.
+        asyncio.create_task(_dj_pregen_ticker())
+        logger.info("[startup] Background AI tasks ENABLED (Suno filler, integrity, time_signal pregen, DJ voice pregen)")
     else:
         logger.info("[startup] Background AI tasks DISABLED (BACKGROUND_TASKS_ENABLED=false) — nessun consumo automatico")
     # Auto-scheduling Pillole (v13.3) — sempre attivo, ma internamente si
@@ -6725,10 +6783,6 @@ async def on_startup():
     # ripristina lo stato coerente. Zero costi API ricorrenti.
     asyncio.create_task(_clock_ticker())
     logger.info("[startup] Station clock ticker running (in-pod, tier0-tolerant)")
-    # v13.20 · DJ voice pregen ticker — rifornisce priority_queue in background
-    # così /api/stream/now non genera mai audio TTS in modo sincrono/bloccante.
-    asyncio.create_task(_dj_pregen_ticker())
-    logger.info("[startup] DJ voice pregen ticker running (background, non-blocking)")
     # v13.9 · VIDEO CLOCK ticker (stinger rotation sincrona HLS)
     async def _video_ticker():
         while True:
