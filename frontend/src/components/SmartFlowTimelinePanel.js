@@ -58,8 +58,12 @@ export default function SmartFlowTimelinePanel() {
   const [consumed, setConsumed] = useState([]);
   const [sources, setSources] = useState([]); // /admin/tracks/searchable
   const [djs, setDjs] = useState([]);        // /djs
+  const [videos, setVideos] = useState([]);  // /admin/ledwall/videos
   const [tab, setTab] = useState("pending"); // pending | consumed
   const [busy, setBusy] = useState(false);
+  // v13.22 · Config globale di Regia (soggetto default + video default)
+  const [regiaCfg, setRegiaCfg] = useState({ default_subject: "", ledwall_default_video_url: "" });
+  const [regiaBusy, setRegiaBusy] = useState(false);
   const [form, setForm] = useState(() => {
     const t = new Date();
     t.setMinutes(t.getMinutes() + 5, 0, 0);
@@ -72,6 +76,8 @@ export default function SmartFlowTimelinePanel() {
       duration_sec: 30,
       dj_id: "",
       brief: "",
+      video_url: "",      // v13.22 · override LedWall per l'evento
+      repeat_daily: false, // v13.22 · ricorrenza giornaliera
     };
   });
   const pollRef = useRef(null);
@@ -102,9 +108,44 @@ export default function SmartFlowTimelinePanel() {
       setDjs(daytime);
     } catch {}
   };
+  const loadVideos = async () => {
+    try {
+      const r = await api.get(`/admin/ledwall/videos`);
+      setVideos(r.data.videos || []);
+    } catch {}
+  };
+  const loadRegiaCfg = async () => {
+    try {
+      const r = await api.get(`/admin/regia/config`);
+      setRegiaCfg({
+        default_subject: r.data.default_subject || "",
+        ledwall_default_video_url: r.data.ledwall_default_video_url || "",
+      });
+    } catch {}
+  };
+  const saveRegiaCfg = async (patch) => {
+    setRegiaBusy(true);
+    try {
+      const r = await api.patch(`/admin/regia/config`, patch);
+      setRegiaCfg({
+        default_subject: r.data.default_subject || "",
+        ledwall_default_video_url: r.data.ledwall_default_video_url || "",
+      });
+      toast.success("Regia config salvata");
+    } catch { toast.error("Errore salvataggio config"); }
+    finally { setRegiaBusy(false); }
+  };
+  const deleteVideo = async (id) => {
+    if (!window.confirm("Eliminare fisicamente il video dallo storage?")) return;
+    try {
+      await api.delete(`/admin/ledwall/videos/${id}`);
+      toast.success("Video eliminato dallo storage");
+      loadVideos();
+    } catch { toast.error("Errore eliminazione video"); }
+  };
 
   useEffect(() => {
-    loadNow(); loadEvents("pending"); loadEvents("consumed"); loadSources(); loadDjs();
+    loadNow(); loadEvents("pending"); loadEvents("consumed"); loadSources(); loadDjs(); loadVideos(); loadRegiaCfg();
     pollRef.current = setInterval(() => {
       loadNow();
       loadEvents("pending");
@@ -149,19 +190,22 @@ export default function SmartFlowTimelinePanel() {
         duration_sec: Number(form.duration_sec) || 30,
         dj_id: form.dj_id || undefined,
         brief: form.brief || undefined,
+        video_url: form.video_url || undefined,
+        repeat_daily: !!form.repeat_daily,
       };
       const r = await api.post("/admin/timeline", body);
       const ev = r.data?.event || {};
       if (ev.generated_script) {
-        toast.success(`🎙 Talk generato per ${ev.dj_name} · ${ev.duration_sec}s`);
+        toast.success(`🎙 Talk generato per ${ev.dj_name} · ${ev.duration_sec}s${ev.repeat_daily ? " · 🔁 ripete ogni giorno" : ""}`);
       } else {
-        toast.success(`Evento inserito · ${fmtWhen(iso)}`);
+        toast.success(`Evento inserito · ${fmtWhen(iso)}${ev.repeat_daily ? " · 🔁 daily" : ""}`);
       }
       const t = new Date(); t.setMinutes(t.getMinutes() + 5, 0, 0);
       setForm({
         scheduled_at: toLocalInput(t),
         kind: form.kind, source_id: "", audio_url: "", title: "", duration_sec: 30,
         dj_id: form.dj_id, brief: "",
+        video_url: form.video_url, repeat_daily: form.repeat_daily,
       });
       loadEvents("pending");
     } catch (e) {
@@ -228,6 +272,69 @@ export default function SmartFlowTimelinePanel() {
           <div className="text-[10px] font-mono text-zinc-400 mt-0.5">
             {cur?.artist || ""} {remaining !== null ? `· ${remaining}s alla fine` : ""}
             {cur?.is_timeline ? " · timeline" : ""}
+          </div>
+        </div>
+      </div>
+
+      {/* v13.22 · REGIA CONFIG UNIVERSALE — barra in cima */}
+      <div
+        className="rounded-lg p-3 mb-4 space-y-2"
+        style={{ background: "rgba(255,184,77,0.06)", border: "1px solid rgba(255,184,77,0.30)" }}
+        data-testid="regia-config-bar"
+      >
+        <div className="flex items-center justify-between">
+          <div className="label-mono" style={{ color: "#FFB84D" }}>
+            🌐 REGIA · CONFIG UNIVERSALE
+          </div>
+          <div className="text-[10px] font-mono text-zinc-500">
+            si applica a QUALSIASI generazione AI + LedWall
+          </div>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+          <div>
+            <label className="label-mono block mb-1" title="Soggetto usato come contesto base per tutti i DJ e le automazioni AI quando l'evento specifico non porta un brief proprio.">
+              Soggetto di default (contesto AI globale)
+            </label>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={regiaCfg.default_subject}
+                onChange={(e) => setRegiaCfg({ ...regiaCfg, default_subject: e.target.value })}
+                placeholder="Es. 'Tecnologia 2030 e futuro della radio' · vuoto = AI totalmente libera"
+                maxLength={400}
+                className="flex-1 bg-black border border-white/10 rounded px-2 py-1.5 text-sm text-white font-mono"
+                data-testid="regia-default-subject"
+              />
+              <button
+                onClick={() => saveRegiaCfg({ default_subject: regiaCfg.default_subject })}
+                disabled={regiaBusy}
+                data-testid="regia-default-subject-save"
+                className="px-3 py-1.5 rounded text-xs font-bold text-black"
+                style={{ background: "#FFB84D", opacity: regiaBusy ? 0.55 : 1 }}
+              >
+                Salva
+              </button>
+            </div>
+          </div>
+          <div>
+            <label className="label-mono block mb-1" title="Video mostrato dal LedWall quando non ci sono eventi con video override attivi. Loop continuo.">
+              🖥️ Video di default LedWall (loop)
+            </label>
+            <div className="flex gap-2">
+              <select
+                value={regiaCfg.ledwall_default_video_url}
+                onChange={(e) => saveRegiaCfg({ ledwall_default_video_url: e.target.value })}
+                className="flex-1 bg-black border border-white/10 rounded px-2 py-1.5 text-sm text-white"
+                data-testid="regia-default-video"
+              >
+                <option value="">— nessuno (effetti audio-reattivi) —</option>
+                {videos.map((v) => (
+                  <option key={v.id} value={v.url}>
+                    {v.display_name} ({Math.round((v.size || 0) / 1024 / 1024)}MB)
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
         </div>
       </div>
@@ -349,16 +456,18 @@ export default function SmartFlowTimelinePanel() {
           <div className="mt-3">
             <label
               className="label-mono block mb-1"
-              title="Se scrivi qualcosa, il DJ parla di quello. Se lasci VUOTO, il DJ inventa un argomento coerente con la sua personalità."
+              title="Se scrivi qualcosa, il DJ parla di quello. Se lasci VUOTO, il DJ usa il Soggetto di default globale (o inventa se anche quello è vuoto)."
             >
-              🧠 Soggetto / Brief — vuoto = argomento casuale intelligente
+              🧠 Soggetto / Brief — vuoto = usa Soggetto di default globale
             </label>
             <textarea
               value={form.brief}
               onChange={(e) => setForm({ ...form, brief: e.target.value })}
-              placeholder={`Es. "Tesla e le sfide di Musk 2026" · oppure lascia vuoto: ${
-                djs.find(d => d.id === form.dj_id)?.name || "il DJ"
-              } inventa da sé.`}
+              placeholder={
+                regiaCfg.default_subject
+                  ? `Vuoto → usa: "${regiaCfg.default_subject}"`
+                  : `Es. "Tesla 2026" · vuoto → ${djs.find(d => d.id === form.dj_id)?.name || "il DJ"} inventa da sé.`
+              }
               rows={2}
               maxLength={400}
               className="w-full bg-black border border-white/10 rounded px-2 py-1.5 text-sm text-white font-mono resize-none"
@@ -366,14 +475,55 @@ export default function SmartFlowTimelinePanel() {
             />
             <div className="text-[10px] font-mono text-zinc-500 mt-1 flex justify-between">
               <span>
-                Modalità: <b style={{ color: form.brief ? "#00E5FF" : "#80FFB4" }}>
-                  {form.brief ? "🎯 GUIDATO (soggetto imposto)" : "🎲 AUTONOMO (l'AI sceglie)"}
+                Modalità: <b style={{ color: form.brief ? "#00E5FF" : (regiaCfg.default_subject ? "#FFB84D" : "#80FFB4") }}>
+                  {form.brief ? "🎯 GUIDATO (soggetto specifico)" : (regiaCfg.default_subject ? "🌐 GLOBALE (usa default Regia)" : "🎲 AUTONOMO (l'AI sceglie)")}
                 </b>
               </span>
               <span>{form.brief.length}/400</span>
             </div>
           </div>
         )}
+
+        {/* v13.22 · Video override + Repeat Daily · sempre visibili */}
+        <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div className="md:col-span-2">
+            <label className="label-mono block mb-1" title="Se scegli un video, il LedWall lo mostra per tutta la durata dell'evento e torna automaticamente al default alla fine.">
+              🖥️ Video override LedWall (opzionale)
+            </label>
+            <select
+              value={form.video_url}
+              onChange={(e) => setForm({ ...form, video_url: e.target.value })}
+              className="w-full bg-black border border-white/10 rounded px-2 py-1.5 text-sm text-white"
+              data-testid="timeline-input-video"
+            >
+              <option value="">— nessuno (mantieni default LedWall) —</option>
+              {videos.map((v) => (
+                <option key={v.id} value={v.url}>
+                  {v.display_name} ({Math.round((v.size || 0) / 1024 / 1024)}MB)
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="flex items-end">
+            <label
+              className="w-full flex items-center gap-2 px-3 py-2 rounded border cursor-pointer"
+              title="Se attivo, l'evento si ricreerà automaticamente ogni giorno alla stessa ora fino a cancellazione manuale."
+              style={{
+                background: form.repeat_daily ? "rgba(0,229,255,0.15)" : "rgba(0,0,0,0.4)",
+                borderColor: form.repeat_daily ? "rgba(0,229,255,0.6)" : "rgba(255,255,255,0.10)",
+              }}
+              data-testid="timeline-input-repeat"
+            >
+              <input
+                type="checkbox"
+                checked={form.repeat_daily}
+                onChange={(e) => setForm({ ...form, repeat_daily: e.target.checked })}
+                className="accent-cyan-400"
+              />
+              <span className="text-sm text-white">🔁 Ripeti ogni giorno</span>
+            </label>
+          </div>
+        </div>
       </div>
 
       {/* ── Tabs pending / consumed ───────────────────────────────────── */}
@@ -430,7 +580,23 @@ export default function SmartFlowTimelinePanel() {
                 {fmtDate(ev.scheduled_at)} · <b>{fmtWhen(ev.scheduled_at)}</b>
               </div>
               <div className="flex-1 min-w-0">
-                <div className="truncate text-sm text-white">{ev.title || "—"}</div>
+                <div className="truncate text-sm text-white flex items-center gap-1.5">
+                  {ev.repeat_daily && (
+                    <span
+                      className="px-1.5 py-0.5 rounded text-[9px] font-mono uppercase tracking-wider"
+                      style={{ background: "rgba(0,229,255,0.14)", color: "#00E5FF", border: "1px solid rgba(0,229,255,0.4)" }}
+                      title="Ricorrente ogni giorno alla stessa ora"
+                    >🔁 daily</span>
+                  )}
+                  {ev.video_url && (
+                    <span
+                      className="px-1.5 py-0.5 rounded text-[9px] font-mono uppercase tracking-wider"
+                      style={{ background: "rgba(128,255,180,0.14)", color: "#80FFB4", border: "1px solid rgba(128,255,180,0.4)" }}
+                      title="LedWall mostra questo video durante l'evento"
+                    >🖥️ video</span>
+                  )}
+                  <span className="truncate">{ev.title || "—"}</span>
+                </div>
                 <div className="truncate text-[10px] font-mono text-zinc-500 flex items-center gap-2">
                   {ev.dj_name && (
                     <span

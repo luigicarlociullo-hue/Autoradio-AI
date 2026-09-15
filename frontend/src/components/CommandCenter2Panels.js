@@ -264,9 +264,9 @@ export function MagazzinoUniversale() {
     catch { toast.error("Errore"); }
   };
   const deleteVideo = async (id) => {
-    if (!window.confirm("Eliminare questo video?")) return;
-    try { await api.delete(`/admin/ledwall/videos/${id}`); toast.success("Video eliminato"); load(); }
-    catch { toast.error("Errore"); }
+    if (!window.confirm("Eliminare fisicamente il video dallo storage? Questa azione libera spazio e non è reversibile.")) return;
+    try { await api.delete(`/admin/ledwall/videos/${id}`); toast.success("Video eliminato dallo storage"); load(); }
+    catch { toast.error("Errore eliminazione video"); }
   };
 
   const tabs = [

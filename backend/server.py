@@ -4870,7 +4870,18 @@ async def admin_set_schedule_hour(hour: int, payload: dict):
 async def get_ledwall_state():
     """Stato corrente del LedWall: cosa mostrare ORA in base al Master Clock.
     Ritorna {video_source, video_url}. Il frontend consulta questo endpoint
-    per decidere se rendere Canvas audio-reattivo o video reale."""
+    per decidere se rendere Canvas audio-reattivo o video reale.
+
+    v13.22 · Precedenza:
+      1) evento Timeline in onda con `video_url` → override per la sua durata
+      2) override manuale della Regia (`station.state.ledwall_override`)
+      3) slot del palinsesto orario (`program_schedule`)
+      4) video di default della Regia (`station.state.ledwall_default_video_url`)
+      5) fallback: effetti (canvas audio-reattivo)
+    Al termine dell'evento (durata scaduta) il LedWall torna AUTOMATICAMENTE
+    al default senza intervento manuale — è già gestito dallo `station_clock`
+    che sostituisce `current` con il brano successivo.
+    """
     try:
         from zoneinfo import ZoneInfo
         now_local = datetime.now(ZoneInfo("Europe/Rome"))
@@ -4878,15 +4889,53 @@ async def get_ledwall_state():
         now_local = datetime.now(timezone.utc)
     hour = now_local.hour
     slot = await db.program_schedule.find_one({"hour": hour}, {"_id": 0}) or {}
-    # Override manuale immediato (bypass palinsesto)
-    st = await db.station.find_one({"_id": "state"}, {"ledwall_override": 1}) or {}
+    st = await db.station.find_one(
+        {"_id": "state"},
+        {"ledwall_override": 1, "ledwall_default_video_url": 1},
+    ) or {}
     override = st.get("ledwall_override") or {}
-    src = override.get("video_source") or slot.get("video_source") or "effects"
-    url = override.get("video_url") or slot.get("video_url")
-    if src not in _VIDEO_SOURCES:
-        src = "effects"
-    return {"hour": hour, "video_source": src, "video_url": url,
-            "from_override": bool(override.get("video_source"))}
+    default_video = (st.get("ledwall_default_video_url") or "").strip() or None
+
+    # 1) Evento Timeline in onda con video override — precedenza massima
+    from_event = False
+    clk = await db.station_clock.find_one({"_id": "clock"}, {"current": 1})
+    cur = (clk or {}).get("current") or {}
+    if cur.get("is_timeline") and cur.get("video_url"):
+        return {
+            "hour": hour,
+            "video_source": "video",
+            "video_url": cur.get("video_url"),
+            "from_override": False,
+            "from_event": True,
+            "event_id": cur.get("id"),
+            "event_title": cur.get("title"),
+        }
+
+    # 2) Override manuale di regia
+    if override.get("video_source"):
+        src = override.get("video_source")
+        if src not in _VIDEO_SOURCES:
+            src = "effects"
+        return {"hour": hour, "video_source": src,
+                "video_url": override.get("video_url"),
+                "from_override": True, "from_event": False}
+
+    # 3) Slot palinsesto orario
+    if slot.get("video_source") and slot.get("video_source") in _VIDEO_SOURCES:
+        return {"hour": hour, "video_source": slot["video_source"],
+                "video_url": slot.get("video_url"),
+                "from_override": False, "from_event": False}
+
+    # 4) Video di default della Regia
+    if default_video:
+        return {"hour": hour, "video_source": "video",
+                "video_url": default_video,
+                "from_override": False, "from_event": False,
+                "from_default": True}
+
+    # 5) Fallback effetti
+    return {"hour": hour, "video_source": "effects", "video_url": None,
+            "from_override": False, "from_event": False}
 
 
 @api_router.patch("/admin/ledwall/override")
@@ -4955,8 +5004,68 @@ async def admin_ledwall_list_videos():
 
 @api_router.delete("/admin/ledwall/videos/{video_id}")
 async def admin_ledwall_delete_video(video_id: str):
+    """v13.22 · Elimina il video: rimuove il record dal DB E il file fisico
+    dallo Object Storage per liberare spazio. Idempotente."""
+    doc = await db.ledwall_videos.find_one({"id": video_id}, {"_id": 0, "filename": 1, "url": 1})
+    filename = None
+    if doc:
+        filename = doc.get("filename") or (doc.get("url") or "").rsplit("/", 1)[-1]
     r = await db.ledwall_videos.delete_one({"id": video_id})
-    return {"ok": r.deleted_count > 0}
+    # Se il video è correntemente usato come "default", rimuovilo dalla config
+    await db.station.update_one(
+        {"_id": "state", "ledwall_default_video_url": {"$regex": f"/{filename}$"} if filename else "___never___"},
+        {"$unset": {"ledwall_default_video_url": ""}},
+    )
+    if filename:
+        # Best-effort: cancella l'oggetto dallo storage (idempotente)
+        try:
+            await object_storage.delete_object(f"ledwall/{filename}")
+        except Exception as e:
+            logger.warning(f"[ledwall] objstore delete failed: {e}")
+    return {"ok": r.deleted_count > 0, "storage_removed": bool(filename)}
+
+
+# ============================================================================
+# v13.22 · REGIA CONFIG — Soggetto di default UNIVERSALE + Video LedWall default
+# ============================================================================
+@api_router.get("/admin/regia/config")
+async def admin_regia_config_get():
+    """Ritorna la config globale della Regia (soggetto di default per tutte
+    le generazioni AI + video di default del LedWall)."""
+    st = await db.station.find_one(
+        {"_id": "state"},
+        {"_id": 0, "default_subject": 1, "ledwall_default_video_url": 1},
+    ) or {}
+    return {
+        "default_subject": st.get("default_subject") or "",
+        "ledwall_default_video_url": st.get("ledwall_default_video_url") or None,
+    }
+
+
+@api_router.patch("/admin/regia/config")
+async def admin_regia_config_patch(payload: dict):
+    """Aggiorna la config globale. Se una chiave è vuota → l'entry viene rimossa
+    (l'AI torna al comportamento "autonomo" e il LedWall torna agli effetti)."""
+    updates_set: dict = {}
+    updates_unset: dict = {}
+    if "default_subject" in payload:
+        val = (payload.get("default_subject") or "").strip()[:400]
+        if val:
+            updates_set["default_subject"] = val
+        else:
+            updates_unset["default_subject"] = ""
+    if "ledwall_default_video_url" in payload:
+        val = (payload.get("ledwall_default_video_url") or "").strip()[:500]
+        if val:
+            updates_set["ledwall_default_video_url"] = val
+        else:
+            updates_unset["ledwall_default_video_url"] = ""
+    op: dict = {}
+    if updates_set: op["$set"] = updates_set
+    if updates_unset: op["$unset"] = updates_unset
+    if op:
+        await db.station.update_one({"_id": "state"}, op, upsert=True)
+    return await admin_regia_config_get()
 
 
 @api_router.get("/ledwall_video/{filename}")
@@ -5501,6 +5610,28 @@ async def _timeline_pick_due() -> Optional[dict]:
     )
     if not doc:
         return None
+    # v13.22 · Ripetizione giornaliera: se l'evento è ricorrente, clona
+    # PRIMA di ritornarlo così l'occorrenza di domani viene inserita
+    # automaticamente nella coda. Elimina manualmente il "template" per
+    # spezzare la catena.
+    try:
+        if doc.get("repeat_daily"):
+            try:
+                orig_dt = datetime.fromisoformat((doc.get("scheduled_at") or "").replace("Z", "+00:00"))
+                next_dt = orig_dt + timedelta(days=1)
+                clone = {k: v for k, v in doc.items() if k != "_id"}
+                clone["id"] = f"tl-{uuid.uuid4().hex[:12]}"
+                clone["scheduled_at"] = next_dt.isoformat()
+                clone["status"] = "pending"
+                clone["parent_id"] = doc.get("id")
+                clone["created_at"] = datetime.now(timezone.utc).isoformat()
+                clone.pop("consumed_at", None)
+                await db.timeline_events.insert_one(clone)
+                logger.info(f"[timeline] ripetuto giornaliero: {doc.get('id')} → {clone['id']} @ {clone['scheduled_at']}")
+            except Exception as e:
+                logger.warning(f"[timeline] repeat_daily clone failed: {e}")
+    except Exception:
+        pass
     # Costruisce l'entry compatibile con la queue del clock
     entry = {
         "id": doc.get("id") or f"tl-{uuid.uuid4().hex[:10]}",
@@ -5518,6 +5649,10 @@ async def _timeline_pick_due() -> Optional[dict]:
         # v13.18 · Silence padding: al player serve un'attesa buffer per
         # non tagliare le prime sillabe del talk
         "silence_pad_ms": int(doc.get("silence_pad_ms") or 350),
+        # v13.22 · Video override: se l'evento porta un video LedWall,
+        # /api/ledwall/state lo mostra per tutta la durata dell'evento e
+        # torna automaticamente al default appena l'audio scade.
+        "video_url": doc.get("video_url"),
     }
     if not entry["audio_url"]:
         # Se non c'è audio, marchiamo come skipped e riproviamo
@@ -5571,6 +5706,20 @@ async def admin_timeline_create(payload: dict):
 
     audio_url = (payload.get("audio_url") or "").strip()
     brief = (payload.get("brief") or "").strip()
+    # v13.22 · Soggetto di default UNIVERSALE: se il payload non porta un
+    # brief specifico, il server usa quello globale di regia come contesto
+    # per la generazione AI. Se anche quello è vuoto, l'LLM inventa da sé.
+    if not brief:
+        _cfg_st = await db.station.find_one({"_id": "state"}, {"default_subject": 1}) or {}
+        default_subj = (_cfg_st.get("default_subject") or "").strip()
+        if default_subj:
+            brief = default_subj
+    # v13.22 · Video override per l'evento (LedWall lo mostra durante la
+    # riproduzione, poi torna automaticamente al video di default).
+    event_video_url = (payload.get("video_url") or "").strip() or None
+    # v13.22 · Ricorrenza giornaliera (idempotente: al soft-sync l'evento
+    # viene clonato per domani stessa ora fino a delete manuale).
+    repeat_daily = bool(payload.get("repeat_daily"))
     dur_from_payload = int(payload.get("duration_sec") or 30)
     title = (payload.get("title") or "").strip()[:120] or None
     generated_script = None
@@ -5658,6 +5807,8 @@ async def admin_timeline_create(payload: dict):
         "generated_topic": generated_topic,
         "generated_script": (generated_script[:500] if generated_script else None),
         "silence_pad_ms": int(payload.get("silence_pad_ms") or 350),
+        "video_url": event_video_url,
+        "repeat_daily": repeat_daily,
         "status": "pending",
         "created_at": datetime.now(timezone.utc).isoformat(),
     }

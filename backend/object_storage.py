@@ -131,6 +131,32 @@ async def put_bytes(sub_path: str, data: bytes, content_type: str) -> Optional[s
         return None
 
 
+def _delete_object_sync(path: str) -> bool:
+    key = _init_storage_sync()
+    resp = requests.delete(
+        f"{STORAGE_URL}/objects/{path}",
+        headers={"X-Storage-Key": key},
+        timeout=60,
+    )
+    if resp.status_code in (200, 204, 404):
+        return True
+    resp.raise_for_status()
+    return True
+
+
+async def delete_object(sub_path: str) -> bool:
+    """v13.22 · Elimina fisicamente un oggetto dallo storage (idempotente:
+    ritorna True anche se il file non esiste già)."""
+    if not is_enabled():
+        return False
+    full_path = f"{APP_NAME}/{sub_path.lstrip('/')}"
+    try:
+        return await asyncio.to_thread(_delete_object_sync, full_path)
+    except Exception as e:
+        logger.warning(f"objstore delete failed for {full_path}: {e}")
+        return False
+
+
 async def put_mp3(sub_path: str, data: bytes) -> Optional[str]:
     """Upload an mp3 and return the canonical storage path (no leading slash),
     e.g. 'r-a-i/suno/track_xxx.mp3'.  Returns None if disabled or failed."""
