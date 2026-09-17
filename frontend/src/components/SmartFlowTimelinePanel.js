@@ -15,6 +15,7 @@ import { toast } from "sonner";
  */
 const KIND_COLOR = {
   jingle: "#00E5FF",
+  time_signal: "#00E5FF",
   past_pill: "#FFB84D",
   future_pill: "#80FFB4",
   rubric: "#FF6BAA",
@@ -23,6 +24,7 @@ const KIND_COLOR = {
 };
 const KIND_LABEL = {
   jingle: "Jingle",
+  time_signal: "Segnale orario",
   past_pill: "Pillola Passato",
   future_pill: "Pillola Futuro",
   rubric: "Rubrica",

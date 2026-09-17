@@ -5777,6 +5777,12 @@ async def _timeline_pick_due() -> Optional[dict]:
         "duration_sec": int(doc.get("duration_sec") or 30),
         "is_timeline": True,
         "timeline_kind": doc.get("kind"),
+        # v13.27 · Espone anche `kind` così LedWall.detectMode() può
+        # riconoscere l'evento e attivare la modalità "clock" (segnale
+        # orario, jingle) o "talk" (rubrica, insert, spot). Prima il campo
+        # `kind` era assente da current per gli eventi Timeline, quindi
+        # LedWall cadeva in standby/music invece dell'orologio atomico.
+        "kind": doc.get("kind"),
         # v13.18 · DJ assegnato all'evento (Leo/Aria/Max/L&C) — usato dal
         # frontend per mostrare l'avatar e dal player per il fade-in
         "dj_id": doc.get("dj_id"),
