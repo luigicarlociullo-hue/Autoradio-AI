@@ -6677,6 +6677,7 @@ async def stream_now():
             "remaining_sec": max(0.0, float(cur.get("duration_sec") or 180) - offset),
             "bpm": cur.get("bpm"),
             "is_timeline": bool(cur.get("is_timeline")),
+            "kind": cur.get("kind"),
         } if cur else None,
         "next": [{
             "id": t.get("id"), "title": t.get("title"), "artist": t.get("artist"),

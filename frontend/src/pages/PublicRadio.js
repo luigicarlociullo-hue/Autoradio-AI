@@ -171,6 +171,11 @@ export default function PublicRadio() {
   const fxLastRef = useRef(null);
   const [segments, setSegments] = useState([]);
   const [current, setCurrent] = useState(null);
+  // Fix: "current" sopra viene dal loop /api/segments/generate, che non sa
+  // nulla della Smart Flow Timeline (station_clock/timeline_events). Questo
+  // stato separato legge /api/stream/now così un evento Timeline in onda
+  // (es. kind="time_signal") può comunque raggiungere il titolo e il LedWall.
+  const [timelineNow, setTimelineNow] = useState(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isPreparing, setIsPreparing] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -301,6 +306,23 @@ export default function PublicRadio() {
     };
     poll();
     const iv = setInterval(poll, 3000);
+    return () => clearInterval(iv);
+  }, []);
+
+  // Fix: poll separato di /api/stream/now (station_clock) per sapere se un
+  // evento Smart Flow Timeline (time_signal, jingle, ora_esatta, ecc.) è
+  // attualmente in onda, a prescindere dal loop segments/generate qui sopra.
+  useEffect(() => {
+    const pollTimelineNow = async () => {
+      try {
+        const r = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/stream/now`);
+        const d = await r.json();
+        if (!mountedRef.current) return;
+        setTimelineNow(d?.current || null);
+      } catch (e) { /* silent */ }
+    };
+    pollTimelineNow();
+    const iv = setInterval(pollTimelineNow, 5000);
     return () => clearInterval(iv);
   }, []);
 
@@ -540,6 +562,13 @@ export default function PublicRadio() {
 
   const onAir = isPlaying || broadcastMode === "live_external";
 
+  // Fix: quando un evento Timeline (time_signal, jingle, ora_esatta, ecc.) è
+  // in onda su station_clock, mostra quello come "current" invece del
+  // segmento del loop legacy — così titolo e LedWall riflettono l'evento
+  // realmente trasmesso. Il loop segments/generate resta invariato per il
+  // resto (musica/talk generati on-demand) quando nessun evento è attivo.
+  const effectiveCurrent = (timelineNow && timelineNow.is_timeline) ? timelineNow : current;
+
   return (
     <div className="relative min-h-screen text-white">
       <ServicesDock />
@@ -648,7 +677,7 @@ export default function PublicRadio() {
             </div>
             <LedWall
               isPlaying={isPlaying || broadcastMode === "live_external"}
-              current={current}
+              current={effectiveCurrent}
               trackOverlay={trackOverlay}
               djs={djs}
               fillHeight
@@ -668,15 +697,15 @@ export default function PublicRadio() {
               ) : (
                 <span className="standby-badge !py-0.5 !px-2 !text-[10px]"><span className="dot" /> STANDBY</span>
               )}
-              {current && <KindBadge kind={current.kind} />}
-              {current?.llm_provider && (
+              {effectiveCurrent && <KindBadge kind={effectiveCurrent.kind} />}
+              {effectiveCurrent?.llm_provider && (
                 <span className="chip" data-testid="current-llm-provider">
-                  <Cpu className="w-3 h-3" /> {current.llm_provider}
+                  <Cpu className="w-3 h-3" /> {effectiveCurrent.llm_provider}
                 </span>
               )}
-              {current?.dj_name && (
+              {effectiveCurrent?.dj_name && (
                 <span className="chip" style={{ color: "var(--console-cyan)" }}>
-                  <Mic className="w-3 h-3" /> {current.dj_name}
+                  <Mic className="w-3 h-3" /> {effectiveCurrent.dj_name}
                 </span>
               )}
             </div>
@@ -685,7 +714,7 @@ export default function PublicRadio() {
               <BigCue
                 size={64}
                 mode={(function () {
-                  const k = (current?.kind || "").toLowerCase();
+                  const k = (effectiveCurrent?.kind || "").toLowerCase();
                   if (!isPlaying && !isPreparing) return "idle";
                   if (isPreparing) return "thinking";
                   if (["talk","joke","weather","horoscope","interview","motivation","history","news","answer","community"].includes(k)) return "speaking";
@@ -695,20 +724,20 @@ export default function PublicRadio() {
                   return "idle";
                 })()}
               />
-              <LiveBrainTicker current={current} />
+              <LiveBrainTicker current={effectiveCurrent} />
             </div>
-            <CueThinking current={current} />
-            {current && (
+            <CueThinking current={effectiveCurrent} />
+            {effectiveCurrent && (
               <div
                 className="font-display text-lg sm:text-xl font-bold text-glow-cyan mt-2 truncate"
                 data-testid="current-title"
               >
-                {current.title}
+                {effectiveCurrent.title}
               </div>
             )}
-            {current?.script && (
+            {effectiveCurrent?.script && (
               <p className="mt-2 text-zinc-400 leading-relaxed line-clamp-2 font-mono text-xs" data-testid="current-script">
-                {current.script}
+                {effectiveCurrent.script}
               </p>
             )}
             <div className="mt-2">
