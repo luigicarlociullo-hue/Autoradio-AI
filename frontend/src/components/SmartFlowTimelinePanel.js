@@ -223,7 +223,9 @@ export default function SmartFlowTimelinePanel() {
     // audio_url richiesta SOLO se non è stato scelto un DJ (percorso autonomo).
     // Con DJ selezionato, il backend genera talk (LLM + TTS ElevenLabs) usando
     // il brief se presente, oppure inventando un argomento intelligente.
-    if (!form.audio_url && !form.dj_id) {
+    // v13.28 · Segnale Orario non richiede né sorgente né DJ: il backend
+    // riusa il segnale orario reale già pre-generato.
+    if (form.kind !== "time_signal" && !form.audio_url && !form.dj_id) {
       return toast.error("Scegli una sorgente dal Magazzino OPPURE seleziona un DJ");
     }
     setBusy(true);
@@ -582,13 +584,13 @@ export default function SmartFlowTimelinePanel() {
           <div className="md:col-span-1 flex items-end">
             <button
               onClick={submit}
-              disabled={busy || (!form.audio_url && !form.dj_id)}
+              disabled={busy || (form.kind !== "time_signal" && !form.audio_url && !form.dj_id)}
               data-testid="timeline-submit"
               className="w-full px-3 py-2 rounded text-sm font-bold text-black"
               style={{
                 background: KIND_COLOR[form.kind] || "#00E5FF",
                 boxShadow: `0 0 12px ${KIND_COLOR[form.kind] || "#00E5FF"}66`,
-                opacity: busy || (!form.audio_url && !form.dj_id) ? 0.55 : 1,
+                opacity: busy || (form.kind !== "time_signal" && !form.audio_url && !form.dj_id) ? 0.55 : 1,
               }}
             >
               {busy ? (form.dj_id && !form.audio_url ? "Genero talk…" : "Inserisco…") : "▸ Inserisci evento"}

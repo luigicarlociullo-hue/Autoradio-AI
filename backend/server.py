@@ -5890,6 +5890,31 @@ async def admin_timeline_create(payload: dict):
     title = (payload.get("title") or "").strip()[:120] or None
     generated_script = None
     generated_topic = None
+    event_kind = (payload.get("kind") or "insert").strip()[:40]
+
+    if not audio_url and event_kind == "time_signal":
+        # v13.28 · Segnale Orario Timeline: NON richiede DJ. Riusa il segnale
+        # orario reale già pre-generato da `_time_signal_pregenerator` in
+        # `time_signal_cache` (lo stesso meccanismo standalone già usato da
+        # `/admin/timeline/ora-esatta`), invece di generare un dialogo DJ via
+        # LLM+TTS. Il DJ resta rilevante solo per eventuali sponsor/voice-intro
+        # futuri, non per l'arming di questo tipo di evento.
+        ts = await db.time_signal_cache.find_one(
+            {"speech_audio_url": {"$exists": True, "$ne": None}},
+            sort=[("_id", -1)],
+        )
+        if not ts or not ts.get("speech_audio_url"):
+            raise HTTPException(
+                400,
+                "Nessun audio Segnale Orario disponibile. Attendi che "
+                "`_time_signal_pregenerator` ne pre-generi uno, oppure passa "
+                "`audio_url` nel body.",
+            )
+        audio_url = ts["speech_audio_url"]
+        real_dur = await _probe_tts_duration(audio_url)
+        dur_from_payload = int(round(real_dur)) + 1 if real_dur else 15
+        if not title:
+            title = "🕐 Segnale orario"
 
     if not audio_url:
         # Percorso "autonomo": serve un DJ per generare voce
@@ -5961,7 +5986,7 @@ async def admin_timeline_create(payload: dict):
     ev = {
         "id": f"tl-{uuid.uuid4().hex[:12]}",
         "scheduled_at": sched,
-        "kind": (payload.get("kind") or "insert").strip()[:40],
+        "kind": event_kind,
         "title": title,
         "artist": (payload.get("artist") or (dj_name and f"{dj_name}") or "").strip()[:120] or None,
         "audio_url": audio_url,
