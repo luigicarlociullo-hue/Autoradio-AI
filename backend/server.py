@@ -5509,6 +5509,14 @@ async def hls_live_playlist(request: Request):
         url = t.get("audio_url") or ""
         if url.startswith("/"):
             url = f"{base_url.rstrip('/')}{url}"
+        # v13.25 · #EXT-X-DISCONTINUITY prima di OGNI segmento successivo
+        # al primo. Serve a decoder Bluetooth (auto), Chromecast e hardware
+        # HLS a resettare il decoder audio al cambio di file, evitando
+        # click/glitch al confine formato tra canzone→voce→canzone (anche
+        # con audio normalizzato, tag ID3, header MP3 e riempimenti VBR
+        # possono differire in modo che fanno inciampare il decoder).
+        if i > 0:
+            lines.append("#EXT-X-DISCONTINUITY")
         lines.append(f"#EXT-X-PROGRAM-DATE-TIME:{running_dt.isoformat().replace('+00:00','Z')}")
         lines.append(f"#EXTINF:{dur:.3f},{artist} - {title}")
         lines.append(url)
@@ -6004,19 +6012,185 @@ async def _probe_tts_duration(url: Optional[str], pad_sec: float = 0.0) -> Optio
     di sicurezza già usata da `/api/admin/timeline` — perché ffprobe su
     MP3 VBR può sottostimare la durata reale: senza il padding il clock
     passava al segmento successivo un attimo prima che l'audio finisse
-    davvero, tagliando le ultime parole del DJ."""
-    if not url or not url.startswith("/api/tts/"):
+    davvero, tagliando le ultime parole del DJ.
+
+    v13.25 · esteso a QUALSIASI audio locale (/api/tts/, /api/suno_audio/,
+    /api/audio/, /api/community_audio/): stessa logica, resolve del path
+    su disco + probe ffprobe. Rimpiazza la vecchia stima 0.25s/parola per
+    tutte le tracce ingerite → il clock virtuale non taglia più l'inizio
+    della prossima traccia perché la durata è sempre reale."""
+    if not url:
         return None
     try:
-        fname = url.replace("/api/tts/", "").split("?")[0]
-        path = elevenlabs_service.TTS_DIR / fname
-        if not path.exists():
+        path: Optional[Path] = None
+        if url.startswith("/api/tts/"):
+            fname = url.replace("/api/tts/", "").split("?")[0]
+            path = elevenlabs_service.TTS_DIR / fname
+        elif url.startswith("/api/suno_audio/"):
+            fname = url.replace("/api/suno_audio/", "").split("?")[0]
+            path = SUNO_AUDIO_DIR / fname
+        elif url.startswith("/api/community_audio/"):
+            fname = url.replace("/api/community_audio/", "").split("?")[0]
+            path = COMMUNITY_AUDIO_DIR / fname
+        elif url.startswith("/api/audio/"):
+            fname = url.replace("/api/audio/", "").split("?")[0]
+            path = AUDIO_DIR / fname
+        else:
+            return None
+        if not path or not path.exists():
             return None
         probe = await video_service.probe_video(str(path))
         d = (probe or {}).get("duration_sec")
         return float(d) + pad_sec if d else None
     except Exception:
         return None
+
+
+# ============================================================================
+# v13.25 · AUDIO NORMALIZATION PIPELINE
+# ----------------------------------------------------------------------------
+# Riprocessa un file audio in un formato broadcast-safe consistente:
+#   • MP3 (libmp3lame)  · 44.1 kHz  · stereo · 128 kbps CBR
+#   • rimozione tag ID3 non essenziali (ffmpeg -map_metadata -1)
+#   • riscrittura header/index frame (write_xing) → durata VBR affidabile
+# Serve a evitare glitch/click al confine formato tra canzone→voce→canzone
+# specie sui decoder Bluetooth per auto e Chromecast, che sono meno tolleranti
+# alle variazioni di sample-rate/canali all'interno di un flusso HLS EVENT.
+# ============================================================================
+_NORMALIZE_SAMPLE_RATE = 44100
+_NORMALIZE_CHANNELS = 2
+_NORMALIZE_BITRATE = "128k"
+
+
+def _normalize_audio_file_sync(src_path: str) -> Optional[dict]:
+    """Sincrona (chiamare via asyncio.to_thread). Ritorna dict con
+    duration_sec + normalized_bytes (bytes) o None se ffmpeg fallisce.
+    Il file di partenza NON viene toccato in place — il chiamante decide."""
+    import subprocess, tempfile, shutil, os as _os
+    if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+        return None
+    if not _os.path.exists(src_path):
+        return None
+    tmp_dir = tempfile.mkdtemp(prefix="norm_")
+    dst_path = _os.path.join(tmp_dir, "out.mp3")
+    try:
+        cmd = [
+            "ffmpeg", "-nostdin", "-y", "-i", src_path,
+            "-vn", "-map_metadata", "-1",
+            "-ar", str(_NORMALIZE_SAMPLE_RATE),
+            "-ac", str(_NORMALIZE_CHANNELS),
+            "-codec:a", "libmp3lame",
+            "-b:a", _NORMALIZE_BITRATE,
+            "-write_xing", "1",
+            dst_path,
+        ]
+        r = subprocess.run(cmd, capture_output=True, timeout=180)
+        if r.returncode != 0 or not _os.path.exists(dst_path):
+            return None
+        # Probe della durata REALE del file normalizzato
+        pr = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", dst_path],
+            capture_output=True, timeout=30,
+        )
+        try:
+            duration = float(pr.stdout.decode().strip())
+        except Exception:
+            duration = 0.0
+        with open(dst_path, "rb") as f:
+            data = f.read()
+        return {"duration_sec": duration, "normalized_bytes": data, "size": len(data)}
+    except Exception:
+        return None
+    finally:
+        try: shutil.rmtree(tmp_dir, ignore_errors=True)
+        except Exception: pass
+
+
+async def _normalize_audio_file(src_path: str) -> Optional[dict]:
+    return await asyncio.to_thread(_normalize_audio_file_sync, src_path)
+
+
+def _resolve_local_path_from_url(url: str) -> Optional[Path]:
+    """Traduce un URL audio locale (/api/tts/*, /api/suno_audio/*, ...) al
+    percorso fisico su disco. Ritorna None se URL non riconosciuto."""
+    if not url or not url.startswith("/api/"):
+        return None
+    if url.startswith("/api/tts/"):
+        return elevenlabs_service.TTS_DIR / url.replace("/api/tts/", "").split("?")[0]
+    if url.startswith("/api/suno_audio/"):
+        return SUNO_AUDIO_DIR / url.replace("/api/suno_audio/", "").split("?")[0]
+    if url.startswith("/api/community_audio/"):
+        return COMMUNITY_AUDIO_DIR / url.replace("/api/community_audio/", "").split("?")[0]
+    if url.startswith("/api/audio/"):
+        return AUDIO_DIR / url.replace("/api/audio/", "").split("?")[0]
+    return None
+
+
+@api_router.post("/admin/audio/reprobe-durations")
+async def admin_audio_reprobe_durations(limit: int = 500):
+    """v13.25 · Ricalcola `duration_sec` per le tracce esistenti usando
+    ffprobe sul file fisico. Aggiunge 0.4s di margine di sicurezza per
+    evitare che lo `station_clock` avanzi un attimo prima che l'audio finisca
+    (taglio dell'inizio del brano successivo su decoder Bluetooth).
+    Idempotente: si può rilanciare in sicurezza dopo ogni ingest."""
+    updated = 0
+    scanned = 0
+    skipped_missing = 0
+    async for t in db.tracks.find({}, {"_id": 0, "id": 1, "audio_url": 1, "duration_sec": 1}).limit(limit):
+        scanned += 1
+        url = t.get("audio_url") or ""
+        p = _resolve_local_path_from_url(url)
+        if not p or not p.exists():
+            skipped_missing += 1
+            continue
+        try:
+            probe = await video_service.probe_video(str(p))
+            d = (probe or {}).get("duration_sec")
+            if not d or d <= 0:
+                continue
+            real = float(d) + 0.4  # safety margin
+            # Aggiorna solo se scostamento >0.5s per non thrashare il DB
+            if abs(real - float(t.get("duration_sec") or 0)) < 0.5:
+                continue
+            await db.tracks.update_one(
+                {"id": t["id"]},
+                {"$set": {"duration_sec": round(real, 3), "duration_probed_at": now_iso()}},
+            )
+            updated += 1
+        except Exception as e:
+            logger.debug(f"[reprobe] fail {t.get('id')}: {e}")
+    return {"ok": True, "scanned": scanned, "updated": updated, "skipped_missing": skipped_missing}
+
+
+@api_router.post("/admin/audio/normalize/{track_id}")
+async def admin_audio_normalize_one(track_id: str):
+    """v13.25 · Normalizza in place UN singolo file audio (44.1kHz stereo
+    128kbps MP3), sovrascrive il file locale e aggiorna `duration_sec` sul
+    record `tracks`. Non chiama nessuna AI. Rispetta il kill-switch: se
+    il file non è locale (URL esterno) ritorna un errore chiaro."""
+    t = await db.tracks.find_one({"id": track_id}, {"_id": 0, "id": 1, "audio_url": 1})
+    if not t:
+        raise HTTPException(404, "Track non trovata")
+    p = _resolve_local_path_from_url(t.get("audio_url") or "")
+    if not p or not p.exists():
+        raise HTTPException(400, f"File locale non trovato per URL {t.get('audio_url')!r}")
+    result = await _normalize_audio_file(str(p))
+    if not result:
+        raise HTTPException(500, "ffmpeg normalize fallito (verifica installazione ffmpeg)")
+    try:
+        with open(str(p), "wb") as f:
+            f.write(result["normalized_bytes"])
+    except Exception as e:
+        raise HTTPException(500, f"Scrittura file fallita: {e}")
+    real = float(result["duration_sec"]) + 0.4
+    await db.tracks.update_one(
+        {"id": track_id},
+        {"$set": {"duration_sec": round(real, 3),
+                  "normalized_at": now_iso(),
+                  "duration_probed_at": now_iso()}},
+    )
+    return {"ok": True, "duration_sec": round(real, 3), "size": result["size"]}
 
 
 async def _clock_pick_spoken_segment() -> Optional[dict]:
