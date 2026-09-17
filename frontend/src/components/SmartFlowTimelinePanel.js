@@ -108,9 +108,11 @@ export default function SmartFlowTimelinePanel() {
   const loadDjs = async () => {
     try {
       const r = await api.get(`/djs`);
-      // Solo DJ diurni (Leo, Aria, Max, L&C) — night_slot null/absent
-      const daytime = (r.data || []).filter((d) => !d.night_slot);
-      setDjs(daytime);
+      // v13.26 · TUTTI i DJ selezionabili (diurni + notturni). Prima c'era
+      // un filtro `night_slot` che escludeva i DJ notturni dal dropdown,
+      // ma il backend supporta il campo Soggetto/Brief per QUALSIASI DJ:
+      // l'esclusione era solo cosmetica e privava la regia di 3 speaker.
+      setDjs(r.data || []);
     } catch {}
   };
   const loadVideos = async () => {
