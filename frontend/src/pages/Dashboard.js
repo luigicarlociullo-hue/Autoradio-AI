@@ -11,6 +11,7 @@ import StellePanel from "@/components/StellePanel";
 import AIMasterControlPanel from "@/components/AIMasterControlPanel";
 import PowerPlayMonitor from "@/components/PowerPlayMonitor";
 import ElasticQueuePreview from "@/components/ElasticQueuePreview";
+import NightControlCenter from "@/components/NightControlCenter";
 import { GoLivePanel, LedWallMiniPreview, MagazzinoUniversale } from "@/components/CommandCenter2Panels";
 import { toast } from "sonner";
 
@@ -195,6 +196,11 @@ export default function Dashboard() {
           <LedWallMiniPreview />
           <PowerPlayMonitor />
           <ElasticQueuePreview />
+        </div>
+
+        <BandHeader icon="🌙" title="NIGHT CONTROL" subtitle="AI Speaker · Beatmatch · Jingle Library · Virtual Club" color="#C89AFF" />
+        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+          <NightControlCenter />
         </div>
 
         {/* ══════════════════════════════════════════════════════════════════

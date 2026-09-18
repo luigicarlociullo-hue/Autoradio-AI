@@ -598,3 +598,35 @@ Vedi turni precedenti in questa sessione:
 - CUE piccolo pixel-art (card TEAM) + BigCue SVG arancione con blink casuale 8-16s in header
 - LiveBrainTicker marquee LCD nell'header
 - Fix cache preascolto + cestino sotto MP3 list
+
+## v13.31 · BROADCAST MASTER & NIGHT VIRTUAL CLUB (2026-09-18)
+
+**Ordine ricevuto**: "DJ-Sync + Jingle Matrix + LedWall Virtual Club + Night Control Center".
+**Scelte utente**: A-a (Pre-render notturno), B-a (Ducking client-side), C-a (Emergent Object Storage).
+
+**Implementato**:
+- **AI SPEAKER toggle** (`station.state.ai_speaker_enabled`, default ON). Endpoint `GET/PATCH /api/admin/ai-speaker`. In `_clock_advance`, `need_dj` è azzerato quando OFF → zero costo LLM/TTS. La radio va con sola musica + jingle instrumentali.
+- **BPM reprobe batch offline** (`POST /api/admin/audio/reprobe-bpm-all`, background). Legge dai file locali `/api/suno_audio/`, invoca `bpm_service.detect_bpm_from_path` (librosa). Zero ECU.
+- **Intro detection** (`POST /api/admin/audio/detect-intros`, background). ffprobe pkt_size + rolling avg detect primo picco energetico → salva `intro_sec` su `tracks`. Fallback 8s se non affidabile.
+- **Jingle Library**: nuova collection `jingle_library` con `kind ∈ {voice_over, station_break}`. Endpoint upload/list/delete + `/api/jingles/voice-over/random` + `/api/jingles/station-break/random`. Normalizzazione ffmpeg + duration reale su upload.
+- **Night Assets Library**: nuova collection `night_assets` per LedWall Virtual Club, con `kind ∈ {mp4, photo, fx}` + peso weighted-random. Endpoint upload/list/delete.
+- **Night LedWall rotation**: nuovo `GET /api/ledwall/night-state` — durante 22-06 (Europe/Rome) pesca weighted-random e ruota ogni ~20s tramite `night_ledwall_clock` in Mongo (sync tra client). Se libreria vuota → fallback a comportamento standard.
+- **Ken Burns photo layer** in `LedWall.js`: `<img>` con animazione CSS `kenburns` (pan+zoom) 22s alternate → applica al kind=photo.
+- **Beat-Match pre-render notturno**: nuovo `_beatmatch_pregen_ticker` attivo solo 22-06 se `station.state.beatmatch_enabled=true`. Guarda i prossimi 2 elementi della coda `station_clock`, pre-renderizza mp3 transizione (ultimi 20s A + acrossfade 8s + primi 20s B con `atempo` correction se |ΔBPM|≤8) via ffmpeg. Cache locale `/app/backend/static/beatmatch/`, servita via `/api/beatmatch/{fname}` con `Cache-Control: 1h`.
+- **Voice-Over ducking client-side** in `SyncLivePlayer.js`: listener `rai:voice-over:play` → fetch jingle random → crea `<audio>` parallelo → duck main a 25% con ramp 300ms → ripristina al termine. Zero re-encoding server.
+- **Serve endpoints**: `GET /api/jingle_audio/{kind}/{filename}` + `GET /api/night_media/{kind}/{filename}` (Object Storage + Range).
+- **Night Control Center** (`NightControlCenter.js`): pannello unificato in Regia con AI Speaker toggle, Beatmatch toggle, Jingle Library (upload + preview `<audio controls>` + delete), Night Assets (upload mp4/photo/fx con weight + delete), Manutenzione (Scan BPM · Rileva Intro · Test Voice-Over).
+
+**Testing** (senza sprechi):
+- `curl` su tutti gli endpoint nuovi (12+ paths registrati in openapi) ✅
+- Toggle AI Speaker ON/OFF ✅
+- Upload FX "neon_pulse" via curl → visibile in UI ✅
+- 1 screenshot Dashboard mostra tutto il Night Control Center ✅
+- Nessun test agent, nessun burn Suno.
+
+**Note operative**:
+- Il beatmatch ticker resta idle 06-22 per default (verificato con `is_night_now=false`).
+- Cache beatmatch cresce ~2-4MB per transizione; sarà ~40-80MB per una nottata full-catalog → gestibile su disk pod.
+- Se Object Storage disabilitato in prod, upload jingle/night-assets returna 503 pulito (no crash).
+
+**API totali**: da 138 → 155 paths.

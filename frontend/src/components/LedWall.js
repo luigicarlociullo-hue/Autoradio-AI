@@ -71,14 +71,37 @@ export default function LedWall({
     let alive = true;
     const fetchState = async () => {
       try {
-        const r = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/ledwall/state`);
+        // v13.31 · Fetch parallela night-state per Virtual Club override
+        const [r, rn] = await Promise.all([
+          fetch(`${process.env.REACT_APP_BACKEND_URL}/api/ledwall/state`),
+          fetch(`${process.env.REACT_APP_BACKEND_URL}/api/ledwall/night-state`).catch(() => null),
+        ]);
         const d = await r.json();
+        let night = null;
+        if (rn && rn.ok) {
+          try {
+            const nd = await rn.json();
+            if (nd && nd.active) night = nd;
+          } catch {}
+        }
         if (!alive) return;
-        setLedState({ video_source: d.video_source || "effects", video_url: d.video_url || null });
+        if (night && night.asset) {
+          // Virtual Club override — mp4/photo/fx
+          const a = night.asset;
+          if (a.kind === "fx") {
+            setLedState({ video_source: "effects", video_url: null, night_asset: a });
+          } else if (a.kind === "mp4") {
+            setLedState({ video_source: "video", video_url: a.url, night_asset: a });
+          } else if (a.kind === "photo") {
+            setLedState({ video_source: "photo", video_url: a.url, night_asset: a });
+          }
+        } else {
+          setLedState({ video_source: d.video_source || "effects", video_url: d.video_url || null, night_asset: null });
+        }
       } catch {}
     };
     fetchState();
-    const iv = setInterval(fetchState, 12000);   // poll ogni 12s
+    const iv = setInterval(fetchState, 8000);   // poll ogni 8s (piu' reattivo per night rotation)
     return () => { alive = false; clearInterval(iv); };
   }, []);
 
@@ -478,6 +501,32 @@ export default function LedWall({
           className="absolute inset-0 w-full h-full object-cover z-30 transition-opacity duration-500"
           style={{ backgroundColor: "#000", opacity: 1 }}
         />
+      )}
+      {/* v13.31 · KEN BURNS PHOTO — Virtual Club notturno, foto con pan+zoom */}
+      {ledState.video_source === "photo" && ledState.video_url && (
+        <div
+          key={ledState.video_url}
+          data-testid="ledwall-photo-kenburns"
+          className="absolute inset-0 z-30 overflow-hidden"
+          style={{ backgroundColor: "#000" }}
+        >
+          <img
+            src={ledState.video_url}
+            alt=""
+            className="absolute inset-0 w-full h-full object-cover"
+            style={{
+              animation: "kenburns 22s ease-in-out infinite alternate",
+              transformOrigin: "center center",
+            }}
+          />
+          <style>{`
+            @keyframes kenburns {
+              0%   { transform: scale(1.05) translate(-2%, -1%); filter: brightness(0.92); }
+              50%  { transform: scale(1.15) translate(2%, 1%);   filter: brightness(1.05); }
+              100% { transform: scale(1.08) translate(-1%, 2%);  filter: brightness(0.98); }
+            }
+          `}</style>
+        </div>
       )}
       {/* L-1 · NEBULOSA profondità (CSS gradient, opacità 0.12) — dietro tutto */}
       <div

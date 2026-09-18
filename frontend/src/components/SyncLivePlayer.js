@@ -108,6 +108,70 @@ export default function SyncLivePlayer() {
     };
   }, []);
 
+  // v13.31 · Voice-Over ducking (Jingle intro voice-over)
+  // Ascolta l'evento `rai:voice-over:play` (dispatch da Regia o auto-scheduler)
+  // Crea un <audio> parallelo per il jingle voice-over, applica ducking -12dB
+  // sul main stream, ripristina volume alla fine. Zero re-encoding server-side.
+  const voRef = useRef(null);
+  useEffect(() => {
+    const trigger = async (ev) => {
+      const explicitUrl = ev?.detail?.audio_url;
+      let vo = null;
+      try {
+        if (explicitUrl) {
+          vo = { audio_url: explicitUrl, duration_sec: ev?.detail?.duration_sec };
+        } else {
+          const r = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/jingles/voice-over/random`);
+          const d = await r.json();
+          vo = d.jingle;
+        }
+        if (!vo || !vo.audio_url) {
+          toast.error("Nessun voice-over jingle disponibile");
+          return;
+        }
+        const main = audioRef.current;
+        if (!main) return;
+        // Ducking main a 25%
+        const savedVol = main.volume;
+        const targetDucked = Math.max(0.15, savedVol * 0.28);
+        // Ramp down
+        const rampSteps = 12;
+        for (let i = 0; i < rampSteps; i++) {
+          main.volume = savedVol + (targetDucked - savedVol) * (i / rampSteps);
+          await new Promise(r => setTimeout(r, 25));
+        }
+        main.volume = targetDucked;
+        // Play voice-over
+        if (voRef.current) { try { voRef.current.pause(); voRef.current.src = ""; } catch {} }
+        const voAudio = new Audio(vo.audio_url.startsWith("http") ? vo.audio_url : `${process.env.REACT_APP_BACKEND_URL}${vo.audio_url}`);
+        voAudio.volume = 1.0;
+        voRef.current = voAudio;
+        window.dispatchEvent(new CustomEvent("rai:voice-over:start", { detail: { jingle: vo } }));
+        try { await voAudio.play(); } catch (e) {
+          // fallback: se autoplay bloccato, ripristina volume
+          main.volume = savedVol;
+          toast.error("Autoplay bloccato dal browser");
+          return;
+        }
+        const restore = async () => {
+          for (let i = 0; i < rampSteps; i++) {
+            main.volume = targetDucked + (savedVol - targetDucked) * (i / rampSteps);
+            await new Promise(r => setTimeout(r, 25));
+          }
+          main.volume = savedVol;
+          voRef.current = null;
+          window.dispatchEvent(new CustomEvent("rai:voice-over:end", { detail: {} }));
+        };
+        voAudio.addEventListener("ended", restore, { once: true });
+        voAudio.addEventListener("error", restore, { once: true });
+      } catch (e) {
+        console.warn("[voice-over] trigger error", e);
+      }
+    };
+    window.addEventListener("rai:voice-over:play", trigger);
+    return () => window.removeEventListener("rai:voice-over:play", trigger);
+  }, []);
+
   // Poll /api/stream/now ogni 5s per il display "cosa sta suonando" + coda
   useEffect(() => {
     const fetchNow = async () => {

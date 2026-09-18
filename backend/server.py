@@ -6936,11 +6936,21 @@ async def _clock_advance(force: bool = False) -> dict:
     except Exception:
         _dj_every_n = _DJ_EVERY_N_TRACKS
 
+    # v13.31 · BROADCAST MASTER — Toggle "AI SPEAKER" persistente. Quando
+    # OFF, il clock NON pesca segmenti DJ (né live, né pre-generati, né
+    # jingle di voce): la radio va con sola musica + jingle instrumentali.
+    # Costo zero LLM/TTS anche se le altre AI sono ON.
+    try:
+        _st_speaker = await db.station.find_one({"_id": "state"}, {"ai_speaker_enabled": 1}) or {}
+        _speaker_on = bool(_st_speaker.get("ai_speaker_enabled", True))
+    except Exception:
+        _speaker_on = True
+
     # Riempi la queue fino al lookahead con injection DJ ogni N brani
     while len(clock.get("queue") or []) < _CLOCK_QUEUE_LOOKAHEAD:
         # Decidi se inserire un jingle DJ o un brano musicale
         counter = int(clock.get("music_counter") or 0)
-        need_dj = (counter > 0 and counter % _dj_every_n == 0)
+        need_dj = (counter > 0 and counter % _dj_every_n == 0) and _speaker_on
         picked = None
         dj_slot_filled = False
         if need_dj:
@@ -7662,6 +7672,644 @@ async def admin_bg_tasks_toggle(payload: dict):
 
 
 # ============================================================================
+# v13.31 · BROADCAST MASTER — AI SPEAKER · JINGLES · NIGHT ASSETS · BEAT-MATCH
+# ============================================================================
+# Pacchetto "Broadcast Master + Night Virtual Club":
+# • Toggle globale AI SPEAKER (spegne parlato DJ senza toccare le altre AI)
+# • Jingle Library (voice_over + station_break) + intro detection
+# • Night Assets Library (mp4/photo/fx) per LedWall Virtual Club 22-06
+# • BPM reprobe batch (offline, zero ECU)
+# • Beat-Match pre-render notturno (ffmpeg acrossfade, cache riutilizzabile)
+# ----------------------------------------------------------------------------
+
+_NIGHT_HOUR_START = 22
+_NIGHT_HOUR_END = 6      # 0..6 (esclusivo, quindi va fino alle 05:59)
+_NIGHT_LEDWALL_DWELL_SEC = 20   # ogni ~20s cambia asset
+_NIGHT_ASSET_WEIGHTS = {"mp4": 30, "photo": 40, "fx": 30}
+_JINGLE_KINDS = ("voice_over", "station_break")
+_NIGHT_ASSET_KINDS = ("mp4", "photo", "fx")
+
+
+def _is_night_hour(hour: int) -> bool:
+    return hour >= _NIGHT_HOUR_START or hour < _NIGHT_HOUR_END
+
+
+# ---------- AI SPEAKER toggle ----------
+
+@api_router.get("/admin/ai-speaker")
+async def admin_ai_speaker_get():
+    """Stato del toggle AI SPEAKER (default ON)."""
+    st = await db.station.find_one({"_id": "state"}, {"ai_speaker_enabled": 1}) or {}
+    return {"enabled": bool(st.get("ai_speaker_enabled", True))}
+
+
+@api_router.patch("/admin/ai-speaker")
+async def admin_ai_speaker_set(payload: dict):
+    """Attiva/disattiva la voce DJ (talk generati LLM + TTS + jingle-voice).
+    Zero costo TTS/LLM quando OFF: `_clock_advance` salta gli slot DJ."""
+    enabled = bool(payload.get("enabled"))
+    await db.station.update_one({"_id": "state"}, {"$set": {"ai_speaker_enabled": enabled}}, upsert=True)
+    logger.info(f"[ai-speaker] set to {enabled}")
+    return {"ok": True, "enabled": enabled}
+
+
+# ---------- BPM reprobe batch (offline) ----------
+
+@api_router.post("/admin/audio/reprobe-bpm-all")
+async def admin_reprobe_bpm_all(payload: Optional[dict] = None):
+    """Analizza offline il BPM di tutti i brani senza `bpm` (o `force=True`
+    per riprocessare tutta la libreria). Usa librosa server-side · zero ECU.
+    Legge dai file locali `/api/suno_audio/` o dal path relativo su disco.
+    Ritorna il numero di brani aggiornati.
+    Async non-bloccante: la scansione parte in background e ritorna subito."""
+    force = bool((payload or {}).get("force"))
+    query = {"status": "ready", "audio_url": {"$ne": None}, "deleted_at": None}
+    if not force:
+        query["$or"] = [{"bpm": None}, {"bpm": {"$exists": False}}]
+
+    async def _worker():
+        cursor = db.tracks.find(query, {"_id": 0, "id": 1, "audio_url": 1})
+        updated = 0
+        errors = 0
+        async for tr in cursor:
+            try:
+                url = (tr.get("audio_url") or "").strip()
+                if not url:
+                    continue
+                local_path = None
+                if url.startswith("/api/suno_audio/"):
+                    fname = url.rsplit("/", 1)[-1]
+                    p = SUNO_AUDIO_DIR / fname
+                    if p.exists():
+                        local_path = str(p)
+                if not local_path:
+                    # skippa remoti non locali: costerebbe rete/tempo
+                    continue
+                bpm = await bpm_service.detect_bpm_from_path(local_path)
+                if bpm:
+                    await db.tracks.update_one({"id": tr["id"]}, {"$set": {"bpm": int(bpm)}})
+                    updated += 1
+                # yield al loop così l'event loop non è bloccato dal blob heavy
+                await asyncio.sleep(0.05)
+            except Exception as e:
+                errors += 1
+                logger.warning(f"[bpm-reprobe] track {tr.get('id')} error: {e}")
+        logger.info(f"[bpm-reprobe] done · updated={updated} errors={errors}")
+
+    asyncio.create_task(_worker())
+    return {"ok": True, "started": True, "force": force}
+
+
+# ---------- Intro detection (silence-based, ffprobe) ----------
+
+async def _detect_intro_sec(local_path: str) -> Optional[float]:
+    """Rileva la durata (secondi) dell'intro strumentale di un brano.
+    Usa ffmpeg silencedetect + threshold energetico. Zero costo ECU.
+    Ritorna None se non affidabile (fallback: 8s standard).
+    Nota: la 'vera' intro (prima del cantato) richiederebbe VAD/librosa
+    HPSS; qui rileviamo il primo picco di energia significativa che di
+    solito coincide con il primo drop → adatto al voice-over."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffprobe", "-v", "error", "-of", "json",
+            "-show_frames", "-select_streams", "a:0",
+            "-show_entries", "frame=pkt_pts_time,pkt_size",
+            "-read_intervals", "%+30",  # analizza solo i primi 30s
+            local_path,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
+        import json as _json
+        data = _json.loads(stdout.decode(errors="ignore") or "{}")
+        frames = data.get("frames") or []
+        if not frames:
+            return None
+        # Rolling avg su 8 frame di pkt_size, trova primo balzo >2x media iniziale
+        sizes = [int(f.get("pkt_size") or 0) for f in frames]
+        times = [float(f.get("pkt_pts_time") or 0) for f in frames]
+        if len(sizes) < 20:
+            return None
+        base = sum(sizes[:10]) / 10 or 1
+        for i in range(15, len(sizes)):
+            window = sum(sizes[i-8:i]) / 8
+            if window > base * 2.2 and times[i] > 3:
+                return round(times[i], 2)
+        return None
+    except Exception as e:
+        logger.debug(f"[intro-detect] {local_path}: {e}")
+        return None
+
+
+@api_router.post("/admin/audio/detect-intros")
+async def admin_detect_intros():
+    """Batch offline: rileva `intro_sec` per tutti i brani che non ce l'hanno.
+    Fallback default 8s se non affidabile. Async in background."""
+    query = {"status": "ready", "audio_url": {"$ne": None}, "deleted_at": None,
+             "$or": [{"intro_sec": None}, {"intro_sec": {"$exists": False}}]}
+
+    async def _worker():
+        cursor = db.tracks.find(query, {"_id": 0, "id": 1, "audio_url": 1})
+        updated = 0
+        async for tr in cursor:
+            url = (tr.get("audio_url") or "").strip()
+            local_path = None
+            if url.startswith("/api/suno_audio/"):
+                fname = url.rsplit("/", 1)[-1]
+                p = SUNO_AUDIO_DIR / fname
+                if p.exists():
+                    local_path = str(p)
+            if not local_path:
+                continue
+            intro = await _detect_intro_sec(local_path)
+            if intro is None:
+                intro = 8.0  # fallback stabile per il voice-over
+            await db.tracks.update_one({"id": tr["id"]}, {"$set": {"intro_sec": float(intro)}})
+            updated += 1
+            await asyncio.sleep(0.02)
+        logger.info(f"[intro-detect] done · updated={updated}")
+
+    asyncio.create_task(_worker())
+    return {"ok": True, "started": True}
+
+
+# ---------- Jingle Library ----------
+
+@api_router.get("/admin/jingles")
+async def admin_jingles_list(kind: Optional[str] = None):
+    q = {"deleted_at": None}
+    if kind and kind in _JINGLE_KINDS:
+        q["kind"] = kind
+    docs = await db.jingle_library.find(q, {"_id": 0}, sort=[("created_at", -1)]).to_list(500)
+    return {"jingles": docs, "total": len(docs)}
+
+
+@api_router.post("/admin/jingles/upload")
+async def admin_jingles_upload(
+    file: UploadFile = File(...),
+    kind: str = Form(...),
+    name: Optional[str] = Form(None),
+    intro_target_sec: Optional[str] = Form(None),
+):
+    """Upload un jingle. `kind` ∈ {voice_over, station_break}.
+      • voice_over: audio "in bianco" (solo voce) da sovrapporre all'intro.
+      • station_break: jingle con base che interrompe la coda musicale.
+    """
+    if kind not in _JINGLE_KINDS:
+        raise HTTPException(400, f"kind non valido: {kind}")
+    if not object_storage.is_enabled():
+        raise HTTPException(503, "Object Storage disabilitato")
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "File vuoto")
+    if len(data) > 20 * 1024 * 1024:
+        raise HTTPException(413, "File troppo grande (max 20MB per jingle)")
+    ext = ((file.filename or "jingle.mp3").rsplit(".", 1)[-1] or "mp3").lower()
+    if ext not in ("mp3", "wav", "m4a", "ogg"):
+        raise HTTPException(415, f"Estensione audio non supportata: {ext}")
+    jid = str(uuid.uuid4())
+    # Normalizza e cattura durata reale
+    duration_sec = None
+    normalized_bytes = data
+    try:
+        import tempfile as _tempfile
+        with _tempfile.NamedTemporaryFile(suffix="." + ext, delete=False) as _tf:
+            _tf.write(data)
+            _tmp_path = _tf.name
+        try:
+            norm = await _normalize_audio_file(_tmp_path)
+            if norm and norm.get("normalized_bytes"):
+                normalized_bytes = norm["normalized_bytes"]
+                duration_sec = norm.get("duration_sec")
+        finally:
+            try:
+                Path(_tmp_path).unlink()
+            except Exception:
+                pass
+    except Exception as e:
+        logger.warning(f"[jingle-upload] normalize error: {e}")
+    sub_path = f"jingles/{kind}/{jid}.mp3"
+    stored = await object_storage.put_mp3(sub_path, normalized_bytes)
+    if not stored:
+        raise HTTPException(502, "Upload storage fallito")
+    audio_url = f"/api/jingle_audio/{kind}/{jid}.mp3"
+    doc = {
+        "id": jid,
+        "kind": kind,
+        "name": (name or file.filename or f"Jingle {jid[:6]}")[:120],
+        "audio_url": audio_url,
+        "storage_path": stored,
+        "duration_sec": float(duration_sec) if duration_sec else None,
+        "intro_target_sec": float(intro_target_sec) if intro_target_sec else None,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "deleted_at": None,
+        "play_count": 0,
+    }
+    await db.jingle_library.insert_one(doc)
+    logger.info(f"[jingle-upload] {kind} '{doc['name']}' → {audio_url}")
+    doc.pop("_id", None)
+    return {"ok": True, "jingle": doc}
+
+
+@api_router.delete("/admin/jingles/{jingle_id}")
+async def admin_jingles_delete(jingle_id: str):
+    doc = await db.jingle_library.find_one({"id": jingle_id})
+    if not doc:
+        raise HTTPException(404, "Jingle non trovato")
+    # Elimina fisicamente dallo storage
+    sp = doc.get("storage_path")
+    if sp:
+        try:
+            await object_storage.delete_object(sp.split("/", 1)[1] if "/" in sp else sp)
+        except Exception as e:
+            logger.warning(f"[jingle-delete] storage delete failed: {e}")
+    await db.jingle_library.update_one({"id": jingle_id},
+                                       {"$set": {"deleted_at": datetime.now(timezone.utc).isoformat()}})
+    return {"ok": True}
+
+
+@api_router.get("/jingles/voice-over/random")
+async def jingles_voice_over_random():
+    """Pesca un jingle voice-over pronto (per audio-ducking cliente-side).
+    Il player HLS lo carica in un <audio> parallelo e applica un GainNode
+    di -12dB sul brano in corso mentre il voice-over è in play."""
+    docs = await db.jingle_library.find(
+        {"kind": "voice_over", "deleted_at": None, "audio_url": {"$ne": None}},
+        {"_id": 0, "id": 1, "name": 1, "audio_url": 1, "duration_sec": 1, "intro_target_sec": 1},
+    ).to_list(200)
+    if not docs:
+        return {"jingle": None}
+    pick = random.choice(docs)
+    # aggiorna play_count best-effort
+    try:
+        await db.jingle_library.update_one({"id": pick["id"]}, {"$inc": {"play_count": 1}})
+    except Exception:
+        pass
+    return {"jingle": pick}
+
+
+@api_router.get("/jingles/station-break/random")
+async def jingles_station_break_random():
+    """Pesca un jingle di transizione (ha base musicale)."""
+    docs = await db.jingle_library.find(
+        {"kind": "station_break", "deleted_at": None, "audio_url": {"$ne": None}},
+        {"_id": 0, "id": 1, "name": 1, "audio_url": 1, "duration_sec": 1},
+    ).to_list(200)
+    if not docs:
+        return {"jingle": None}
+    pick = random.choice(docs)
+    try:
+        await db.jingle_library.update_one({"id": pick["id"]}, {"$inc": {"play_count": 1}})
+    except Exception:
+        pass
+    return {"jingle": pick}
+
+
+# ---------- Night Assets (LedWall Virtual Club) ----------
+
+@api_router.get("/admin/night-assets")
+async def admin_night_assets_list(kind: Optional[str] = None):
+    q = {"deleted_at": None}
+    if kind and kind in _NIGHT_ASSET_KINDS:
+        q["kind"] = kind
+    docs = await db.night_assets.find(q, {"_id": 0}, sort=[("created_at", -1)]).to_list(500)
+    return {"assets": docs, "total": len(docs), "kinds": list(_NIGHT_ASSET_KINDS)}
+
+
+@api_router.post("/admin/night-assets/upload")
+async def admin_night_assets_upload(
+    file: Optional[UploadFile] = File(None),
+    kind: str = Form(...),
+    name: Optional[str] = Form(None),
+    fx_name: Optional[str] = Form(None),
+    duration_sec: Optional[str] = Form(None),
+    weight: Optional[str] = Form(None),
+):
+    """Upload un asset notturno per il LedWall Virtual Club.
+    kind='mp4' → file video ; kind='photo' → immagine (jpg/png) ;
+    kind='fx' → sentinel testuale (`fx_name`), nessun file."""
+    if kind not in _NIGHT_ASSET_KINDS:
+        raise HTTPException(400, f"kind non valido: {kind}")
+    aid = str(uuid.uuid4())
+    doc: dict = {
+        "id": aid,
+        "kind": kind,
+        "name": (name or file.filename if file else f"FX {fx_name or aid[:6]}")[:120],
+        "duration_sec": float(duration_sec) if duration_sec else (
+            8.0 if kind == "photo" else (12.0 if kind == "fx" else 30.0)),
+        "weight": max(1, int(weight)) if (weight and weight.strip().isdigit()) else _NIGHT_ASSET_WEIGHTS.get(kind, 20),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "deleted_at": None,
+    }
+    if kind == "fx":
+        if not fx_name:
+            raise HTTPException(400, "fx_name richiesto per kind=fx")
+        doc["fx_name"] = fx_name.strip()[:60]
+        doc["url"] = f"fx:{doc['fx_name']}"
+    else:
+        if not file:
+            raise HTTPException(400, "File richiesto per kind=mp4/photo")
+        if not object_storage.is_enabled():
+            raise HTTPException(503, "Object Storage disabilitato")
+        data = await file.read()
+        if not data:
+            raise HTTPException(400, "File vuoto")
+        # Limiti pratici
+        if kind == "mp4" and len(data) > 200 * 1024 * 1024:
+            raise HTTPException(413, "MP4 troppo grande (max 200MB)")
+        if kind == "photo" and len(data) > 15 * 1024 * 1024:
+            raise HTTPException(413, "Foto troppo grande (max 15MB)")
+        ext = ((file.filename or "asset").rsplit(".", 1)[-1] or "").lower()
+        if kind == "mp4" and ext not in ("mp4", "webm", "mov"):
+            raise HTTPException(415, f"Estensione video non supportata: {ext}")
+        if kind == "photo" and ext not in ("jpg", "jpeg", "png", "webp"):
+            raise HTTPException(415, f"Estensione foto non supportata: {ext}")
+        sub_path = f"night/{kind}/{aid}.{ext}"
+        content_type = "video/mp4" if kind == "mp4" else f"image/{'jpeg' if ext=='jpg' else ext}"
+        stored = await object_storage.put_bytes(sub_path, data, content_type)
+        if not stored:
+            raise HTTPException(502, "Upload storage fallito")
+        doc["storage_path"] = stored
+        doc["ext"] = ext
+        doc["url"] = f"/api/night_media/{kind}/{aid}.{ext}"
+    await db.night_assets.insert_one(doc)
+    logger.info(f"[night-assets] {kind} '{doc['name']}' → {doc['url']}")
+    doc.pop("_id", None)
+    return {"ok": True, "asset": doc}
+
+
+@api_router.delete("/admin/night-assets/{asset_id}")
+async def admin_night_assets_delete(asset_id: str):
+    doc = await db.night_assets.find_one({"id": asset_id})
+    if not doc:
+        raise HTTPException(404, "Asset non trovato")
+    sp = doc.get("storage_path")
+    if sp:
+        try:
+            await object_storage.delete_object(sp.split("/", 1)[1] if "/" in sp else sp)
+        except Exception as e:
+            logger.warning(f"[night-assets-delete] storage delete failed: {e}")
+    await db.night_assets.update_one({"id": asset_id},
+                                     {"$set": {"deleted_at": datetime.now(timezone.utc).isoformat()}})
+    return {"ok": True}
+
+
+async def _pick_night_asset() -> Optional[dict]:
+    """Weighted random tra tutti gli asset notturni attivi. Ritorna None se
+    la libreria è vuota (fallback → effetti audio-reattivi default)."""
+    docs = await db.night_assets.find(
+        {"deleted_at": None},
+        {"_id": 0, "id": 1, "kind": 1, "url": 1, "duration_sec": 1, "weight": 1, "fx_name": 1, "name": 1},
+    ).to_list(500)
+    if not docs:
+        return None
+    weights = [max(1, int(d.get("weight") or _NIGHT_ASSET_WEIGHTS.get(d.get("kind"), 20))) for d in docs]
+    total = sum(weights)
+    r = random.uniform(0, total)
+    acc = 0.0
+    for d, w in zip(docs, weights):
+        acc += w
+        if r <= acc:
+            return d
+    return docs[-1]
+
+
+async def _get_night_ledwall_state() -> Optional[dict]:
+    """Ritorna il current night asset se siamo in notte E la libreria non è
+    vuota. Ruota ogni `_NIGHT_LEDWALL_DWELL_SEC` in modo synced tra client
+    tramite `night_ledwall_clock` in Mongo. Se libreria vuota → None
+    (fallback a comportamento standard)."""
+    hour = _rome_now().hour
+    if not _is_night_hour(hour):
+        return None
+    now = datetime.now(timezone.utc)
+    clk = await db.night_ledwall_clock.find_one({"_id": "state"}) or {}
+    started_at = clk.get("started_at")
+    current = clk.get("current")
+    need_new = True
+    if current and started_at:
+        try:
+            _s = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+            dwell = float(current.get("duration_sec") or _NIGHT_LEDWALL_DWELL_SEC)
+            if (now - _s).total_seconds() < dwell:
+                need_new = False
+        except Exception:
+            need_new = True
+    if need_new:
+        pick = await _pick_night_asset()
+        if not pick:
+            return None
+        current = pick
+        started_at = now.isoformat()
+        await db.night_ledwall_clock.update_one(
+            {"_id": "state"},
+            {"$set": {"current": current, "started_at": started_at}},
+            upsert=True,
+        )
+    return {"asset": current, "started_at": started_at, "hour": hour}
+
+
+# ---------- BEAT-MATCH pre-render (ffmpeg acrossfade, notte) ----------
+
+_BEATMATCH_XFADE_SEC = 8.0
+_BEATMATCH_CACHE_DIR = Path("/app/backend/static/beatmatch")
+_BEATMATCH_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _beatmatch_cache_key(a_id: str, b_id: str) -> str:
+    return f"bm_{a_id[:12]}__{b_id[:12]}.mp3"
+
+
+async def _beatmatch_render_pair(a: dict, b: dict) -> Optional[str]:
+    """Pre-renderizza un mp3 di transizione = coda ultimi 8s di A + 8s xfade
+    con testa di B. Cache locale + object storage. Ritorna URL relativo.
+    Nota: usa acrossfade con curva `qsin` (constant power) + micro atempo
+    correction se |bpm_a-bpm_b| < 8 per allineare il beat più stretto."""
+    a_url = a.get("audio_url") or ""
+    b_url = b.get("audio_url") or ""
+    if not a_url.startswith("/api/suno_audio/") or not b_url.startswith("/api/suno_audio/"):
+        return None
+    a_path = SUNO_AUDIO_DIR / a_url.rsplit("/", 1)[-1]
+    b_path = SUNO_AUDIO_DIR / b_url.rsplit("/", 1)[-1]
+    if not a_path.exists() or not b_path.exists():
+        return None
+    key = _beatmatch_cache_key(a.get("id") or "a", b.get("id") or "b")
+    out_path = _BEATMATCH_CACHE_DIR / key
+    if out_path.exists() and out_path.stat().st_size > 20 * 1024:
+        return f"/api/beatmatch/{key}"
+    a_bpm = int(a.get("bpm") or 0)
+    b_bpm = int(b.get("bpm") or 0)
+    tempo = 1.0
+    if a_bpm and b_bpm and abs(a_bpm - b_bpm) <= 8 and 60 < b_bpm < 200:
+        tempo = a_bpm / b_bpm  # allinea B al tempo di A
+        tempo = max(0.9, min(1.1, tempo))  # safety
+    # Filter graph: prendi ultimi 20s di A e primi 20s di B, acrossfade 8s
+    a_dur = float(a.get("duration_sec") or 180)
+    filter_graph = (
+        f"[0:a]atrim=start={max(0,a_dur-20):.2f}:duration=20,asetpts=PTS-STARTPTS[a];"
+        f"[1:a]atempo={tempo:.4f},atrim=duration=20,asetpts=PTS-STARTPTS[b];"
+        f"[a][b]acrossfade=d={_BEATMATCH_XFADE_SEC:.1f}:c1=qsin:c2=qsin[out]"
+    )
+    cmd = [
+        "ffmpeg", "-y", "-nostdin", "-loglevel", "error",
+        "-i", str(a_path), "-i", str(b_path),
+        "-filter_complex", filter_graph, "-map", "[out]",
+        "-ac", "2", "-ar", "44100", "-b:a", "192k",
+        str(out_path),
+    ]
+    try:
+        proc = await asyncio.create_subprocess_exec(*cmd,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
+        if proc.returncode != 0:
+            logger.warning(f"[beatmatch] ffmpeg failed: {stderr.decode(errors='ignore')[:200]}")
+            return None
+        return f"/api/beatmatch/{key}"
+    except Exception as e:
+        logger.warning(f"[beatmatch] render exception: {e}")
+        return None
+
+
+@api_router.get("/beatmatch/{fname}")
+async def serve_beatmatch(fname: str):
+    """Serve i file di transizione pre-render. Cache lunga (1h)."""
+    from fastapi.responses import FileResponse
+    p = _BEATMATCH_CACHE_DIR / fname
+    if not p.exists():
+        raise HTTPException(404, "Transizione non trovata")
+    return FileResponse(str(p), media_type="audio/mpeg",
+                        headers={"Cache-Control": "public, max-age=3600"})
+
+
+async def _beatmatch_pregen_ticker():
+    """Ticker leggero: se siamo in notte e beatmatch è ON, guarda i prossimi
+    2 elementi del clock e pre-renderizza la transizione se assente in cache.
+    Idle di giorno o se `beatmatch_enabled=False`."""
+    await asyncio.sleep(45)
+    while True:
+        try:
+            hour = _rome_now().hour
+            if not _is_night_hour(hour):
+                await asyncio.sleep(120)
+                continue
+            st = await db.station.find_one({"_id": "state"}, {"beatmatch_enabled": 1}) or {}
+            if not bool(st.get("beatmatch_enabled")):
+                await asyncio.sleep(120)
+                continue
+            clock = await db.station_clock.find_one({"_id": "clock"}, {"_id": 0, "current": 1, "queue": 1}) or {}
+            queue = [clock.get("current")] + (clock.get("queue") or [])
+            queue = [t for t in queue if t and t.get("audio_url") and not t.get("is_timeline")]
+            for i in range(min(3, len(queue) - 1)):
+                a, b = queue[i], queue[i + 1]
+                if not a or not b:
+                    continue
+                key = _beatmatch_cache_key(a.get("id", "a"), b.get("id", "b"))
+                out_path = _BEATMATCH_CACHE_DIR / key
+                if out_path.exists() and out_path.stat().st_size > 20 * 1024:
+                    continue
+                logger.info(f"[beatmatch] pre-rendering {a.get('title')} → {b.get('title')}")
+                await _beatmatch_render_pair(a, b)
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.warning(f"[beatmatch] ticker error: {e}")
+            await asyncio.sleep(60)
+
+
+@api_router.get("/admin/beatmatch/status")
+async def admin_beatmatch_status():
+    st = await db.station.find_one({"_id": "state"}, {"beatmatch_enabled": 1}) or {}
+    files = sorted(_BEATMATCH_CACHE_DIR.glob("bm_*.mp3"))
+    return {
+        "enabled": bool(st.get("beatmatch_enabled")),
+        "cache_count": len(files),
+        "cache_size_mb": round(sum(f.stat().st_size for f in files) / 1024 / 1024, 2),
+        "night_window": f"{_NIGHT_HOUR_START:02d}:00 → 0{_NIGHT_HOUR_END}:00",
+        "is_night_now": _is_night_hour(_rome_now().hour),
+    }
+
+
+@api_router.patch("/admin/beatmatch")
+async def admin_beatmatch_toggle(payload: dict):
+    enabled = bool(payload.get("enabled"))
+    await db.station.update_one({"_id": "state"}, {"$set": {"beatmatch_enabled": enabled}}, upsert=True)
+    logger.info(f"[beatmatch] enabled={enabled}")
+    return {"ok": True, "enabled": enabled}
+
+
+# ---------- Endpoint LedWall night state ----------
+
+@api_router.get("/ledwall/night-state")
+async def get_ledwall_night_state():
+    """Espone lo stato "Virtual Club" solo quando siamo in notte E la
+    libreria night_assets non è vuota. Il frontend interroga questo
+    endpoint in parallelo a /ledwall/state e sovrascrive il rendering
+    quando il campo `active=True`. Zero side-effect."""
+    state = await _get_night_ledwall_state()
+    if not state:
+        return {"active": False, "hour": _rome_now().hour}
+    return {"active": True, **state}
+
+
+# ---------- Serve endpoints per jingles + night media ----------
+
+_JINGLE_AUDIO_MIME = "audio/mpeg"
+_NIGHT_MEDIA_MIME = {
+    "mp4": "video/mp4", "webm": "video/webm", "mov": "video/quicktime",
+    "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "webp": "image/webp",
+}
+
+
+@api_router.get("/jingle_audio/{kind}/{filename}")
+async def serve_jingle_audio(kind: str, filename: str, request: Request):
+    """Serve i jingle mp3 da Object Storage con supporto Range."""
+    if kind not in _JINGLE_KINDS:
+        raise HTTPException(400, "Kind non valido")
+    if "/" in filename or ".." in filename or not filename.endswith(".mp3"):
+        raise HTTPException(400, "Filename non valido")
+    if not object_storage.is_enabled():
+        raise HTTPException(503, "Object Storage disabilitato")
+    streamed = await object_storage.stream_mp3(
+        f"jingles/{kind}/{filename}", cache_to=None,
+        range_header=request.headers.get("range"),
+    )
+    if not streamed:
+        raise HTTPException(404, "Jingle non trovato")
+    gen, content_length, status_code, content_range = streamed
+    headers = {"Cache-Control": "public, max-age=3600", "Accept-Ranges": "bytes"}
+    if content_length: headers["Content-Length"] = content_length
+    if content_range: headers["Content-Range"] = content_range
+    return StreamingResponse(gen, status_code=status_code,
+                             media_type=_JINGLE_AUDIO_MIME, headers=headers)
+
+
+@api_router.get("/night_media/{kind}/{filename}")
+async def serve_night_media(kind: str, filename: str, request: Request):
+    """Serve i media notturni (mp4/foto) da Object Storage con Range."""
+    if kind not in ("mp4", "photo"):
+        raise HTTPException(400, "Kind non valido")
+    if "/" in filename or ".." in filename:
+        raise HTTPException(400, "Filename non valido")
+    ext = filename.rsplit(".", 1)[-1].lower()
+    mime = _NIGHT_MEDIA_MIME.get(ext)
+    if not mime:
+        raise HTTPException(415, f"Estensione non supportata: {ext}")
+    if not object_storage.is_enabled():
+        raise HTTPException(503, "Object Storage disabilitato")
+    streamed = await object_storage.stream_mp3(
+        f"night/{kind}/{filename}", cache_to=None,
+        range_header=request.headers.get("range"),
+    )
+    if not streamed:
+        raise HTTPException(404, "Media non trovato")
+    gen, content_length, status_code, content_range = streamed
+    headers = {"Cache-Control": "public, max-age=7200", "Accept-Ranges": "bytes"}
+    if content_length: headers["Content-Length"] = content_length
+    if content_range: headers["Content-Range"] = content_range
+    return StreamingResponse(gen, status_code=status_code, media_type=mime, headers=headers)
+
+
+# ============================================================================
 # v13.30 · POWER PLAY (DISCO DEL GIORNO) + REGIA MORBIDA (CODA ELASTICA)
 # ============================================================================
 # Motore "Disco del Giorno": ogni mattina alle 05:00 locali (Europe/Rome) il
@@ -7980,6 +8628,9 @@ async def on_startup():
     # v13.30 · Power Play ticker — self-heal on-demand + scheduling giornaliero
     asyncio.create_task(_power_play_ticker())
     logger.info("[startup] Power Play (Disco del Giorno) ticker running")
+    # v13.31 · Beat-Match pre-render ticker (attivo solo di notte + toggle)
+    asyncio.create_task(_beatmatch_pregen_ticker())
+    logger.info("[startup] Beat-Match pre-render ticker running (night-only)")
 
 
 async def _suno_integrity_check():
