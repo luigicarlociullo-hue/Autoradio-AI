@@ -8,7 +8,7 @@ import logging
 import asyncio
 import random
 from pathlib import Path
-from pydantic import BaseModel, Field, ConfigDict, ValidationError
+from pydantic import BaseModel, Field, ConfigDict, ValidationError, field_validator
 from typing import List, Optional, Literal
 import uuid
 from datetime import datetime, timezone, timedelta
@@ -230,6 +230,22 @@ class Track(BaseModel):
     suno_task_id: Optional[str] = None
     status: Literal["ready", "pending", "failed", "retired", "disabled"] = "ready"
     created_at: str = Field(default_factory=now_iso)
+
+    # v13.28 · FIX (int_from_float / int_type crash su duration_sec):
+    # scritture come /admin/audio/reprobe-durations salvano un float
+    # (round(x,3)) o, su probe fallita, None — Track.duration_sec è int
+    # stretto, quindi Pydantic rigetta l'intero documento e la traccia
+    # sparisce silenziosamente da library/rotazione (vedi ticket #247410).
+    # Coercizione difensiva qui: nessun record valido deve più sparire per
+    # un tipo numerico impreciso a monte.
+    @field_validator("duration_sec", mode="before")
+    @classmethod
+    def _coerce_duration_sec(cls, v):
+        if v is None:
+            return 30
+        if isinstance(v, float):
+            return round(v)
+        return v
 
 
 class Segment(BaseModel):
@@ -5768,6 +5784,27 @@ async def _timeline_pick_due() -> Optional[dict]:
                 logger.warning(f"[timeline] recurrence clone failed: {e}")
     except Exception:
         pass
+    # v13.28 · FIX (Ora Esatta annuncia l'ora sbagliata, ticket #247410):
+    # `audio_url` veniva congelato al momento dell'arm (o clonato verbatim
+    # a ogni ricorrenza oraria, vedi sopra) pescando la cache più recente
+    # per _id invece di quella dell'ora reale in cui l'evento va in onda —
+    # il LedWall legge l'ora live e quindi risultava corretto, l'audio no.
+    # Qui, appena prima di andare in onda, ri-risolviamo sempre l'audio
+    # sulla cache dell'ora REALE corrente (stesso hour_key usato dal
+    # pregenerator/percorso automatico). find_one (non delete): l'entry
+    # resta disponibile anche per l'eventuale segnale orario automatico.
+    if doc.get("kind") == "ora_esatta":
+        try:
+            from zoneinfo import ZoneInfo
+            _it_now = datetime.now(ZoneInfo("Europe/Rome"))
+        except Exception:
+            _it_now = datetime.now(timezone.utc)
+        _hour_key = _it_now.strftime("%Y-%m-%d %H")
+        _fresh_ts = await db.time_signal_cache.find_one({"_id": _hour_key})
+        if _fresh_ts and _fresh_ts.get("speech_audio_url"):
+            doc["audio_url"] = _fresh_ts["speech_audio_url"]
+        else:
+            logger.warning(f"[ora-esatta] cache miss per hour_key={_hour_key}, uso audio_url congelato come fallback")
     # Costruisce l'entry compatibile con la queue del clock
     entry = {
         "id": doc.get("id") or f"tl-{uuid.uuid4().hex[:10]}",
@@ -6186,7 +6223,7 @@ async def admin_audio_reprobe_durations(limit: int = 500):
                 continue
             await db.tracks.update_one(
                 {"id": t["id"]},
-                {"$set": {"duration_sec": round(real, 3), "duration_probed_at": now_iso()}},
+                {"$set": {"duration_sec": round(real), "duration_probed_at": now_iso()}},
             )
             updated += 1
         except Exception as e:

@@ -151,6 +151,21 @@ export default function Dashboard() {
               <button data-testid="login-button" onClick={login} className="btn-outline text-sm flex items-center gap-2"><LogIn className="w-4 h-4" /> Login Google</button>
             )}
             <RegiaLogoutButton />
+            {/* v13.28 · Master Calendar full-screen (nuova scheda) */}
+            <a
+              href="/admin/calendar"
+              target="_blank"
+              rel="noopener noreferrer"
+              data-testid="btn-open-master-calendar"
+              className="text-sm font-bold px-3 py-1.5 rounded flex items-center gap-2 text-black"
+              style={{
+                background: "linear-gradient(135deg, #00E5FF, #3AE0FF)",
+                boxShadow: "0 0 14px rgba(0,229,255,0.55)",
+              }}
+              title="Apre il palinsesto stile Google Calendar in una nuova scheda · indipendente dallo stream"
+            >
+              📅 APRI PALINSESTO FULL-SCREEN
+            </a>
           </div>
         </div>
       </header>
