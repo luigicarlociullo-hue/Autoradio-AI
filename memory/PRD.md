@@ -561,6 +561,33 @@ Vorrei costruire un software di gestione radiofonica completamente automatizzato
 1. Sostituire `ADMIN_PASSWORD` in `.env` con password forte propria
 2. Deploy su `r-ai.it` + copiare le 3 env vars in Produzione (Emergent settings)
 
+## v13.30 · REGIA MORBIDA + DISCO DEL GIORNO (2026-09-18)
+
+**Ordine ricevuto**: "REGIA MORBIDA E CODA ELASTICA" + "MOTORE DISCO DEL GIORNO" + stabilizzazione UI.
+
+**Implementato**:
+- **Regia Morbida (Coda Elastica)**: `_clock_advance` era già soft-sync (no hard-cut), rinforzato con endpoint `GET /api/stream/queue` che espone al frontend i prossimi 5 elementi + prossimi 3 eventi Timeline pending (soft-preview). Zero interruzioni del brano in corso: gli eventi Timeline attendono la fine naturale.
+- **Transizioni Organiche**: `next_crossfade_ms` ora garantisce sempre un valore (2000ms music, 1200ms talk/orario) anche in assenza di BPM. Il client fade fluido su OGNI confine.
+- **Motore Disco del Giorno**: `_power_play_ticker` gira in background, alle 05:00 (Europe/Rome) genera/sceglie il PP. Se `ai_suno_engine` ON → Suno con mood pool uplifting mattutino; altrimenti library pick. Persiste in `power_play_daily` (`_id=YYYY-MM-DD`).
+- **Alternanza 1:1 human ↔ algoritmo**: `_power_play_maybe_pick` intercala il PP nel clock ogni `_POWER_PLAY_ROTATION=2` brani. Se PP non ancora `ready` (Suno in generazione), NON resetta il counter → fedele alternanza dopo il download.
+- **Endpoint Power Play**:
+  - `GET /api/admin/power-play/today` → doc PP + track resolved + rotation info
+  - `POST /api/admin/power-play/regenerate` → VETO: cancella e rigenera (contatore veti persistente)
+- **UI Regia Command Center**:
+  - Nuovo `PowerPlayMonitor.js`: mostra titolo/artista/durata/mood, badge sorgente (AI · SUNO / LIBRARY), status "IN GENERAZIONE", contatore veti, pulsante RIGENERA
+  - Nuovo `ElasticQueuePreview.js`: prossimi 5 elementi coda + prossimi 3 eventi Timeline programmati (soft-sync banner)
+- **Stabilizzazione UI**: soppressore globale in `index.js` per il warning benign "ResizeObserver loop completed with undelivered notifications" — non nasconde errori reali.
+- **Fix collaterale critico**: `app.include_router(api_router)` era chiamato a metà file (~L7583), quindi tutte le rotte definite più in basso (`/api/admin/background-tasks`, e prima ancora le nuove Power Play/queue) NON risultavano registrate. Spostato dentro `on_startup()` dopo tutte le definizioni. Openapi passa da 134 a 138+ paths con le nuove rotte visibili.
+
+**Testing** (senza sprechi):
+- `curl /api/stream/live.m3u8` → playlist HLS con `#EXT-X-DISCONTINUITY` corretti ✅
+- `curl /api/stream/now` → `next_crossfade_ms=2500`, BPM-aware ✅
+- `curl /api/stream/queue` → queue_len=5, upcoming=0 ✅
+- `curl /api/admin/power-play/today` (con token) → PP "Notti di Sole" (Suno pending) ✅
+- Screenshot Dashboard: `power-play-monitor` + `elastic-queue-preview` render OK con dati live ✅
+- Endpoint `regenerate` NON testato in preview (eviterei burn Suno).
+
+
 ## Previous LEDWALL / Team / Sponsor / Chat Neurale / CUE / Whisper features
 Vedi turni precedenti in questa sessione:
 - LEDWALL Canvas 60fps multi-layer (nebulosa + console PNG breathing 40s + sinusoidi + stelle cadenti sottili dai 4 bordi + Neural Sphere talk + Atomic Clock + Night mode)

@@ -6953,7 +6953,12 @@ async def _clock_advance(force: bool = False) -> dict:
             if picked:
                 dj_slot_filled = True
         if not picked:
-            picked = await _clock_pick_track()
+            # v13.30 · POWER PLAY (Disco del Giorno): prima di pescare un brano
+            # dalla libreria, controlla se il rotation counter dice "tocca al PP".
+            # Se sì e il PP è pronto, servilo; altrimenti music normale.
+            picked = await _power_play_maybe_pick()
+            if not picked:
+                picked = await _clock_pick_track()
             # incrementa counter musicale solo quando aggiungiamo musica reale
             if picked:
                 clock["music_counter"] = counter + 1
@@ -7036,6 +7041,16 @@ async def stream_now():
             if delta < 8: next_xfade_ms = 3500
             elif delta < 20: next_xfade_ms = 2500
             else: next_xfade_ms = 1500
+        else:
+            next_xfade_ms = 2500
+    # v13.30 · TRANSIZIONI ORGANICHE — garantisci sempre un valore minimo
+    # anche verso segmenti Timeline (Ora Esatta, DJ, Spot). La regia morbida
+    # richiede piccoli cross-fade su OGNI confine, non solo tra brani con BPM.
+    if next_xfade_ms is None and cur and next_list:
+        nxt = next_list[0]
+        # Cross-fade più corti se il prossimo è talk/orario (evita di mangiare l'attacco vocale)
+        if nxt.get("is_timeline") or (nxt.get("duration_sec") or 300) < 45:
+            next_xfade_ms = 1200
         else:
             next_xfade_ms = 2000
     return {
@@ -7565,7 +7580,11 @@ async def root():
     return {"status": "AI Radio online", "time": now_iso()}
 
 
-app.include_router(api_router)
+# NB: `app.include_router(api_router)` è stato spostato in fondo al file
+# (subito prima di `@app.on_event("startup")`) così anche le rotte definite
+# più in basso (background-tasks, power-play, stream/queue, …) vengono
+# effettivamente registrate nel router prima dell'include.
+
 
 # ============================================================================
 # AUTH — Regia protetta (JWT, single-admin, password da .env)
@@ -7642,8 +7661,266 @@ async def admin_bg_tasks_toggle(payload: dict):
     return {"enabled": enabled, "persisted": True, "restart_required": True}
 
 
+# ============================================================================
+# v13.30 · POWER PLAY (DISCO DEL GIORNO) + REGIA MORBIDA (CODA ELASTICA)
+# ============================================================================
+# Motore "Disco del Giorno": ogni mattina alle 05:00 locali (Europe/Rome) il
+# sistema seleziona o genera (via Suno se ai_suno_engine ON) il brano di
+# giornata. Il palinsesto lo intercala 1:1 con brani human scelti dalla
+# libreria (`rotation_bucket` cycle in `station.state.pp_counter`).
+#
+# Coda elastica: gli eventi Timeline non tagliano mai il brano in corso —
+# `_timeline_pick_due` è chiamato DENTRO `_clock_advance` solo quando il
+# current è già naturalmente scaduto (soft-sync). `/api/stream/queue` espone
+# ai frontend la coda PREVIEW: brani prossimi + eventuali eventi timeline
+# imminenti (che entreranno in onda alla scadenza naturale).
+# ----------------------------------------------------------------------------
+
+_POWER_PLAY_LOCAL_HOUR = 5      # generazione mattutina 05:00 Europe/Rome
+_POWER_PLAY_ROTATION = 2        # ogni N brani music, forza 1 Power Play (alternanza 1:1 ≈ N=2)
+_POWER_PLAY_MOOD_POOL = [
+    "uplifting future house 128 bpm sunrise vibe",
+    "melodic techno 124 bpm morning drive optimism",
+    "tech house 126 bpm coffee energy",
+    "italo disco 122 bpm feel-good day",
+    "afro house 122 bpm bright horizon",
+    "dance pop 124 bpm summer optimism",
+]
+
+
+def _rome_now() -> datetime:
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo("Europe/Rome"))
+    except Exception:
+        return datetime.now(timezone.utc)
+
+
+def _rome_today_key() -> str:
+    return _rome_now().strftime("%Y-%m-%d")
+
+
+async def _power_play_get_today() -> Optional[dict]:
+    """Ritorna il doc power_play_daily di oggi (locale) o None."""
+    return await db.power_play_daily.find_one({"_id": _rome_today_key()}, {"_id": 0})
+
+
+async def _power_play_resolve_track(pp: Optional[dict]) -> Optional[dict]:
+    """Data una entry power_play_daily, ritorna la track (o None) inclusa
+    di audio_url pronto per la queue del clock."""
+    if not pp or not pp.get("track_id"):
+        return None
+    tr = await db.tracks.find_one(
+        {"id": pp["track_id"], "status": "ready", "audio_url": {"$ne": None},
+         "deleted_at": None},
+        {"_id": 0, "id": 1, "title": 1, "artist": 1, "audio_url": 1,
+         "duration_sec": 1, "bpm": 1},
+    )
+    if tr:
+        tr["duration_sec"] = int(tr.get("duration_sec") or 180)
+        tr["is_power_play"] = True
+    return tr
+
+
+async def _power_play_generate(source_hint: str = "auto") -> Optional[dict]:
+    """Crea il Disco del Giorno.
+    - Se `ai_suno_engine` è ON e Suno abilitato → chiama `generate_track` con
+      hint mood mattutino (Suno genera async, la track diventa `ready` in ~2m).
+    - Altrimenti (economy) → pick intelligente dalla libreria brani suno/upload
+      con `mood`/`genre` uplifting, marcandola come PP di oggi.
+    Restituisce il doc power_play_daily persistito, o None se impossibile."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    today = _rome_today_key()
+    ai = await _get_ai_controls()
+    use_suno = bool(ai.get("ai_suno_engine")) and suno_service.is_enabled()
+    if use_suno:
+        hint = random.choice(_POWER_PLAY_MOOD_POOL)
+        try:
+            track = await generate_track(hint=hint, lang="it", lean=False, premium=False)
+        except HTTPException as e:
+            logger.warning(f"[power-play] generate_track fallito ({e.status_code}): {e.detail}")
+            track = None
+        except Exception as e:
+            logger.warning(f"[power-play] generate_track exception: {e}")
+            track = None
+        if track and getattr(track, "id", None):
+            doc = {
+                "_id": today,
+                "track_id": track.id,
+                "source": "ai_suno",
+                "prompt": hint,
+                "generated_at": now_iso,
+                "vetoed_count": 0,
+                "status": track.status,
+                "trigger": source_hint,
+            }
+            await db.power_play_daily.replace_one({"_id": today}, doc, upsert=True)
+            logger.info(f"[power-play] Suno task lanciato per {today}: track_id={track.id}, status={track.status}")
+            return {k: v for k, v in doc.items() if k != "_id"}
+    # Fallback: library pick — brano ready mai suonato di recente
+    _tr = await db.tracks.find_one(
+        {"status": "ready", "audio_url": {"$ne": None}, "on_air": {"$ne": False},
+         "deleted_at": None,
+         "$and": [
+             {"$or": [{"is_anthem": {"$exists": False}}, {"is_anthem": False}]},
+             {"$or": [{"is_jingle": {"$exists": False}}, {"is_jingle": False}]},
+         ]},
+        {"_id": 0, "id": 1, "title": 1, "artist": 1},
+        sort=[("last_played_at", 1)],
+    )
+    if not _tr:
+        logger.warning(f"[power-play] libreria vuota, impossibile creare PP per {today}")
+        return None
+    doc = {
+        "_id": today,
+        "track_id": _tr["id"],
+        "source": "library",
+        "prompt": None,
+        "generated_at": now_iso,
+        "vetoed_count": 0,
+        "status": "ready",
+        "trigger": source_hint,
+    }
+    await db.power_play_daily.replace_one({"_id": today}, doc, upsert=True)
+    logger.info(f"[power-play] library pick per {today}: track_id={_tr['id']} ({_tr.get('title')})")
+    return {k: v for k, v in doc.items() if k != "_id"}
+
+
+async def _power_play_ticker():
+    """Loop leggero: ogni 60s controlla se il PP di oggi esiste. Se manca e
+    l'ora locale >= _POWER_PLAY_LOCAL_HOUR, lo genera. Su Tier 0 con pod
+    che dorme, alla prima richiesta questo loop si riprende comunque."""
+    # Piccolo delay iniziale per non concorrere con il resto dello startup
+    await asyncio.sleep(30)
+    while True:
+        try:
+            existing = await _power_play_get_today()
+            if not existing:
+                if _rome_now().hour >= _POWER_PLAY_LOCAL_HOUR:
+                    logger.info("[power-play] nessun PP per oggi, avvio generazione automatica…")
+                    await _power_play_generate(source_hint="scheduler")
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.warning(f"[power-play] ticker error: {e}")
+            await asyncio.sleep(60)
+
+
+@api_router.get("/admin/power-play/today")
+async def admin_power_play_today():
+    """Ritorna il Disco del Giorno + info track. Se manca, prova a generarlo
+    on-demand (solo se dopo l'ora di scheduling, altrimenti risponde vuoto)."""
+    pp = await _power_play_get_today()
+    if not pp and _rome_now().hour >= _POWER_PLAY_LOCAL_HOUR:
+        pp = await _power_play_generate(source_hint="lazy-read")
+    track = None
+    if pp:
+        _t = await db.tracks.find_one(
+            {"id": pp.get("track_id")},
+            {"_id": 0, "id": 1, "title": 1, "artist": 1, "audio_url": 1,
+             "duration_sec": 1, "status": 1, "bpm": 1, "source": 1},
+        )
+        if _t:
+            track = _t
+    return {
+        "date": _rome_today_key(),
+        "power_play": pp,
+        "track": track,
+        "rotation_every": _POWER_PLAY_ROTATION,
+    }
+
+
+@api_router.post("/admin/power-play/regenerate")
+async def admin_power_play_regenerate():
+    """VETO. Cancella il PP di oggi e lo rigenera immediatamente. Se AI SUNO
+    è OFF, ripiega su library pick con brano diverso dal precedente."""
+    prev = await _power_play_get_today()
+    prev_track_id = (prev or {}).get("track_id")
+    veto_count = int((prev or {}).get("vetoed_count") or 0) + 1
+    # Rimuovi in modo che _power_play_generate scriva ex-novo
+    await db.power_play_daily.delete_one({"_id": _rome_today_key()})
+    new_doc = await _power_play_generate(source_hint=f"veto-{veto_count}")
+    if not new_doc:
+        # Ripristina il precedente per non lasciare vuoto
+        if prev:
+            prev["vetoed_count"] = veto_count
+            await db.power_play_daily.replace_one({"_id": _rome_today_key()}, {"_id": _rome_today_key(), **prev}, upsert=True)
+        raise HTTPException(503, "Impossibile rigenerare Power Play (Suno OFF e libreria vuota)")
+    # Se library fallback pesca lo stesso brano, riprova una volta
+    if new_doc.get("source") == "library" and new_doc.get("track_id") == prev_track_id:
+        await db.tracks.update_one({"id": prev_track_id}, {"$set": {"last_played_at": datetime.now(timezone.utc).isoformat()}})
+        await db.power_play_daily.delete_one({"_id": _rome_today_key()})
+        new_doc = await _power_play_generate(source_hint=f"veto-retry-{veto_count}")
+    # Merge count di veti totali
+    if new_doc:
+        new_doc["vetoed_count"] = veto_count
+        await db.power_play_daily.update_one({"_id": _rome_today_key()}, {"$set": {"vetoed_count": veto_count}})
+    return {"ok": True, "vetoed_count": veto_count, "power_play": new_doc}
+
+
+async def _power_play_maybe_pick() -> Optional[dict]:
+    """Se il rotation counter dice "tocca al Power Play", ritorna il PP di
+    oggi (già scaricato/pronto). Altrimenti None. Incrementa il contatore
+    solo se il PP è effettivamente pronto (`ready`), altrimenti passa e
+    riprova al prossimo giro (evita "buchi" in coda quando Suno sta ancora
+    generando)."""
+    st = await db.station.find_one({"_id": "state"}, {"pp_counter": 1}) or {}
+    counter = int(st.get("pp_counter") or 0)
+    if counter <= 0:
+        # Non è il momento: incrementa e passa
+        await db.station.update_one({"_id": "state"}, {"$set": {"pp_counter": counter + 1}}, upsert=True)
+        return None
+    if counter < _POWER_PLAY_ROTATION:
+        await db.station.update_one({"_id": "state"}, {"$set": {"pp_counter": counter + 1}}, upsert=True)
+        return None
+    # Turno PP: reset counter e prova a servire
+    pp = await _power_play_get_today()
+    tr = await _power_play_resolve_track(pp)
+    if not tr:
+        # PP non pronto (Suno in generazione o libreria vuota): NON resettare,
+        # riprova al giro successivo — così l'alternanza resta fedele.
+        return None
+    await db.station.update_one({"_id": "state"}, {"$set": {"pp_counter": 0}}, upsert=True)
+    return tr
+
+
+@api_router.get("/stream/queue")
+async def stream_queue_preview():
+    """Coda elastica preview: espone al frontend cosa suonerà PROSSIMAMENTE
+    dopo la fine naturale del brano corrente. Include:
+      • Brani già in coda nel clock (queue standard)
+      • Prossimi 3 eventi Timeline pending (che entreranno via soft-sync)
+    Zero side-effect: read-only, safe da chiamare spesso."""
+    clock = await db.station_clock.find_one({"_id": "clock"}, {"_id": 0, "queue": 1, "current": 1}) or {}
+    q = (clock.get("queue") or [])[:5]
+    now_iso_s = datetime.now(timezone.utc).isoformat()
+    cutoff_next = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+    tl_upcoming = await db.timeline_events.find(
+        {"status": "pending",
+         "scheduled_at": {"$gte": now_iso_s, "$lte": cutoff_next}},
+        {"_id": 0, "id": 1, "title": 1, "kind": 1, "scheduled_at": 1,
+         "dj_name": 1, "duration_sec": 1},
+        sort=[("scheduled_at", 1)],
+    ).to_list(3)
+    return {
+        "server_time": now_iso_s,
+        "current_id": (clock.get("current") or {}).get("id"),
+        "queue": [{
+            "id": t.get("id"), "title": t.get("title"), "artist": t.get("artist"),
+            "duration_sec": t.get("duration_sec"), "is_timeline": bool(t.get("is_timeline")),
+            "is_power_play": bool(t.get("is_power_play")),
+            "kind": t.get("kind") or ("music" if not t.get("is_timeline") else t.get("timeline_kind")),
+        } for t in q],
+        "timeline_upcoming": tl_upcoming,
+    }
+
+
 @app.on_event("startup")
 async def on_startup():
+    # Registra il router API PRIMA di ogni tick di startup: tutte le rotte
+    # definite sopra sono ora fisicamente aggiunte all'app.
+    app.include_router(api_router)
     await ensure_seeded()
     await _seed_admin(db)   # seed admin Regia (idempotente)
     await telegram_bot.start(db)
@@ -7700,6 +7977,9 @@ async def on_startup():
             except Exception as e: logger.debug(f"[video-clock] {e}")
     asyncio.create_task(_video_ticker())
     logger.info("[startup] Video clock ticker running (HLS stinger rotation)")
+    # v13.30 · Power Play ticker — self-heal on-demand + scheduling giornaliero
+    asyncio.create_task(_power_play_ticker())
+    logger.info("[startup] Power Play (Disco del Giorno) ticker running")
 
 
 async def _suno_integrity_check():

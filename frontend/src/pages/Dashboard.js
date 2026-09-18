@@ -9,6 +9,8 @@ import SmartFlowTimelinePanel from "@/components/SmartFlowTimelinePanel";
 import BroadcasterPanel from "@/components/BroadcasterPanel";
 import StellePanel from "@/components/StellePanel";
 import AIMasterControlPanel from "@/components/AIMasterControlPanel";
+import PowerPlayMonitor from "@/components/PowerPlayMonitor";
+import ElasticQueuePreview from "@/components/ElasticQueuePreview";
 import { GoLivePanel, LedWallMiniPreview, MagazzinoUniversale } from "@/components/CommandCenter2Panels";
 import { toast } from "sonner";
 
@@ -191,6 +193,8 @@ export default function Dashboard() {
           <StellePanel />
           <GoLivePanel />
           <LedWallMiniPreview />
+          <PowerPlayMonitor />
+          <ElasticQueuePreview />
         </div>
 
         {/* ══════════════════════════════════════════════════════════════════
