@@ -42,6 +42,28 @@ const isSameDay = (a, b) =>
   a.getMonth() === b.getMonth() &&
   a.getDate() === b.getDate();
 
+// v13.29 · Calcola il range temporale [from, to] della vista corrente.
+// week: lun→dom della settimana di `date`. month: intero mese.
+const startOfDay = (d) => { const x = new Date(d); x.setHours(0,0,0,0); return x; };
+const endOfDay   = (d) => { const x = new Date(d); x.setHours(23,59,59,999); return x; };
+const startOfWeek = (d) => {
+  const x = startOfDay(d);
+  const dow = (x.getDay() + 6) % 7; // Mon=0
+  x.setDate(x.getDate() - dow);
+  return x;
+};
+const endOfWeek = (d) => {
+  const s = startOfWeek(d); const e = new Date(s); e.setDate(e.getDate()+6);
+  return endOfDay(e);
+};
+const startOfMonth = (d) => { const x = new Date(d.getFullYear(), d.getMonth(), 1); return x; };
+const endOfMonth = (d) => { const x = new Date(d.getFullYear(), d.getMonth()+1, 0); return endOfDay(x); };
+function getViewRange(date, view) {
+  if (view === "week")  return { from: startOfWeek(date),  to: endOfWeek(date)  };
+  if (view === "month") return { from: startOfMonth(date), to: endOfMonth(date) };
+  return { from: startOfDay(date), to: endOfDay(date) };
+}
+
 export default function AdminCalendar() {
   const [events, setEvents] = useState([]);
   const [now, setNow] = useState(new Date());
@@ -50,6 +72,8 @@ export default function AdminCalendar() {
   const [selectedDate, setSelectedDate] = useState(() => new Date());
   const [busy, setBusy] = useState(false);
   const [expandedId, setExpandedId] = useState(null);
+  const [view, setView] = useState("day"); // day | week | month
+  const [datePickerOpen, setDatePickerOpen] = useState(false);
   const pollRef = useRef(null);
   const scrollerRef = useRef(null);
   const initialScrollRef = useRef(false);
@@ -65,16 +89,14 @@ export default function AdminCalendar() {
 
   const load = async () => {
     try {
-      // Pending + consumed del giorno selezionato
-      const [pRes, cRes] = await Promise.all([
-        api.get("/admin/timeline", { params: { status: "pending", limit: 500 } }),
-        api.get("/admin/timeline", { params: { status: "consumed", limit: 500 } }),
-      ]);
-      const all = [
-        ...(pRes.data.events || []),
-        ...(cRes.data.events || []),
-      ];
-      setEvents(all);
+      // v13.29 · Usa il nuovo endpoint /calendar che unisce eventi concreti
+      // (pending+consumed) + occorrenze virtuali dei template rrule, e
+      // calcola i conflitti. Range dipende dalla vista corrente per non
+      // sprecare payload sui mesi.
+      const range = getViewRange(selectedDate, view);
+      const params = { from_ts: range.from.toISOString(), to_ts: range.to.toISOString(), limit_virtual: 500 };
+      const r = await api.get("/admin/timeline/calendar", { params });
+      setEvents(r.data.events || []);
     } catch (e) {
       if (e?.response?.status === 401) toast.error("Sessione admin scaduta");
     }
@@ -86,7 +108,7 @@ export default function AdminCalendar() {
     pollRef.current = setInterval(() => { load(); setNow(new Date()); }, 12000);
     return () => clearInterval(pollRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authed]);
+  }, [authed, selectedDate, view]);
 
   // Al primo render → scroll all'ora corrente (offset -1h di contesto)
   useEffect(() => {
@@ -195,11 +217,11 @@ export default function AdminCalendar() {
         </div>
         <div className="flex items-center gap-2">
           <button
-            onClick={() => setSelectedDate((d) => new Date(d.getFullYear(), d.getMonth(), d.getDate() - 1))}
+            onClick={() => setSelectedDate((d) => new Date(d.getFullYear(), d.getMonth(), d.getDate() - (view==="month"?30:view==="week"?7:1)))}
             className="px-3 py-1.5 rounded text-sm font-mono"
             style={{ background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)" }}
             data-testid="calendar-prev-day"
-          >← Ieri</button>
+          >←</button>
           <button
             onClick={() => setSelectedDate(new Date())}
             className="px-3 py-1.5 rounded text-sm font-bold text-black"
@@ -207,11 +229,35 @@ export default function AdminCalendar() {
             data-testid="calendar-today"
           >Oggi</button>
           <button
-            onClick={() => setSelectedDate((d) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1))}
+            onClick={() => setSelectedDate((d) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + (view==="month"?30:view==="week"?7:1)))}
             className="px-3 py-1.5 rounded text-sm font-mono"
             style={{ background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)" }}
             data-testid="calendar-next-day"
-          >Domani →</button>
+          >→</button>
+          <input
+            type="date"
+            value={`${selectedDate.getFullYear()}-${pad2(selectedDate.getMonth()+1)}-${pad2(selectedDate.getDate())}`}
+            onChange={(e) => { if (e.target.value) setSelectedDate(new Date(e.target.value + "T00:00:00")); }}
+            className="bg-black/60 border border-white/10 rounded px-2 py-1 text-sm text-white font-mono"
+            data-testid="calendar-date-picker"
+          />
+          <div className="flex rounded border border-white/10 overflow-hidden">
+            {["day","week","month"].map((v) => (
+              <button
+                key={v}
+                onClick={() => setView(v)}
+                data-testid={`calendar-view-${v}`}
+                className="px-3 py-1.5 text-[11px] font-mono uppercase tracking-wider"
+                style={{
+                  background: view===v ? "rgba(0,229,255,0.22)" : "rgba(255,255,255,0.03)",
+                  color: view===v ? "#00E5FF" : "#aaa",
+                  borderRight: v==="month" ? "none" : "1px solid rgba(255,255,255,0.06)",
+                }}
+              >
+                {v==="day"?"Giorno":v==="week"?"Settimana":"Mese"}
+              </button>
+            ))}
+          </div>
         </div>
       </header>
 
@@ -257,7 +303,8 @@ export default function AdminCalendar() {
         </div>
       </div>
 
-      {/* ── Corpo Calendario · Grid HH + Timeline ──────────────────────── */}
+      {/* ── Corpo Calendario · switch vista Day/Week/Month ─────────── */}
+      {view === "day" && (
       <div
         ref={scrollerRef}
         className="flex-1 overflow-auto"
@@ -318,6 +365,8 @@ export default function AdminCalendar() {
               const meta = kindMeta(ev.kind);
               const past = !isFuture(ev);
               const consumed = ev.status === "consumed";
+              const isVirtual = ev.is_virtual || ev.status === "virtual";
+              const hasConflict = (ev.conflicts || []).length > 0;
               const expanded = expandedId === ev.id;
               return (
                 <div
@@ -329,12 +378,12 @@ export default function AdminCalendar() {
                     top: pos.top,
                     height: expanded ? Math.max(pos.height, 96) : pos.height,
                     background: `linear-gradient(135deg, ${meta.color}${past ? "22" : "44"}, ${meta.color}0a)`,
-                    border: `1px solid ${meta.color}${past ? "44" : "aa"}`,
+                    border: `1px ${isVirtual ? "dashed" : "solid"} ${meta.color}${past ? "44" : "aa"}`,
                     boxShadow: expanded
                       ? `0 0 24px ${meta.color}88, inset 0 0 0 1px ${meta.color}55`
-                      : `0 2px 8px rgba(0,0,0,0.4)`,
+                      : hasConflict ? `0 0 12px #FF335588` : `0 2px 8px rgba(0,0,0,0.4)`,
                     zIndex: expanded ? 20 : 10,
-                    opacity: consumed ? 0.55 : 1,
+                    opacity: consumed ? 0.55 : (isVirtual ? 0.85 : 1),
                     backdropFilter: "blur(10px)",
                     WebkitBackdropFilter: "blur(10px)",
                   }}
@@ -369,6 +418,20 @@ export default function AdminCalendar() {
                       {consumed && (
                         <span className="text-[8px] font-mono px-1 rounded opacity-70" style={{ background: "rgba(255,255,255,0.08)" }}>
                           ✓ andato
+                        </span>
+                      )}
+                      {isVirtual && (
+                        <span className="text-[8px] font-mono px-1 rounded"
+                          style={{ background: `${meta.color}22`, border: `1px dashed ${meta.color}77`, color: meta.color }}
+                          title="Occorrenza virtuale · verrà materializzata quando l'ora si avvicina">
+                          👁 virtual
+                        </span>
+                      )}
+                      {hasConflict && (
+                        <span className="text-[8px] font-mono px-1 rounded"
+                          style={{ background: "rgba(255,51,85,0.18)", border: "1px solid #FF335599", color: "#FF3355" }}
+                          title={`Sovrapposizione con ${ev.conflicts.length} evento/i · vince il più recente`}>
+                          ⚠ conflitto ×{ev.conflicts.length}
                         </span>
                       )}
                     </div>
@@ -420,6 +483,156 @@ export default function AdminCalendar() {
           </div>
         </div>
       </div>
+      )}
+
+      {/* v13.29 · WEEK VIEW · 7 colonne × 24h con blocchi compatti */}
+      {view === "week" && (
+        <div className="flex-1 overflow-auto" data-testid="calendar-week-view">
+          <div className="grid" style={{ gridTemplateColumns: "60px repeat(7, 1fr)", minHeight: TOTAL_HEIGHT + 32 }}>
+            <div className="sticky top-0 z-20 bg-black/50 backdrop-blur border-b border-white/10 h-8" />
+            {(() => {
+              const s = startOfWeek(selectedDate);
+              return Array.from({ length: 7 }, (_, i) => {
+                const d = new Date(s); d.setDate(s.getDate()+i);
+                const isToday = isSameDay(d, now);
+                return (
+                  <div key={i} className="sticky top-0 z-20 bg-black/50 backdrop-blur border-b border-l border-white/10 px-2 py-1 text-center">
+                    <div className="text-[9px] font-mono uppercase text-zinc-500">{d.toLocaleDateString("it-IT",{weekday:"short"})}</div>
+                    <div className="text-sm font-bold" style={{ color: isToday ? "#00E5FF" : "#fff" }}>{d.getDate()}/{pad2(d.getMonth()+1)}</div>
+                  </div>
+                );
+              });
+            })()}
+            {/* Righello ore */}
+            <div className="relative border-r border-white/5" style={{ height: TOTAL_HEIGHT }}>
+              {Array.from({ length: 24 }, (_, h) => (
+                <div key={h} className="absolute left-0 right-0 flex items-start justify-end pr-2 text-[9px] font-mono text-zinc-500"
+                  style={{ top: h * HOUR_HEIGHT, height: HOUR_HEIGHT }}>{pad2(h)}</div>
+              ))}
+            </div>
+            {/* 7 colonne giorni */}
+            {(() => {
+              const s = startOfWeek(selectedDate);
+              return Array.from({ length: 7 }, (_, i) => {
+                const day = new Date(s); day.setDate(s.getDate()+i);
+                const dayEvents = events.filter((e) => {
+                  try { return isSameDay(new Date(e.scheduled_at), day); } catch { return false; }
+                });
+                return (
+                  <div key={i} className="relative border-l border-white/5" style={{ height: TOTAL_HEIGHT }}>
+                    {Array.from({ length: 24 }, (_, h) => (
+                      <div key={h} className="absolute left-0 right-0 border-t border-white/5" style={{ top: h * HOUR_HEIGHT }} />
+                    ))}
+                    {isSameDay(day, now) && (
+                      <div className="absolute left-0 right-0 z-30" style={{ top: (now.getHours()*60+now.getMinutes())/60*HOUR_HEIGHT }}>
+                        <div className="h-[2px]" style={{ background: "#FF3355", boxShadow: "0 0 6px #FF3355" }} />
+                      </div>
+                    )}
+                    {dayEvents.map((ev) => {
+                      const meta = kindMeta(ev.kind);
+                      let d0; try { d0 = new Date(ev.scheduled_at); } catch { return null; }
+                      const top = ((d0.getHours()*60 + d0.getMinutes())/60) * HOUR_HEIGHT;
+                      const height = Math.max(18, ((ev.duration_sec||30)/3600) * HOUR_HEIGHT);
+                      const isVirtual = ev.is_virtual || ev.status === "virtual";
+                      const hasConflict = (ev.conflicts || []).length > 0;
+                      return (
+                        <div key={ev.id} data-testid={`calendar-event-${ev.id}`}
+                          onClick={() => { setSelectedDate(day); setView("day"); }}
+                          className="absolute left-0.5 right-0.5 rounded overflow-hidden cursor-pointer"
+                          style={{
+                            top, height, zIndex: 10,
+                            background: `${meta.color}${isVirtual ? "22" : "55"}`,
+                            border: `1px ${isVirtual ? "dashed" : "solid"} ${meta.color}${isVirtual ? "77" : "cc"}`,
+                          }}
+                          title={`${fmtHM(d0)} · ${ev.title || meta.label}${isVirtual?" · virtual":""}${hasConflict?" · CONFLITTO":""}`}
+                        >
+                          <div className="p-1 flex items-center gap-1 text-[9px] font-mono truncate">
+                            <span>{meta.icon}</span>
+                            <span className="truncate" style={{ color: meta.color }}>{fmtHM(d0)}</span>
+                            {hasConflict && <span title="Conflitto sovrapposizione" style={{ color: "#FF3355" }}>⚠</span>}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              });
+            })()}
+          </div>
+        </div>
+      )}
+
+      {/* v13.29 · MONTH VIEW · grid 7×N con lista compatta eventi per giorno */}
+      {view === "month" && (
+        <div className="flex-1 overflow-auto p-4" data-testid="calendar-month-view">
+          <div className="grid grid-cols-7 gap-1 text-[10px] font-mono uppercase text-zinc-500 mb-1">
+            {["Lun","Mar","Mer","Gio","Ven","Sab","Dom"].map((d) => (<div key={d} className="text-center">{d}</div>))}
+          </div>
+          {(() => {
+            const first = startOfMonth(selectedDate);
+            const startCell = startOfWeek(first);
+            const cells = [];
+            for (let i = 0; i < 42; i++) {
+              const d = new Date(startCell); d.setDate(startCell.getDate()+i);
+              cells.push(d);
+              if (i >= 34 && d.getMonth() !== selectedDate.getMonth()) break;
+            }
+            const eventsByDay = new Map();
+            events.forEach((e) => {
+              try { const d = new Date(e.scheduled_at); const k = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+                if (!eventsByDay.has(k)) eventsByDay.set(k, []);
+                eventsByDay.get(k).push(e);
+              } catch {}
+            });
+            return (
+              <div className="grid grid-cols-7 gap-1">
+                {cells.map((d, idx) => {
+                  const inMonth = d.getMonth() === selectedDate.getMonth();
+                  const isToday = isSameDay(d, now);
+                  const k = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+                  const dayEvents = eventsByDay.get(k) || [];
+                  const anyConflict = dayEvents.some((e) => (e.conflicts || []).length > 0);
+                  return (
+                    <div key={idx}
+                      onClick={() => { setSelectedDate(d); setView("day"); }}
+                      className="rounded p-1.5 min-h-[80px] cursor-pointer transition-all"
+                      style={{
+                        background: isToday ? "rgba(0,229,255,0.10)" : "rgba(255,255,255,0.02)",
+                        border: `1px solid ${isToday ? "rgba(0,229,255,0.5)" : "rgba(255,255,255,0.06)"}`,
+                        opacity: inMonth ? 1 : 0.35,
+                      }}
+                      data-testid={`calendar-month-cell-${k}`}
+                    >
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-xs font-bold" style={{ color: isToday ? "#00E5FF" : "#ccc" }}>{d.getDate()}</span>
+                        <div className="flex items-center gap-1">
+                          {anyConflict && <span title="Conflitti" style={{ color: "#FF3355" }} className="text-xs">⚠</span>}
+                          {dayEvents.length > 0 && <span className="text-[9px] font-mono text-zinc-400">·{dayEvents.length}</span>}
+                        </div>
+                      </div>
+                      <div className="space-y-0.5 max-h-[80px] overflow-hidden">
+                        {dayEvents.slice(0, 4).map((e) => {
+                          const meta = kindMeta(e.kind);
+                          let d0; try { d0 = new Date(e.scheduled_at); } catch { return null; }
+                          return (
+                            <div key={e.id} className="flex items-center gap-1 text-[9px] font-mono truncate"
+                              style={{ color: meta.color, opacity: e.is_virtual ? 0.75 : 1 }}>
+                              <span>{meta.icon}</span>
+                              <span>{fmtHM(d0)}</span>
+                              <span className="truncate opacity-75">{e.title || meta.label}</span>
+                            </div>
+                          );
+                        })}
+                        {dayEvents.length > 4 && (<div className="text-[8px] font-mono text-zinc-500">+{dayEvents.length-4} altri</div>)}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
+        </div>
+      )}
 
       {/* ── Footer sync info ───────────────────────────────────────────── */}
       <footer

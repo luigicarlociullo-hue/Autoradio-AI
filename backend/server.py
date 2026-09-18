@@ -119,19 +119,49 @@ async def download_and_save_suno_audio(audio_url: str, track_id: str) -> Optiona
         async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
             r = await client.get(audio_url)
             r.raise_for_status()
+        # v13.28 · FIX (crackle/decoder-desync su Bluetooth, ticket #247410):
+        # i brani Suno arrivano a 48kHz/stereo mentre il TTS (segnali orari,
+        # DJ talk) è 44.1kHz — concatenati nello stesso stream HLS causano
+        # glitch su player rigidi (autoradio auto). La normalizzazione ffmpeg
+        # esisteva già come endpoint manuale mai richiamato automaticamente:
+        # qui la applichiamo direttamente all'ingest, prima dello storage.
+        audio_bytes = r.content
+        real_duration = None
+        try:
+            import tempfile as _tempfile, os as _os
+            with _tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as _tf:
+                _tf.write(r.content)
+                _raw_tmp_path = _tf.name
+            try:
+                norm = await _normalize_audio_file(_raw_tmp_path)
+                if norm and norm.get("normalized_bytes"):
+                    audio_bytes = norm["normalized_bytes"]
+                    real_duration = norm.get("duration_sec")
+                else:
+                    logger.warning(f"[suno] normalize fallita per {track_id}, salvo audio originale 48kHz/stereo")
+            finally:
+                try: _os.unlink(_raw_tmp_path)
+                except Exception: pass
+        except Exception as e:
+            logger.warning(f"[suno] normalize error per {track_id}: {e}")
         # PRIMARY STORAGE: Emergent Object Storage (survives redeploy, shared across envs).
         # Local disk is only a lazy read cache populated by stream_mp3 on GET.
         if not object_storage.is_enabled():
             logger.error(f"Suno download {track_id}: object storage disabled, cannot persist")
             return None
-        stored_path = await object_storage.put_mp3(f"suno/{local_name}", r.content)
+        stored_path = await object_storage.put_mp3(f"suno/{local_name}", audio_bytes)
         if not stored_path:
             logger.error(f"Suno download {track_id}: objstore upload failed")
             return None
-        logger.info(f"Suno track {track_id} → objstore {stored_path} ({len(r.content)} bytes)")
+        logger.info(f"Suno track {track_id} → objstore {stored_path} ({len(audio_bytes)} bytes)")
+        if real_duration and real_duration > 0:
+            try:
+                await db.tracks.update_one({"id": track_id}, {"$set": {"duration_sec": round(real_duration)}})
+            except Exception as e:
+                logger.debug(f"[suno] duration_sec update skip {track_id}: {e}")
         # BPM detection (v13.2) — best-effort, non blocca la restituzione URL.
         try:
-            bpm = await bpm_service.detect_bpm_from_bytes(r.content, ".mp3")
+            bpm = await bpm_service.detect_bpm_from_bytes(audio_bytes, ".mp3")
             if bpm:
                 await db.tracks.update_one(
                     {"id": track_id},
@@ -5741,7 +5771,13 @@ _CLOCK_QUEUE_LOOKAHEAD = 8   # numero di brani in coda dopo il current
 
 async def _timeline_pick_due() -> Optional[dict]:
     """Ritorna un evento timeline maturo (scheduled_at <= now) e lo marca
-    come `consumed` atomicamente. Ignora eventi troppo vecchi (>2h)."""
+    come `consumed` atomicamente. Ignora eventi troppo vecchi (>2h).
+
+    v13.29 · Prima di cercare eventi pending, materializza le occorrenze
+    imminenti dei template rrule (finestra 90s). Così le regole "Smart
+    Recurrence" non hanno bisogno di background task dedicati: la
+    materializzazione avviene lungo lo stesso path del clock ticker."""
+    await _rrule_materialize_due(window_sec=90)
     now = datetime.now(timezone.utc)
     cutoff_old = (now - timedelta(hours=2)).isoformat()
     now_iso_s = now.isoformat()
@@ -6049,7 +6085,7 @@ async def admin_timeline_create(payload: dict):
 
 @api_router.get("/admin/timeline")
 async def admin_timeline_list(status: str = "pending", limit: int = 100):
-    """Elenca gli eventi timeline. `status`: pending|consumed|skipped_no_audio|all."""
+    """Elenca gli eventi timeline. `status`: pending|consumed|skipped_no_audio|template|all."""
     q = {} if status == "all" else {"status": status}
     rows = await db.timeline_events.find(q, {"_id": 0}).sort("scheduled_at", 1).limit(min(limit, 500)).to_list(500)
     return {"events": rows, "count": len(rows)}
@@ -6057,8 +6093,284 @@ async def admin_timeline_list(status: str = "pending", limit: int = 100):
 
 @api_router.delete("/admin/timeline/{event_id}")
 async def admin_timeline_delete(event_id: str):
+    """v13.29 · Cascade delete: se `event_id` è un template rrule, elimina
+    anche TUTTE le occorrenze figlie pending future (parent_id = template.id).
+    Le occorrenze già consumate restano come storico immutabile."""
+    doc = await db.timeline_events.find_one({"id": event_id}, {"_id": 0, "status": 1})
     r = await db.timeline_events.delete_one({"id": event_id})
-    return {"ok": r.deleted_count > 0}
+    cascaded = 0
+    if doc and doc.get("status") == "template":
+        cr = await db.timeline_events.delete_many({"parent_id": event_id, "status": "pending"})
+        cascaded = cr.deleted_count
+    return {"ok": r.deleted_count > 0, "cascaded_children": cascaded}
+
+
+# ============================================================================
+# v13.29 · SMART RECURRENCE ENGINE
+# ----------------------------------------------------------------------------
+# rrule = {
+#   start_hour, end_hour (int 0-23, supporta wraparound overnight),
+#   anchor_minute (int 0-59, default 0),
+#   frequency_minutes (int, es. 60 = ogni ora, 30 = ogni mezz'ora),
+#   days_of_week (list int 0-6, Mon=0..Sun=6, default tutti),
+#   start_date (ISO yyyy-mm-dd, default oggi),
+#   end_date   (ISO yyyy-mm-dd o null, default null = infinito)
+# }
+# Un evento con status="template" NON viene mai promosso da _timeline_pick_due:
+# è puro parent che genera occorrenze concrete via _rrule_materialize + virtual
+# per il calendar preview.
+# ============================================================================
+def _rrule_expand(rrule: dict, from_dt: datetime, to_dt: datetime, anchor_dt: Optional[datetime] = None):
+    """Ritorna una lista di datetime (UTC) delle occorrenze dell'rrule
+    nell'intervallo [from_dt, to_dt]. `anchor_dt` è la data di inizio del
+    template (default = from_dt). Deterministico + puro."""
+    if not rrule:
+        return []
+    try:
+        sh = int(rrule.get("start_hour", 0)) % 24
+        eh = int(rrule.get("end_hour", 24)) % 25
+        anchor_min = int(rrule.get("anchor_minute", 0)) % 60
+        freq_min = max(1, int(rrule.get("frequency_minutes", 60)))
+        dow = rrule.get("days_of_week")
+        dow_set = set(int(d) for d in dow) if isinstance(dow, list) and dow else set(range(7))
+        start_date_s = (rrule.get("start_date") or "").strip()
+        end_date_s = (rrule.get("end_date") or "").strip()
+        if start_date_s:
+            sd = datetime.fromisoformat(start_date_s.replace("Z", "+00:00"))
+            if sd.tzinfo is None: sd = sd.replace(tzinfo=timezone.utc)
+        else:
+            sd = anchor_dt or from_dt
+        ed = None
+        if end_date_s:
+            ed = datetime.fromisoformat(end_date_s.replace("Z", "+00:00"))
+            if ed.tzinfo is None: ed = ed.replace(tzinfo=timezone.utc)
+    except Exception:
+        return []
+
+    out = []
+    # Itera giorno per giorno all'interno di [max(from,sd), min(to,ed)]
+    day_from = max(from_dt, sd).astimezone(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    day_to = to_dt.astimezone(timezone.utc)
+    if ed:
+        day_to = min(day_to, ed)
+    if day_from > day_to:
+        return []
+    day = day_from
+    max_iterations = 400  # safety cap
+    iterations = 0
+    while day <= day_to and iterations < max_iterations:
+        iterations += 1
+        weekday = day.weekday()  # Mon=0
+        if weekday in dow_set:
+            # Determina finestra oraria per questo giorno
+            if eh > sh:
+                # Finestra normale (es. 06→22)
+                start_ts = day.replace(hour=sh, minute=anchor_min)
+                end_ts = day.replace(hour=(eh if eh < 24 else 23), minute=(59 if eh >= 24 else 0))
+                ts = start_ts
+                while ts <= end_ts and ts <= to_dt:
+                    if ts >= from_dt:
+                        out.append(ts)
+                    ts += timedelta(minutes=freq_min)
+            else:
+                # Wraparound overnight (es. 23→04): due segmenti
+                # Segmento serale del giorno corrente: [sh:anchor, 23:59]
+                start_ts = day.replace(hour=sh, minute=anchor_min)
+                end_ts = day.replace(hour=23, minute=59)
+                ts = start_ts
+                while ts <= end_ts and ts <= to_dt:
+                    if ts >= from_dt:
+                        out.append(ts)
+                    ts += timedelta(minutes=freq_min)
+                # Segmento mattutino del giorno SUCCESSIVO: [00:anchor, eh:00]
+                # (solo se il giorno successivo è nel range)
+                next_day = day + timedelta(days=1)
+                if next_day <= day_to:
+                    seg_start = next_day.replace(hour=0, minute=anchor_min)
+                    seg_end = next_day.replace(hour=eh, minute=0)
+                    ts = seg_start
+                    while ts <= seg_end and ts <= to_dt:
+                        if ts >= from_dt:
+                            out.append(ts)
+                        ts += timedelta(minutes=freq_min)
+        day += timedelta(days=1)
+    return out[:1000]  # hard cap
+
+
+async def _rrule_materialize_due(window_sec: int = 90):
+    """Materializza in `timeline_events` (status=pending) le occorrenze dei
+    template rrule che scoccano entro `window_sec` da adesso. Idempotente:
+    se un'occorrenza (parent_id + scheduled_at) esiste già, non la duplica.
+    Chiamato da `_timeline_pick_due` in cima al soft-sync check."""
+    try:
+        now = datetime.now(timezone.utc)
+        to_dt = now + timedelta(seconds=window_sec)
+        templates = await db.timeline_events.find(
+            {"status": "template", "rrule": {"$ne": None}},
+            {"_id": 0},
+        ).to_list(200)
+        for tpl in templates:
+            occurrences = _rrule_expand(tpl.get("rrule") or {}, now, to_dt)
+            for occ in occurrences:
+                occ_iso = occ.isoformat()
+                # Dedup: la coppia (parent_id, scheduled_at) è unica
+                existing = await db.timeline_events.find_one(
+                    {"parent_id": tpl["id"], "scheduled_at": occ_iso},
+                    {"_id": 0, "id": 1},
+                )
+                if existing:
+                    continue
+                # Nuovo child concreto — copia il template ma override id/status/scheduled_at
+                child = {k: v for k, v in tpl.items() if k not in ("_id", "id", "status", "rrule", "created_at")}
+                child["id"] = f"tl-{uuid.uuid4().hex[:12]}"
+                child["scheduled_at"] = occ_iso
+                child["status"] = "pending"
+                child["parent_id"] = tpl["id"]
+                child["from_rrule"] = True
+                child["created_at"] = now.isoformat()
+                await db.timeline_events.insert_one(child)
+    except Exception as e:
+        logger.debug(f"[rrule] materialize failed: {e}")
+
+
+@api_router.post("/admin/timeline/rrule")
+async def admin_timeline_create_rrule(payload: dict):
+    """v13.29 · Crea un template rrule (parent) che genererà occorrenze
+    concrete (children pending) man mano che le rispettive scadenze si
+    avvicinano. Il calendar API espande le occorrenze future in modo
+    virtuale per la visualizzazione a settimana/mese.
+
+    Body: {kind, title?, audio_url, duration_sec?, dj_id?, dj_name?, video_url?,
+           rrule: {start_hour, end_hour, anchor_minute?, frequency_minutes,
+                   days_of_week?, start_date?, end_date?}, brief?}"""
+    rrule = payload.get("rrule") or {}
+    if not isinstance(rrule, dict) or rrule.get("frequency_minutes") is None:
+        raise HTTPException(400, "rrule.frequency_minutes richiesto")
+    audio_url = (payload.get("audio_url") or "").strip()
+    if not audio_url:
+        raise HTTPException(400, "audio_url richiesto per il template")
+    # Risolvi DJ opzionale
+    dj_id = (payload.get("dj_id") or "").strip() or None
+    dj_name = (payload.get("dj_name") or "").strip() or None
+    voice_key = None
+    if dj_id or dj_name:
+        q = {"id": dj_id} if dj_id else {"name": dj_name}
+        dj_doc = await db.djs.find_one(q, {"_id": 0, "id": 1, "name": 1, "voice_key": 1})
+        if dj_doc:
+            dj_id = dj_doc.get("id"); dj_name = dj_doc.get("name"); voice_key = dj_doc.get("voice_key")
+    # Sanitize rrule
+    clean_rrule = {
+        "start_hour": max(0, min(23, int(rrule.get("start_hour", 0)))),
+        "end_hour": max(0, min(24, int(rrule.get("end_hour", 24)))),
+        "anchor_minute": max(0, min(59, int(rrule.get("anchor_minute", 0)))),
+        "frequency_minutes": max(1, min(1440, int(rrule.get("frequency_minutes", 60)))),
+        "days_of_week": [int(d) for d in (rrule.get("days_of_week") or list(range(7))) if 0 <= int(d) <= 6],
+        "start_date": (rrule.get("start_date") or datetime.now(timezone.utc).date().isoformat()),
+        "end_date": (rrule.get("end_date") or None),
+    }
+    now = datetime.now(timezone.utc)
+    tpl = {
+        "id": f"tpl-{uuid.uuid4().hex[:12]}",
+        "kind": (payload.get("kind") or "insert").strip()[:40],
+        "title": (payload.get("title") or "").strip()[:120] or None,
+        "audio_url": audio_url,
+        "duration_sec": int(payload.get("duration_sec") or 30),
+        "dj_id": dj_id, "dj_name": dj_name, "voice_key": voice_key,
+        "brief": (payload.get("brief") or "").strip() or None,
+        "video_url": (payload.get("video_url") or "").strip() or None,
+        "rrule": clean_rrule,
+        "status": "template",
+        "scheduled_at": now.isoformat(),  # solo per ordinamento; il vero orario è dato da rrule
+        "created_at": now.isoformat(),
+    }
+    await db.timeline_events.insert_one(tpl.copy())
+    tpl.pop("_id", None)
+    return {"ok": True, "template": tpl}
+
+
+@api_router.get("/admin/timeline/calendar")
+async def admin_timeline_calendar(from_ts: str, to_ts: str, limit_virtual: int = 500):
+    """v13.29 · Espone eventi concreti + occorrenze virtuali dei template
+    rrule nell'intervallo [from_ts, to_ts]. Le occorrenze già materializzate
+    come children non vengono duplicate come virtual.
+
+    Rileva anche conflitti (overlap): per ogni evento aggiunge una lista
+    `conflicts` con gli id degli eventi che si sovrappongono.
+    Precedenza: al conflitto vince il `created_at` più recente."""
+    try:
+        f_dt = datetime.fromisoformat(from_ts.replace("Z", "+00:00"))
+        t_dt = datetime.fromisoformat(to_ts.replace("Z", "+00:00"))
+        if f_dt.tzinfo is None: f_dt = f_dt.replace(tzinfo=timezone.utc)
+        if t_dt.tzinfo is None: t_dt = t_dt.replace(tzinfo=timezone.utc)
+    except Exception:
+        raise HTTPException(400, "from_ts/to_ts ISO datetime richiesti")
+
+    # 1) Eventi concreti in range (pending + consumed)
+    concrete = await db.timeline_events.find(
+        {"status": {"$in": ["pending", "consumed"]},
+         "scheduled_at": {"$gte": f_dt.isoformat(), "$lte": t_dt.isoformat()}},
+        {"_id": 0},
+    ).sort("scheduled_at", 1).to_list(1000)
+
+    # 2) Templates + expand virtuali
+    templates = await db.timeline_events.find(
+        {"status": "template", "rrule": {"$ne": None}}, {"_id": 0},
+    ).to_list(200)
+    # Set di (parent_id, scheduled_at) già materializzati → non duplicare come virtual
+    materialized_keys = {(e.get("parent_id"), e.get("scheduled_at")) for e in concrete if e.get("parent_id")}
+    virtuals = []
+    for tpl in templates:
+        occs = _rrule_expand(tpl.get("rrule") or {}, f_dt, t_dt)
+        for occ in occs[:limit_virtual]:
+            key = (tpl["id"], occ.isoformat())
+            if key in materialized_keys:
+                continue
+            v = {k: v for k, v in tpl.items() if k not in ("_id", "id", "status", "rrule", "created_at")}
+            v["id"] = f"virt-{tpl['id']}-{int(occ.timestamp())}"
+            v["scheduled_at"] = occ.isoformat()
+            v["status"] = "virtual"
+            v["parent_id"] = tpl["id"]
+            v["is_virtual"] = True
+            virtuals.append(v)
+
+    events = concrete + virtuals
+    events.sort(key=lambda e: e.get("scheduled_at") or "")
+
+    # 3) Conflict detection: overlap con evento più recente vince
+    def _end(e):
+        try:
+            s = datetime.fromisoformat((e.get("scheduled_at") or "").replace("Z", "+00:00"))
+            return s + timedelta(seconds=int(e.get("duration_sec") or 0))
+        except Exception:
+            return None
+    starts = []
+    for e in events:
+        try:
+            starts.append(datetime.fromisoformat((e.get("scheduled_at") or "").replace("Z", "+00:00")))
+        except Exception:
+            starts.append(None)
+    for i, e in enumerate(events):
+        s_i, en_i = starts[i], _end(e)
+        if s_i is None or en_i is None:
+            continue
+        confs = []
+        for j, e2 in enumerate(events):
+            if i == j: continue
+            s_j, en_j = starts[j], _end(e2)
+            if s_j is None or en_j is None: continue
+            # overlap check
+            if s_i < en_j and s_j < en_i:
+                confs.append(e2.get("id"))
+        if confs:
+            e["conflicts"] = confs
+
+    return {
+        "from": f_dt.isoformat(),
+        "to": t_dt.isoformat(),
+        "events": events,
+        "counts": {"concrete": len(concrete), "virtual": len(virtuals), "total": len(events)},
+        "templates": [{"id": t["id"], "kind": t.get("kind"), "title": t.get("title"), "rrule": t.get("rrule")} for t in templates],
+    }
 
 
 
@@ -6953,12 +7265,34 @@ async def admin_media_upload(
         # Analog to legacy Suno-admin upload — but simplified: goes to Tracks
         track_id = str(uuid.uuid4())
         local_name = f"track_{track_id}.mp3"
-        stored = await object_storage.put_mp3(f"suno/{local_name}", data)
+        # v13.28 · FIX (stesso encoding-mismatch del download Suno, ticket
+        # #247410): normalizza anche gli upload manuali prima dello storage,
+        # e calcola qui duration_sec reale invece di lasciarlo None ("popolato
+        # al primo play" non era mai stato completato — causa diretta dei
+        # crash di validazione Track/duration_sec int_type).
+        upload_bytes = data
+        real_duration = None
+        try:
+            import tempfile as _tempfile, os as _os
+            with _tempfile.NamedTemporaryFile(suffix="." + ext, delete=False) as _tf:
+                _tf.write(data)
+                _raw_tmp_path = _tf.name
+            try:
+                norm = await _normalize_audio_file(_raw_tmp_path)
+                if norm and norm.get("normalized_bytes"):
+                    upload_bytes = norm["normalized_bytes"]
+                    real_duration = norm.get("duration_sec")
+            finally:
+                try: _os.unlink(_raw_tmp_path)
+                except Exception: pass
+        except Exception as e:
+            logger.warning(f"[upload] normalize error per {track_id}: {e}")
+        stored = await object_storage.put_mp3(f"suno/{local_name}", upload_bytes)
         if not stored:
             raise HTTPException(502, "Upload audio fallito")
         # BPM
         detected_bpm = None
-        try: detected_bpm = await bpm_service.detect_bpm_from_bytes(data, "." + ext)
+        try: detected_bpm = await bpm_service.detect_bpm_from_bytes(upload_bytes, ".mp3")
         except Exception: pass
         doc = {
             "id": track_id,
@@ -6973,7 +7307,7 @@ async def admin_media_upload(
             "daypart_night": _bool(daypart_night if daypart_night is not None else "true"),
             "bpm": detected_bpm,
             "bpm_source": ("server" if detected_bpm else None),
-            "duration_sec": None,   # opzionale, sarà popolato al primo play
+            "duration_sec": round(real_duration) if real_duration and real_duration > 0 else 30,
             "created_at": now_dt.isoformat(),
             "updated_at": now_dt.isoformat(),
             "deleted_at": None,

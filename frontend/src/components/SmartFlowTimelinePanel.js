@@ -85,6 +85,12 @@ export default function SmartFlowTimelinePanel() {
       video_url: "",      // v13.22 · override LedWall per l'evento
       repeat_daily: false, // v13.22 · ricorrenza giornaliera (legacy)
       recurrence: "none",  // v13.23 · none / hourly / daily / weekly
+      // v13.29 · Smart Recurrence (rrule) — se attivo, il POST va a /admin/timeline/rrule
+      smart_recurrence: false,
+      rr_start_hour: 6,
+      rr_end_hour: 22,
+      rr_frequency_minutes: 60,
+      rr_days: [0,1,2,3,4,5,6], // Mon..Sun default
     };
   });
   const pollRef = useRef(null);
@@ -230,6 +236,33 @@ export default function SmartFlowTimelinePanel() {
     }
     setBusy(true);
     try {
+      // v13.29 · Smart Recurrence path: crea un template rrule invece di
+      // un evento singolo. Il backend genererà le occorrenze concrete man
+      // mano che si avvicinano e le espande virtualmente per il calendar.
+      if (form.smart_recurrence) {
+        if (!form.audio_url) { setBusy(false); return toast.error("Smart Recurrence richiede un audio dal Magazzino"); }
+        const rBody = {
+          kind: form.kind,
+          title: form.title || undefined,
+          audio_url: form.audio_url,
+          duration_sec: Number(form.duration_sec) || 30,
+          dj_id: form.dj_id || undefined,
+          video_url: form.video_url || undefined,
+          brief: form.brief || undefined,
+          rrule: {
+            start_hour: Number(form.rr_start_hour),
+            end_hour: Number(form.rr_end_hour),
+            frequency_minutes: Number(form.rr_frequency_minutes),
+            days_of_week: form.rr_days,
+          },
+        };
+        const rr = await api.post("/admin/timeline/rrule", rBody);
+        const tpl = rr.data?.template;
+        toast.success(`🔁 Template creato · ogni ${tpl.rrule.frequency_minutes}min · ${tpl.rrule.start_hour}:00→${tpl.rrule.end_hour}:00`);
+        loadEvents("pending");
+        setBusy(false);
+        return;
+      }
       const localDate = fromLocalInput(form.scheduled_at);
       const iso = localDate.toISOString(); // UTC ISO
       const body = {
@@ -672,6 +705,88 @@ export default function SmartFlowTimelinePanel() {
               <option value="weekly">Ogni settimana</option>
             </select>
           </div>
+        </div>
+
+        {/* v13.29 · SMART RECURRENCE · toggle avanzato con fascia + freq + giorni */}
+        <div className="mt-3 rounded p-3" style={{ background: "rgba(0,229,255,0.05)", border: "1px solid rgba(0,229,255,0.25)" }}>
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={form.smart_recurrence}
+              onChange={(e) => setForm({ ...form, smart_recurrence: e.target.checked })}
+              className="accent-cyan-400"
+              data-testid="timeline-smart-toggle"
+            />
+            <span className="text-sm font-bold" style={{ color: "#00E5FF" }}>⚙️ Smart Recurrence · fascia oraria + frequenza + giorni specifici</span>
+          </label>
+          {form.smart_recurrence && (
+            <div className="mt-3 grid grid-cols-1 md:grid-cols-4 gap-2">
+              <div>
+                <label className="label-mono block mb-1">Fascia dalle</label>
+                <input type="number" min={0} max={23} value={form.rr_start_hour}
+                  onChange={(e) => setForm({ ...form, rr_start_hour: Number(e.target.value) })}
+                  data-testid="rr-start-hour"
+                  className="w-full bg-black border border-white/10 rounded px-2 py-1.5 text-sm text-white font-mono" />
+              </div>
+              <div>
+                <label className="label-mono block mb-1">alle</label>
+                <input type="number" min={0} max={24} value={form.rr_end_hour}
+                  onChange={(e) => setForm({ ...form, rr_end_hour: Number(e.target.value) })}
+                  data-testid="rr-end-hour"
+                  className="w-full bg-black border border-white/10 rounded px-2 py-1.5 text-sm text-white font-mono" />
+                <div className="text-[9px] font-mono text-zinc-500 mt-0.5">
+                  {form.rr_end_hour <= form.rr_start_hour ? "🌙 wraparound overnight" : ""}
+                </div>
+              </div>
+              <div>
+                <label className="label-mono block mb-1">Ogni (min)</label>
+                <select value={form.rr_frequency_minutes}
+                  onChange={(e) => setForm({ ...form, rr_frequency_minutes: Number(e.target.value) })}
+                  data-testid="rr-frequency"
+                  className="w-full bg-black border border-white/10 rounded px-2 py-1.5 text-sm text-white">
+                  <option value={5}>5 minuti</option>
+                  <option value={10}>10 minuti</option>
+                  <option value={15}>15 minuti</option>
+                  <option value={20}>20 minuti</option>
+                  <option value={30}>30 minuti</option>
+                  <option value={60}>60 minuti (ora esatta)</option>
+                  <option value={120}>2 ore</option>
+                </select>
+              </div>
+              <div>
+                <label className="label-mono block mb-1">Giorni</label>
+                <div className="flex gap-0.5 flex-wrap">
+                  {["L","M","M","G","V","S","D"].map((lbl, idx) => {
+                    const active = form.rr_days.includes(idx);
+                    return (
+                      <button
+                        key={idx}
+                        type="button"
+                        onClick={() => setForm({
+                          ...form,
+                          rr_days: active ? form.rr_days.filter(d => d !== idx) : [...form.rr_days, idx].sort(),
+                        })}
+                        data-testid={`rr-day-${idx}`}
+                        className="w-7 h-7 rounded text-[10px] font-bold"
+                        style={{
+                          background: active ? "#00E5FF" : "rgba(255,255,255,0.05)",
+                          color: active ? "#000" : "#888",
+                          border: `1px solid ${active ? "#00E5FF" : "rgba(255,255,255,0.1)"}`,
+                        }}
+                        title={["Lunedì","Martedì","Mercoledì","Giovedì","Venerdì","Sabato","Domenica"][idx]}
+                      >{lbl}</button>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="md:col-span-4 text-[10px] font-mono text-zinc-400">
+                💡 Anteprima:  {form.rr_days.length}/7 giorni · dalle {String(form.rr_start_hour).padStart(2,"0")}:00 alle {String(form.rr_end_hour).padStart(2,"0")}:00 · ogni {form.rr_frequency_minutes}min
+                {form.rr_days.length && form.rr_end_hour > form.rr_start_hour
+                  ? ` ≈ ${Math.floor(((form.rr_end_hour-form.rr_start_hour)*60)/form.rr_frequency_minutes)+1} occorrenze/giorno`
+                  : ""}
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
