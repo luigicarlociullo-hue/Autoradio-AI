@@ -661,3 +661,19 @@ Vedi turni precedenti in questa sessione:
 **Testing**: solo compilazione (backend `python -c "import server"` OK, frontend `webpack compiled` OK). Nessun test agent, nessun health check, nessun burn Suno.
 
 **API totali**: da 155 → 178 paths.
+
+## v13.33 · FIX RE-PROBE DURATIONS + FILTRO SILENZI (2026-09-20)
+
+**Ordine ricevuto**: Fix chirurgico dell'endpoint `/admin/audio/reprobe-durations` che in produzione saltava ~50 tracce/jingle perché `USE_OBJECT_STORAGE=true` mantiene il disco locale come sola cache differita. Aggiungere anche filtro `duration_sec > 0` nella rotazione + trattare durata mancante come già scaduta.
+
+**Implementato** (6 punti seguiti alla lettera):
+1. **`/admin/audio/reprobe-durations` con fallback Object Storage**: quando `_resolve_local_path_from_url()` non trova il file localmente, l'endpoint scarica via `object_storage.fetch_mp3()` (mappatura URL→storage-key: `suno_audio→suno`, `tts→tts`, `community_audio→community`; `/api/audio/` resta local-only), scrive un tempfile, esegue ffprobe, salva `duration_sec = round(real + 0.4)`, poi rimuove il tempfile nel `finally`. Response ora ritorna 4 conteggi separati (`probed_local`, `probed_storage`, `unreadable`, `skipped_no_url`) + log warning per ogni track_id fallito. **Test preview: 194 scanned, 175 local + 15 storage, 23 update, 2 unreadable con warning nominato.**
+2. **`_clock_pick_track` main query**: aggiunto `"duration_sec": {"$gt": 0}` — la rotazione principale non pesca più tracce con durata 0/null. La fallback query "if not tr" resta invariata (rotazione mai vuota).
+3. **`_clock_pick_dj_jingle`**: stesso filtro applicato ai jingle DJ.
+4. **`_clock_advance._is_expired`**: `duration_sec` mancante o `<= 0` → SCADUTA immediata (prima teneva silenzio 180s). Log warning con id+title del brano problematico.
+5. **`hls_live_playlist` + `stream_now`**: `or 180` lasciato in posto come safety net + log WARNING quando scatta — così se una traccia sfugge ai filtri (2) e (3) lo vediamo subito nei log di produzione.
+6. **Startup sanity check**: `shutil.which("ffmpeg"/"ffprobe")` all'avvio; log ERROR grosso se manca almeno uno, log INFO con path se OK. **Test preview: `[startup] ffmpeg=/bin/ffmpeg ffprobe=/bin/ffprobe — audio pipeline pronta`**.
+
+**NON toccati** (come da ordine): `_beatmatch_render_pair`, `_ad_build_cluster`, `/admin/tracks/upload`, path di ingestione Suno.
+
+**Regressioni**: nessuna. Il router (161 openapi paths) e il flusso HLS restano identici.

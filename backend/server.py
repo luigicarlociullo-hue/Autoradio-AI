@@ -5573,7 +5573,16 @@ async def hls_live_playlist(request: Request):
         running_dt = datetime.now(timezone.utc)
 
     for i, t in enumerate(entries):
-        dur = float(t.get("duration_sec") or 180)
+        _raw_dur = t.get("duration_sec")
+        if _raw_dur is None or (isinstance(_raw_dur, (int, float)) and _raw_dur <= 0):
+            # v13.33 · Se arriva qui una traccia senza durata, dopo i filtri
+            # in _clock_pick_* non dovrebbe MAI succedere. Logga un warning
+            # per rintracciare la falla.
+            logger.warning(
+                f"[hls_live_playlist] fallback duration_sec=180 su track id={t.get('id')} "
+                f"title={t.get('title')!r} (duration_sec={_raw_dur!r}) — filtro pick fallito?"
+            )
+        dur = float(_raw_dur or 180)
         title = (t.get("title") or "R-A.I.").replace(",", " ")
         artist = (t.get("artist") or "R-A.I.").replace(",", " ")
         url = t.get("audio_url") or ""
@@ -6588,34 +6597,104 @@ async def admin_audio_reprobe_durations(limit: int = 500):
     ffprobe sul file fisico. Aggiunge 0.4s di margine di sicurezza per
     evitare che lo `station_clock` avanzi un attimo prima che l'audio finisca
     (taglio dell'inizio del brano successivo su decoder Bluetooth).
-    Idempotente: si può rilanciare in sicurezza dopo ogni ingest."""
+    Idempotente: si può rilanciare in sicurezza dopo ogni ingest.
+
+    v13.33 · Fallback Object Storage: quando il file locale è assente
+    (produzione USE_OBJECT_STORAGE=true, cache di lettura differita),
+    scarica l'MP3 da Object Storage in un tempfile, esegue ffprobe come
+    per il path locale, e rimuove il temp in un blocco `finally`.
+    Mappatura URL→storage-key: suno_audio→suno, tts→tts, community_audio→community.
+    `/api/audio/` resta locale-only (nessun equivalente storage)."""
+    import tempfile as _tempfile
+    import os as _os
+
+    def _storage_key_from_url(url: str) -> Optional[str]:
+        if not url:
+            return None
+        if url.startswith("/api/suno_audio/"):
+            return f"suno/{url.replace('/api/suno_audio/', '').split('?')[0]}"
+        if url.startswith("/api/tts/"):
+            return f"tts/{url.replace('/api/tts/', '').split('?')[0]}"
+        if url.startswith("/api/community_audio/"):
+            return f"community/{url.replace('/api/community_audio/', '').split('?')[0]}"
+        return None
+
     updated = 0
     scanned = 0
-    skipped_missing = 0
+    probed_local = 0
+    probed_storage = 0
+    unreadable = 0
+    skipped_no_url = 0
     async for t in db.tracks.find({}, {"_id": 0, "id": 1, "audio_url": 1, "duration_sec": 1}).limit(limit):
         scanned += 1
+        tid = t.get("id")
         url = t.get("audio_url") or ""
-        p = _resolve_local_path_from_url(url)
-        if not p or not p.exists():
-            skipped_missing += 1
+        if not url:
+            skipped_no_url += 1
             continue
+        p = _resolve_local_path_from_url(url)
+        probe_path: Optional[str] = None
+        tmp_to_cleanup: Optional[str] = None
         try:
-            probe = await video_service.probe_video(str(p))
+            if p and p.exists():
+                probe_path = str(p)
+                source = "local"
+            else:
+                # Fallback: prova a scaricare dall'Object Storage
+                key = _storage_key_from_url(url)
+                if not key or not object_storage.is_enabled():
+                    logger.warning(f"[reprobe] track {tid} unreadable · url={url} · nessun local + nessun key storage")
+                    unreadable += 1
+                    continue
+                data = await object_storage.fetch_mp3(key)
+                if not data:
+                    logger.warning(f"[reprobe] track {tid} unreadable · storage key '{key}' non trovata")
+                    unreadable += 1
+                    continue
+                # Scrivi in tempfile per ffprobe
+                fd, tmp_to_cleanup = _tempfile.mkstemp(prefix="reprobe_", suffix=".mp3")
+                with _os.fdopen(fd, "wb") as _f:
+                    _f.write(data)
+                probe_path = tmp_to_cleanup
+                source = "storage"
+
+            probe = await video_service.probe_video(probe_path)
             d = (probe or {}).get("duration_sec")
             if not d or d <= 0:
+                logger.warning(f"[reprobe] track {tid} unreadable · ffprobe non ha ritornato durata (source={source})")
+                unreadable += 1
                 continue
             real = float(d) + 0.4  # safety margin
+            if source == "local":
+                probed_local += 1
+            else:
+                probed_storage += 1
             # Aggiorna solo se scostamento >0.5s per non thrashare il DB
             if abs(real - float(t.get("duration_sec") or 0)) < 0.5:
                 continue
             await db.tracks.update_one(
-                {"id": t["id"]},
+                {"id": tid},
                 {"$set": {"duration_sec": round(real), "duration_probed_at": now_iso()}},
             )
             updated += 1
         except Exception as e:
-            logger.debug(f"[reprobe] fail {t.get('id')}: {e}")
-    return {"ok": True, "scanned": scanned, "updated": updated, "skipped_missing": skipped_missing}
+            logger.warning(f"[reprobe] track {tid} error: {e}")
+            unreadable += 1
+        finally:
+            if tmp_to_cleanup:
+                try:
+                    _os.remove(tmp_to_cleanup)
+                except Exception:
+                    pass
+    return {
+        "ok": True,
+        "scanned": scanned,
+        "updated": updated,
+        "probed_local": probed_local,
+        "probed_storage": probed_storage,
+        "unreadable": unreadable,
+        "skipped_no_url": skipped_no_url,
+    }
 
 
 @api_router.post("/admin/audio/normalize/{track_id}")
@@ -6843,6 +6922,8 @@ async def _clock_pick_dj_jingle() -> Optional[dict]:
     q = {
         "is_jingle": True, "status": "ready", "audio_url": {"$ne": None},
         "on_air": {"$ne": False}, "deleted_at": None,
+        # v13.33 · Escludi jingle senza durata valida (evita silenzi da 180s)
+        "duration_sec": {"$gt": 0},
         "$or": [{"start_date": {"$exists": False}}, {"start_date": None}, {"start_date": {"$lte": _now_iso_s}}],
         "$and": [{"$or": [{"end_date": {"$exists": False}}, {"end_date": None}, {"end_date": {"$gte": _now_iso_s}}]}],
     }
@@ -6902,6 +6983,11 @@ async def _clock_pick_track() -> Optional[dict]:
         "source": {"$in": _sources},
         "status": "ready", "audio_url": {"$ne": None},
         "on_air": {"$ne": False}, "deleted_at": None,
+        # v13.33 · Escludi tracce con duration_sec assente o 0: mai selezionate
+        # dalla rotazione principale (evita 180s di silenzio nel HLS). La
+        # fallback query più sotto (`if not tr`) NON applica questo filtro
+        # così la rotazione non può mai essere lasciata vuota.
+        "duration_sec": {"$gt": 0},
         "$and": [
             {"$or": [{"is_anthem": {"$exists": False}}, {"is_anthem": False}]},
             {"$or": [{"is_jingle": {"$exists": False}}, {"is_jingle": False}]},
@@ -6950,7 +7036,22 @@ async def _clock_advance(force: bool = False) -> dict:
             started = datetime.fromisoformat(cur["started_at"].replace("Z", "+00:00"))
         except Exception:
             return True
-        return (now - started).total_seconds() >= float(cur.get("duration_sec") or 180)
+        # v13.33 · Duration mancante o 0 → SCADUTA IMMEDIATA. Prima del fix,
+        # il fallback `or 180` teneva il flusso in silenzio per 3 minuti. Ora
+        # se un brano non ha durata valida, il clock avanza subito e cerca
+        # il prossimo. Zero silenzi lunghi da metadata rotti.
+        _dur = cur.get("duration_sec")
+        try:
+            _dur_f = float(_dur) if _dur is not None else 0.0
+        except Exception:
+            _dur_f = 0.0
+        if _dur_f <= 0:
+            logger.warning(
+                f"[clock] current id={cur.get('id')} title={cur.get('title')!r} "
+                f"ha duration_sec={_dur!r} → trattato come scaduto immediatamente"
+            )
+            return True
+        return (now - started).total_seconds() >= _dur_f
 
     while force or _is_expired(clock.get("current")):
         force = False
@@ -7148,7 +7249,14 @@ async def stream_now():
             "duration_sec": cur.get("duration_sec"),
             "started_at": cur.get("started_at"),
             "offset_sec": offset,
-            "remaining_sec": max(0.0, float(cur.get("duration_sec") or 180) - offset),
+            # v13.33 · Log warning se il fallback `or 180` scatta qui (filtro
+            # pick dovrebbe aver impedito duration=0/None nel current)
+            "remaining_sec": max(0.0, float(cur.get("duration_sec") or (
+                logger.warning(
+                    f"[stream_now] fallback duration_sec=180 su current id={cur.get('id')} "
+                    f"title={cur.get('title')!r} — filtro pick fallito?"
+                ) or 180
+            )) - offset),
             "bpm": cur.get("bpm"),
             "is_timeline": bool(cur.get("is_timeline")),
             "kind": cur.get("kind"),
@@ -8929,6 +9037,21 @@ async def on_startup():
     # Registra il router API PRIMA di ogni tick di startup: tutte le rotte
     # definite sopra sono ora fisicamente aggiunte all'app.
     app.include_router(api_router)
+    # v13.33 · Sanity check ffmpeg/ffprobe — indispensabili per reprobe,
+    # normalizzazione, beatmatch, intro-detect. Logga un ERROR grosso se
+    # mancano, così le operazioni "senza risultato silenzioso" si vedono
+    # subito nei log di produzione.
+    import shutil as _shutil
+    _ffmpeg = _shutil.which("ffmpeg")
+    _ffprobe = _shutil.which("ffprobe")
+    if not _ffmpeg or not _ffprobe:
+        logger.error(
+            f"[startup] AUDIO TOOLS MISSING · ffmpeg={_ffmpeg!r} ffprobe={_ffprobe!r} — "
+            f"reprobe/normalize/beatmatch/intro-detect NON produrranno risultati. "
+            f"Installare ffmpeg nell'ambiente di runtime prima di ricalcolare le durate."
+        )
+    else:
+        logger.info(f"[startup] ffmpeg={_ffmpeg} ffprobe={_ffprobe} — audio pipeline pronta")
     await ensure_seeded()
     await _seed_admin(db)   # seed admin Regia (idempotente)
     await telegram_bot.start(db)
