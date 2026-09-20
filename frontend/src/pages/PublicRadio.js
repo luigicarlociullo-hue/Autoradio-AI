@@ -169,6 +169,9 @@ function KindBadge({ kind }) {
 export default function PublicRadio() {
   const [station, setStation] = useState({ is_live: false, listeners: 0, total_segments: 0 });
   const fxLastRef = useRef(null);
+  // v13.35 · FX di transizione persistente (Regia). Al cambio segmento
+  // music↔talk, se configurato, viene iniettato tramite radioEngine.injectFx.
+  const transitionFxRef = useRef(null);
   const [segments, setSegments] = useState([]);
   const [current, setCurrent] = useState(null);
   // Fix: "current" sopra viene dal loop /api/segments/generate, che non sa
@@ -238,9 +241,28 @@ export default function PublicRadio() {
     mountedRef.current = true;
     refresh();
     const iv = setInterval(() => setTick(t => t + 1), 5000);
+    // v13.35 · Poll leggero (60s) per l'FX di transizione persistente.
+    // Salvato in ref → nessun re-render, e disponibile subito al cambio segmento.
+    const fetchTransitionFx = async () => {
+      try {
+        const r = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/station/transition-fx`);
+        const d = await r.json();
+        if (d && d.audio_url) {
+          const abs = d.audio_url.startsWith("/api/")
+            ? endpoints.audioUrl(d.audio_url)
+            : d.audio_url;
+          transitionFxRef.current = abs;
+        } else {
+          transitionFxRef.current = null;
+        }
+      } catch { /* noop */ }
+    };
+    fetchTransitionFx();
+    const ivFx = setInterval(fetchTransitionFx, 60000);
     return () => {
       mountedRef.current = false;
       clearInterval(iv);
+      clearInterval(ivFx);
       stopFlag.current = true;
       try { radioEngine.stopAll(); } catch (e) {}
       if (overlayTimerRef.current) { clearTimeout(overlayTimerRef.current); overlayTimerRef.current = null; }
@@ -445,7 +467,18 @@ export default function PublicRadio() {
           const speechToMusic = prevKind !== "music" && seg.kind === "music";
           const isJingleTransition = prevKind === "jingle" || seg.kind === "jingle";
           if ((musicToSpeech || speechToMusic) && !isJingleTransition) {
-            radioEngine.playStinger(prevKind, seg.kind).catch(() => {});
+            // v13.35 · Se il Direttore ha configurato un FX di transizione
+            // persistente, usa quello (file caricato) invece dello stinger
+            // procedurale. Fallback allo stinger se il fetch è ancora
+            // pending o non c'è un FX attivo.
+            const fxUrl = transitionFxRef.current;
+            if (fxUrl && radioEngine.injectFx) {
+              try { radioEngine.injectFx(fxUrl); } catch (e) {
+                radioEngine.playStinger(prevKind, seg.kind).catch(() => {});
+              }
+            } else {
+              radioEngine.playStinger(prevKind, seg.kind).catch(() => {});
+            }
           }
         }
 

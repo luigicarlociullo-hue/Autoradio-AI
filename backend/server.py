@@ -4862,6 +4862,74 @@ async def admin_fx_consume():
 
 
 # ============================================================================
+# v13.35 · TRANSITION FX — Effetto automatico ad ogni cambio segmento
+# ============================================================================
+# `station.state.transition_fx_track_id` è l'ID dell'FX caricato che verrà
+# iniettato in automatico dal player pubblico ad ogni cambio segmento
+# (music↔talk). Se null → nessun FX automatico (comportamento legacy con
+# playStinger procedurale). Il player legge questo campo tramite l'endpoint
+# `GET /api/station/transition-fx` (pubblico, cache-friendly).
+
+@api_router.get("/admin/transition-fx")
+async def admin_transition_fx_get():
+    """Ritorna l'FX di transizione attivo + lista FX disponibili per la Regia."""
+    st = await db.station.find_one({"_id": "state"}, {"transition_fx_track_id": 1}) or {}
+    fx_id = st.get("transition_fx_track_id") or None
+    active = None
+    if fx_id:
+        _t = await db.tracks.find_one(
+            {"id": fx_id, "is_fx": True, "deleted_at": None},
+            {"_id": 0, "id": 1, "title": 1, "audio_url": 1, "duration_sec": 1},
+        )
+        if _t:
+            active = _t
+    fx_available = await db.tracks.find(
+        {"is_fx": True, "deleted_at": None, "audio_url": {"$ne": None}},
+        {"_id": 0, "id": 1, "title": 1, "audio_url": 1, "duration_sec": 1},
+        sort=[("created_at", -1)],
+    ).to_list(200)
+    return {"active": active, "active_id": fx_id, "available": fx_available}
+
+
+@api_router.patch("/admin/transition-fx")
+async def admin_transition_fx_set(payload: dict):
+    """Imposta l'FX di transizione. Body: `{"track_id": "<uuid>"|null}`.
+    Passa `null` per disattivare (torna al playStinger procedurale)."""
+    tid = payload.get("track_id")
+    if tid:
+        _t = await db.tracks.find_one({"id": tid, "is_fx": True, "deleted_at": None})
+        if not _t:
+            raise HTTPException(404, "FX non trovato")
+    await db.station.update_one(
+        {"_id": "state"},
+        {"$set": {"transition_fx_track_id": tid or None,
+                  "transition_fx_set_at": now_iso()}},
+        upsert=True,
+    )
+    logger.info(f"[transition-fx] set → track_id={tid}")
+    return {"ok": True, "track_id": tid or None}
+
+
+@api_router.get("/station/transition-fx")
+async def station_transition_fx_public():
+    """Endpoint pubblico: il player pubblico lo legge una tantum (o ogni
+    tanto) per sapere quale FX iniettare in automatico ad ogni cambio
+    segmento. Ritorna `audio_url=null` se nessun FX configurato."""
+    st = await db.station.find_one({"_id": "state"}, {"transition_fx_track_id": 1}) or {}
+    fx_id = st.get("transition_fx_track_id") or None
+    if not fx_id:
+        return {"audio_url": None, "track_id": None}
+    _t = await db.tracks.find_one(
+        {"id": fx_id, "is_fx": True, "deleted_at": None, "audio_url": {"$ne": None}},
+        {"_id": 0, "id": 1, "title": 1, "audio_url": 1, "duration_sec": 1},
+    )
+    if not _t:
+        return {"audio_url": None, "track_id": None}
+    return {"audio_url": _t.get("audio_url"), "track_id": _t.get("id"),
+            "title": _t.get("title"), "duration_sec": _t.get("duration_sec")}
+
+
+# ============================================================================
 # v13.2 · LOGICA EDITORIALE GIORNO/NOTTE (Admin toggle per singolo brano)
 # ============================================================================
 @api_router.patch("/admin/tracks/{track_id}/daypart")

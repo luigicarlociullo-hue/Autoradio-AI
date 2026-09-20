@@ -53,6 +53,8 @@ export default function NightControlCenter() {
         <NightAssetsBlock />
       </div>
 
+      <TransitionFxBlock />
+
       <MaintenanceBlock />
     </section>
   );
@@ -442,6 +444,101 @@ function NightAssetsBlock() {
           );
         })}
       </div>
+    </div>
+  );
+}
+
+/* ═════════════════════════════════════════════════════════════════════════ */
+/* TRANSITION FX (auto)                                                      */
+/* ═════════════════════════════════════════════════════════════════════════ */
+function TransitionFxBlock() {
+  const [data, setData] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const { data } = await api.get("/admin/transition-fx");
+      setData(data);
+    } catch {}
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const setActive = async (trackId) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await api.patch("/admin/transition-fx", { track_id: trackId || null });
+      toast.success(trackId ? "Transition FX aggiornato" : "Transition FX disattivato");
+      await load();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Errore");
+    } finally { setBusy(false); }
+  };
+
+  const available = data?.available || [];
+  const activeId = data?.active_id;
+
+  return (
+    <div
+      data-testid="transition-fx-block"
+      className="rounded-lg p-4 flex flex-col gap-3"
+      style={{ background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,222,89,0.18)" }}
+    >
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <Sparkles className="w-4 h-4" style={{ color: "#FFDE59" }} />
+          <div>
+            <div className="label-mono" style={{ color: "#FFDE59" }}>TRANSITION FX (AUTO)</div>
+            <div className="text-[11px] text-zinc-500 max-w-md">
+              Effetto sonoro iniettato automaticamente ad ogni cambio segmento
+              (music ↔ talk). Se null, resta lo stinger procedurale legacy.
+            </div>
+          </div>
+        </div>
+        <span className="text-[10px] text-zinc-500">{available.length} FX caricati</span>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <select
+          data-testid="transition-fx-select"
+          value={activeId || ""}
+          onChange={(e) => setActive(e.target.value || null)}
+          disabled={busy || !data}
+          className="input text-sm py-1 px-2 flex-1 min-w-[220px]"
+        >
+          <option value="">— Nessuno (stinger procedurale) —</option>
+          {available.map((fx) => (
+            <option key={fx.id} value={fx.id}>
+              {fx.title} ({Math.round(fx.duration_sec || 0)}s)
+            </option>
+          ))}
+        </select>
+        {activeId && (
+          <button
+            data-testid="transition-fx-clear"
+            onClick={() => setActive(null)}
+            disabled={busy}
+            className="btn-outline text-xs"
+            title="Disattiva l'FX automatico"
+          >
+            Disattiva
+          </button>
+        )}
+      </div>
+
+      {data?.active && (
+        <div className="text-xs text-zinc-400 flex items-center gap-2 pt-1">
+          <span className="label-mono text-[9px] text-yellow-300">ATTIVO:</span>
+          <span className="text-zinc-200">{data.active.title}</span>
+          <span className="text-zinc-500">· {Math.round(data.active.duration_sec || 0)}s</span>
+        </div>
+      )}
+
+      {available.length === 0 && (
+        <div className="text-[11px] text-zinc-500 italic">
+          Nessun FX caricato. Carica un file audio come "FX" dal Magazzino Universale per abilitarlo qui.
+        </div>
+      )}
     </div>
   );
 }
