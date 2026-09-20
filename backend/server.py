@@ -4140,7 +4140,18 @@ async def get_station_mix():
     mix = {k: st.get(f"mix_{k}", v) if k != "crossfade_ms" else st.get("crossfade_ms", v)
            for k, v in DEFAULT_MIX.items()}
     active_bed_url = st.get("active_bed_url") or None
-    return {**mix, "active_bed_url": active_bed_url}
+    # v13.34 · Espone anche il DJ a cui il bed è agganciato, così il player
+    # può decidere se instradare il segmento parlato a _playSpeechWithBed
+    # (match: bed universale o speaker coincidente con il DJ del segmento).
+    active_bed_speaker = None
+    if active_bed_url:
+        _bed = await db.tracks.find_one(
+            {"audio_url": active_bed_url, "is_loop": True, "deleted_at": None},
+            {"_id": 0, "loop_bind_speaker": 1},
+        )
+        if _bed:
+            active_bed_speaker = _bed.get("loop_bind_speaker") or None
+    return {**mix, "active_bed_url": active_bed_url, "active_bed_speaker": active_bed_speaker}
 
 
 @api_router.get("/admin/fm-mode")

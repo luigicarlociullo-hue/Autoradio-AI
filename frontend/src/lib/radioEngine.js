@@ -153,6 +153,10 @@ class RadioEngine {
         } catch (e) {}
         if (typeof m.crossfade_ms === "number") this._crossfadeMs = m.crossfade_ms;
         this._activeBedUrl = m.active_bed_url || null;
+        // v13.34 · Se il bed è agganciato a un DJ specifico via
+        // loop_bind_speaker, salva il nome per il match in playSegment.
+        // `null` = bed universale (nessun binding).
+        this._activeBedSpeaker = m.active_bed_speaker || null;
       } catch (e) {}
     };
     pull();
@@ -710,6 +714,21 @@ class RadioEngine {
     // chiamava mai, quindi la dissolvenza finale del brano precedente
     // (_pendingMusicFadeOut, fino a ~2.5s) restava udibile sotto la voce nuova.
     try { await this.hardStopMusic(); } catch (e) {}
+    // v13.34 · Se c'è un letto attivo (`background_loop` esplicito o
+    // `_activeBedUrl` impostato in Regia) instrada a _playSpeechWithBed
+    // così il sottofondo del DJ torna in onda. Rispetta loop_bind_speaker:
+    // il bed universale (bind=null) è sempre applicato; il bed con binding
+    // parte SOLO se il segmento appartiene allo speaker corrispondente.
+    // hardStopMusic() sopra rimane la protezione contro overlap del brano.
+    const bedUrl = segment.background_loop || this._activeBedUrl || null;
+    if (bedUrl) {
+      const boundTo = this._activeBedSpeaker || null;
+      const segSpeaker = segment.voice_key || segment.speaker_key || segment.dj_name || null;
+      const bindOk = !boundTo || (segSpeaker && String(boundTo).toLowerCase() === String(segSpeaker).toLowerCase());
+      if (bindOk) {
+        return this._playSpeechWithBed(segment);
+      }
+    }
     return this._playVoiceOnly(segment);
   }
 
