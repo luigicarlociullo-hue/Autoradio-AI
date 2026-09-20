@@ -26,6 +26,7 @@ const KIND_META = {
   rubric:       { icon: "🎙", label: "Rubrica",        color: "#FF6BAA" },
   insert:       { icon: "▸",  label: "Inserto",        color: "#D080FF" },
   ad:           { icon: "📢", label: "Spot",           color: "#FF5577" },
+  ad_break:     { icon: "📢", label: "Break Pubblicitario", color: "#FF8A3D" },
   music:        { icon: "🎵", label: "Disco del Giorno", color: "#3AE0FF" },
 };
 

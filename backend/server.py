@@ -1355,6 +1355,30 @@ async def admin_tracks_upload(
     # objstore and populates a lazy local cache on read.
     if not object_storage.is_enabled():
         raise HTTPException(503, "Object Storage disabilitato: attivare USE_OBJECT_STORAGE=true")
+
+    # Normalizza (44.1kHz/stereo, come l'ingest Suno) e cattura la durata
+    # reale via ffprobe PRIMA di salvare — senza questo, duration_sec
+    # restava a 0 e il player/HLS ripiegavano su un fallback fisso di 180s,
+    # causando tagli a metà brano, silenzi fino a 180s e seek nel punto sbagliato.
+    probed_duration_sec = 0.0
+    try:
+        import tempfile as _tempfile
+        with _tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as _tf:
+            _tf.write(data)
+            _raw_tmp_path = _tf.name
+        try:
+            norm = await _normalize_audio_file(_raw_tmp_path)
+            if norm and norm.get("normalized_bytes"):
+                data = norm["normalized_bytes"]
+                probed_duration_sec = float(norm.get("duration_sec") or 0.0) + 0.4  # safety margin
+        finally:
+            try:
+                Path(_raw_tmp_path).unlink()
+            except Exception:
+                pass
+    except Exception as e:
+        logger.warning(f"[admin-upload] normalize/probe error, falling back to duration=0: {e}")
+
     stored_path = await object_storage.put_mp3(f"suno/{local_name}", data)
     if not stored_path:
         raise HTTPException(502, "Upload su Object Storage fallito")
@@ -1412,7 +1436,7 @@ async def admin_tracks_upload(
             genre="admin_upload" if kind != "spot" else "sponsor_spot",
             mood="uploaded",
             lyrics_excerpt="(uploaded via admin panel)",
-            duration_sec=0,   # calcolato al primo play dal frontend
+            duration_sec=round(probed_duration_sec, 3) if probed_duration_sec > 0 else 0,
             llm_provider="admin_upload",
             cover_seed=track_id[:8],
             audio_url=audio_url,
@@ -5875,6 +5899,41 @@ async def _timeline_pick_due() -> Optional[dict]:
         # al padre e ripete solo quando ripete il padre.
         "follow_up": doc.get("follow_up") or None,
     }
+    # v13.32 · AD_BREAK — quando l'evento matura, espandi al volo il cluster
+    # [intro]+[N spot]+[outro] e ritorna la PRIMA entry, incatenando le altre
+    # via `follow_up` a cascata (zero-gap). Se non ci sono spot, marchia come
+    # skipped e riprova al prossimo tick.
+    if doc.get("kind") == "ad_break":
+        _cnt = 2
+        _au = (doc.get("audio_url") or "")
+        if _au.startswith("ad_break:"):
+            try: _cnt = max(1, min(6, int(_au.split(":")[1])))
+            except Exception: _cnt = 2
+        cluster = await _ad_build_cluster(count=_cnt)
+        if not cluster:
+            await db.timeline_events.update_one(
+                {"id": doc.get("id")},
+                {"$set": {"status": "skipped_no_ads",
+                          "note": "Nessuno spot disponibile nel cluster"}},
+            )
+            logger.warning(f"[ad-break] evento {doc.get('id')} skippato: nessun spot disponibile")
+            return None
+        # Concatena come follow_up a cascata
+        for i in range(len(cluster) - 1, 0, -1):
+            cluster[i - 1]["follow_up"] = {
+                "id": cluster[i].get("id"),
+                "title": cluster[i].get("title"),
+                "artist": cluster[i].get("artist"),
+                "audio_url": cluster[i].get("audio_url"),
+                "duration_sec": cluster[i].get("duration_sec"),
+                "video_url": cluster[i].get("video_url"),
+            }
+        head = cluster[0]
+        head["timeline_kind"] = "ad_break"
+        head["kind"] = "ad_break"
+        logger.info(f"[ad-break] cluster {len(cluster)} elementi lanciato via Timeline {doc.get('id')}")
+        return head
+
     if not entry["audio_url"]:
         # Se non c'è audio, marchiamo come skipped e riproviamo
         await db.timeline_events.update_one({"id": doc.get("id")}, {"$set": {"status": "skipped_no_audio"}})
@@ -5964,6 +6023,22 @@ async def admin_timeline_create(payload: dict):
     generated_script = None
     generated_topic = None
     event_kind = (payload.get("kind") or "insert").strip()[:40]
+
+    # v13.32 · AD_BREAK — evento Timeline che NON richiede audio_url né DJ.
+    # Al momento del pick nel clock, `_timeline_pick_due` costruisce al volo
+    # il cluster [intro]+[N spot]+[outro] e lo inietta nella queue. Qui
+    # basta salvare i metadata (ad_break_count) senza validare l'audio.
+    if event_kind == "ad_break":
+        _cnt_raw = payload.get("ad_break_count")
+        try:
+            _cnt = max(1, min(6, int(_cnt_raw))) if _cnt_raw else 2
+        except Exception:
+            _cnt = 2
+        # Marker audio_url speciale: viene sostituito a runtime
+        audio_url = f"ad_break:{_cnt}"
+        if not title:
+            title = f"📢 Break Pubblicitario ({_cnt} spot)"
+        dur_from_payload = 60  # placeholder, il vero cluster ha durata variabile
 
     if not audio_url and event_kind == "time_signal":
         # v13.28 · Segnale Orario Timeline: NON richiede DJ. Riusa il segnale
@@ -8304,6 +8379,291 @@ async def serve_night_media(kind: str, filename: str, request: Request):
         raise HTTPException(404, "Media non trovato")
     gen, content_length, status_code, content_range = streamed
     headers = {"Cache-Control": "public, max-age=7200", "Accept-Ranges": "bytes"}
+    if content_length: headers["Content-Length"] = content_length
+    if content_range: headers["Content-Range"] = content_range
+    return StreamingResponse(gen, status_code=status_code, media_type=mime, headers=headers)
+
+
+# ============================================================================
+# v13.32 · AD MANAGER — Cluster Intro → N Spot Random → Outro con VIDEO
+# ============================================================================
+# Ad Manager unificato: ogni inserzione è una "creativa pubblicitaria" con
+# audio_url + video_url (opz). Ruoli: `intro`, `spot`, `outro`. La logica
+# cluster genera dinamicamente [intro] + [K spot random] + [outro] e li
+# inserisce in coda come sequenza di eventi Timeline concatenati via follow-up
+# → transizioni zero-gap. Il LedWall segue automaticamente il `video_url`
+# della creativa in onda (l'endpoint /api/ledwall/state legge il current
+# clock e già supporta il video override).
+# ----------------------------------------------------------------------------
+
+_AD_KINDS = ("intro", "spot", "outro")
+_AD_MEDIA_EXTS_AUDIO = {"mp3", "wav", "m4a", "ogg"}
+_AD_MEDIA_EXTS_VISUAL = {"mp4", "webm", "mov", "jpg", "jpeg", "png", "webp"}
+_AD_VISUAL_MIME = {
+    "mp4": "video/mp4", "webm": "video/webm", "mov": "video/quicktime",
+    "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "webp": "image/webp",
+}
+
+
+@api_router.get("/admin/ad-manager")
+async def admin_ad_manager_list(kind: Optional[str] = None):
+    q = {"deleted_at": None}
+    if kind and kind in _AD_KINDS:
+        q["kind"] = kind
+    docs = await db.ad_manager_spots.find(q, {"_id": 0}, sort=[("created_at", -1)]).to_list(500)
+    return {"spots": docs, "total": len(docs), "kinds": list(_AD_KINDS)}
+
+
+@api_router.post("/admin/ad-manager/upload")
+async def admin_ad_manager_upload(
+    audio_file: UploadFile = File(...),
+    kind: str = Form(...),
+    name: Optional[str] = Form(None),
+    weight: Optional[str] = Form(None),
+    visual_file: Optional[UploadFile] = File(None),
+    sponsor_note: Optional[str] = Form(None),
+    start_date: Optional[str] = Form(None),
+    end_date: Optional[str] = Form(None),
+):
+    """Upload di una creativa AD: audio (obbligatorio) + video/immagine (opz)."""
+    if kind not in _AD_KINDS:
+        raise HTTPException(400, f"kind non valido: {kind}")
+    if not object_storage.is_enabled():
+        raise HTTPException(503, "Object Storage disabilitato")
+    audio_bytes = await audio_file.read()
+    if not audio_bytes:
+        raise HTTPException(400, "Audio vuoto")
+    if len(audio_bytes) > 30 * 1024 * 1024:
+        raise HTTPException(413, "Audio troppo grande (max 30MB)")
+    a_ext = ((audio_file.filename or "spot.mp3").rsplit(".", 1)[-1] or "mp3").lower()
+    if a_ext not in _AD_MEDIA_EXTS_AUDIO:
+        raise HTTPException(415, f"Estensione audio non supportata: {a_ext}")
+
+    aid = str(uuid.uuid4())
+    # Normalizza audio + duration reale
+    duration_sec = None
+    normalized_bytes = audio_bytes
+    try:
+        import tempfile as _tempfile
+        with _tempfile.NamedTemporaryFile(suffix="." + a_ext, delete=False) as _tf:
+            _tf.write(audio_bytes)
+            _tmp_path = _tf.name
+        try:
+            norm = await _normalize_audio_file(_tmp_path)
+            if norm and norm.get("normalized_bytes"):
+                normalized_bytes = norm["normalized_bytes"]
+                duration_sec = norm.get("duration_sec")
+        finally:
+            try:
+                Path(_tmp_path).unlink()
+            except Exception:
+                pass
+    except Exception as e:
+        logger.warning(f"[ad-manager] audio normalize error: {e}")
+    audio_sub = f"ad_manager/{kind}/{aid}.mp3"
+    stored_audio = await object_storage.put_mp3(audio_sub, normalized_bytes)
+    if not stored_audio:
+        raise HTTPException(502, "Upload audio fallito")
+    audio_url = f"/api/ad_media/audio/{kind}/{aid}.mp3"
+
+    # Visual (opz)
+    visual_url = None
+    visual_ext = None
+    if visual_file and visual_file.filename:
+        v_bytes = await visual_file.read()
+        if v_bytes:
+            if len(v_bytes) > 200 * 1024 * 1024:
+                raise HTTPException(413, "Visual troppo grande (max 200MB)")
+            v_ext = ((visual_file.filename or "").rsplit(".", 1)[-1] or "").lower()
+            if v_ext not in _AD_MEDIA_EXTS_VISUAL:
+                raise HTTPException(415, f"Estensione visual non supportata: {v_ext}")
+            visual_ext = v_ext
+            visual_sub = f"ad_manager/{kind}/{aid}_visual.{v_ext}"
+            v_mime = _AD_VISUAL_MIME.get(v_ext, "application/octet-stream")
+            stored_visual = await object_storage.put_bytes(visual_sub, v_bytes, v_mime)
+            if stored_visual:
+                visual_url = f"/api/ad_media/visual/{kind}/{aid}_visual.{v_ext}"
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "id": aid,
+        "kind": kind,
+        "name": (name or audio_file.filename or f"AD {kind} {aid[:6]}")[:120],
+        "audio_url": audio_url,
+        "audio_storage_path": stored_audio,
+        "video_url": visual_url,           # esposto verso il LedWall
+        "visual_ext": visual_ext,
+        "duration_sec": float(duration_sec) if duration_sec else 20.0,
+        "weight": max(1, int(weight)) if (weight and weight.strip().isdigit()) else 20,
+        "sponsor_note": (sponsor_note or "").strip()[:400] or None,
+        "start_date": (start_date or "").strip() or None,
+        "end_date": (end_date or "").strip() or None,
+        "created_at": now_iso,
+        "deleted_at": None,
+        "play_count": 0,
+    }
+    await db.ad_manager_spots.insert_one(doc.copy())
+    doc.pop("_id", None)
+    logger.info(f"[ad-manager] uploaded {kind} '{doc['name']}' audio={audio_url} visual={visual_url}")
+    return {"ok": True, "spot": doc}
+
+
+@api_router.delete("/admin/ad-manager/{spot_id}")
+async def admin_ad_manager_delete(spot_id: str):
+    doc = await db.ad_manager_spots.find_one({"id": spot_id})
+    if not doc:
+        raise HTTPException(404, "AD non trovata")
+    for sp in (doc.get("audio_storage_path"), doc.get("visual_storage_path")):
+        if sp:
+            try:
+                await object_storage.delete_object(sp.split("/", 1)[1] if "/" in sp else sp)
+            except Exception as e:
+                logger.warning(f"[ad-manager-delete] storage delete failed: {e}")
+    await db.ad_manager_spots.update_one(
+        {"id": spot_id},
+        {"$set": {"deleted_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return {"ok": True}
+
+
+async def _ad_pick_by_kind(kind: str) -> Optional[dict]:
+    """Weighted random pick tra le AD attive del ruolo richiesto. Rispetta
+    start_date/end_date se presenti."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    q = {
+        "kind": kind, "deleted_at": None, "audio_url": {"$ne": None},
+        "$and": [
+            {"$or": [{"start_date": None}, {"start_date": {"$exists": False}},
+                     {"start_date": {"$lte": now_iso}}]},
+            {"$or": [{"end_date": None}, {"end_date": {"$exists": False}},
+                     {"end_date": {"$gte": now_iso}}]},
+        ],
+    }
+    docs = await db.ad_manager_spots.find(q, {"_id": 0}).to_list(500)
+    if not docs:
+        return None
+    weights = [max(1, int(d.get("weight") or 20)) for d in docs]
+    total = sum(weights)
+    r = random.uniform(0, total)
+    acc = 0.0
+    for d, w in zip(docs, weights):
+        acc += w
+        if r <= acc:
+            return d
+    return docs[-1]
+
+
+async def _ad_build_cluster(count: int = 3) -> list[dict]:
+    """Costruisce il cluster [intro] + [count random spot] + [outro] usando
+    weighted random. Il primo entry porta i seguenti come `follow_up` a
+    cascata (zero-gap tra i segmenti — supportato dalla logica del clock).
+    Ritorna [] se manca almeno uno spot."""
+    if count < 1:
+        count = 1
+    if count > 6:
+        count = 6
+    intro = await _ad_pick_by_kind("intro")
+    outro = await _ad_pick_by_kind("outro")
+    spots: list[dict] = []
+    picked_ids: set[str] = set()
+    for _ in range(count):
+        pick = await _ad_pick_by_kind("spot")
+        if not pick:
+            break
+        # Evita ripetizioni back-to-back nel cluster stesso
+        if pick.get("id") in picked_ids:
+            alt = await _ad_pick_by_kind("spot")
+            if alt and alt.get("id") not in picked_ids:
+                pick = alt
+        picked_ids.add(pick.get("id"))
+        spots.append(pick)
+    if not spots:
+        return []
+    seq = ([intro] if intro else []) + spots + ([outro] if outro else [])
+    # Costruisci una lista di entry Timeline-friendly, in cascata via follow_up
+    out: list[dict] = []
+    for i, ad in enumerate(seq):
+        entry = {
+            "id": f"ad-{ad.get('id')}-{uuid.uuid4().hex[:6]}",
+            "title": ad.get("name") or "AD",
+            "artist": "R-A.I. Advertising",
+            "audio_url": ad.get("audio_url"),
+            "video_url": ad.get("video_url"),
+            "duration_sec": float(ad.get("duration_sec") or 20),
+            "kind": "ad_break",
+            "ad_role": ad.get("kind"),
+            "ad_id": ad.get("id"),
+            "is_timeline": True,
+            "timeline_kind": "ad_break",
+        }
+        out.append(entry)
+    return out
+
+
+@api_router.post("/admin/ad-manager/flash")
+async def admin_ad_manager_flash(payload: Optional[dict] = None):
+    """FLASH AD: inserisce IMMEDIATAMENTE un cluster [intro]+[N spot]+[outro]
+    in cima alla coda dopo il brano corrente (soft-sync: non tronca il brano
+    in onda, ma appena finisce parte il cluster).
+    Body opzionale: {count: int (default 2)}."""
+    count = 2
+    try:
+        count = max(1, min(6, int((payload or {}).get("count") or 2)))
+    except Exception:
+        pass
+    cluster = await _ad_build_cluster(count=count)
+    if not cluster:
+        raise HTTPException(404, "Nessuno spot disponibile per costruire il cluster")
+    clock = await db.station_clock.find_one({"_id": "clock"}) or {}
+    q = clock.get("queue") or []
+    # Metti il cluster in TESTA alla queue (dopo il current)
+    new_q = cluster + q
+    await db.station_clock.update_one(
+        {"_id": "clock"}, {"$set": {"queue": new_q, "updated_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True,
+    )
+    logger.info(f"[ad-manager] FLASH cluster ({len(cluster)} elementi) inserito in coda")
+    return {"ok": True, "cluster_len": len(cluster), "cluster": cluster}
+
+
+@api_router.post("/admin/ad-manager/preview-cluster")
+async def admin_ad_manager_preview_cluster(payload: Optional[dict] = None):
+    """DRY-RUN: costruisce un cluster senza inserirlo in coda."""
+    count = 2
+    try:
+        count = max(1, min(6, int((payload or {}).get("count") or 2)))
+    except Exception:
+        pass
+    cluster = await _ad_build_cluster(count=count)
+    return {"ok": True, "cluster_len": len(cluster), "cluster": cluster}
+
+
+@api_router.get("/ad_media/{track}/{kind}/{filename}")
+async def serve_ad_media(track: str, kind: str, filename: str, request: Request):
+    """Serve audio e visual da Object Storage con Range support.
+    URL scheme: /api/ad_media/{audio|visual}/{intro|spot|outro}/{file}
+    """
+    if track not in ("audio", "visual"):
+        raise HTTPException(400, "Track non valido")
+    if kind not in _AD_KINDS:
+        raise HTTPException(400, "Kind non valido")
+    if "/" in filename or ".." in filename:
+        raise HTTPException(400, "Filename non valido")
+    if not object_storage.is_enabled():
+        raise HTTPException(503, "Object Storage disabilitato")
+    ext = filename.rsplit(".", 1)[-1].lower()
+    if track == "audio":
+        mime = "audio/mpeg"
+    else:
+        mime = _AD_VISUAL_MIME.get(ext, "application/octet-stream")
+    streamed = await object_storage.stream_mp3(
+        f"ad_manager/{kind}/{filename}", cache_to=None,
+        range_header=request.headers.get("range"),
+    )
+    if not streamed:
+        raise HTTPException(404, "AD media non trovato")
+    gen, content_length, status_code, content_range = streamed
+    headers = {"Cache-Control": "public, max-age=3600", "Accept-Ranges": "bytes"}
     if content_length: headers["Content-Length"] = content_length
     if content_range: headers["Content-Range"] = content_range
     return StreamingResponse(gen, status_code=status_code, media_type=mime, headers=headers)

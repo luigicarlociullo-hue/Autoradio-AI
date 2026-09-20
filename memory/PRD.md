@@ -630,3 +630,34 @@ Vedi turni precedenti in questa sessione:
 - Se Object Storage disabilitato in prod, upload jingle/night-assets returna 503 pulito (no crash).
 
 **API totali**: da 138 → 155 paths.
+
+## v13.32 · AD MANAGER — CLUSTER INTRO→SPOT→OUTRO (2026-09-18)
+
+**Ordine ricevuto**: "Ad Manager con audio+visual, cluster [Intro]+[N random Spot]+[Outro], LedWall sync, Flash AD in Regia, evento Break Pubblicitario nel Calendar. **NO HEALTH-CHECK / NO TEST AGENT**".
+
+**Implementato**:
+- **Collection `ad_manager_spots`**: `{id, kind: intro|spot|outro, name, audio_url, video_url, duration_sec, weight, sponsor_note, start_date, end_date, created_at, deleted_at}`. Ogni AD ha coppia audio + visual (video/img) opzionale.
+- **Endpoint backend** (6 nuovi):
+  - `GET /api/admin/ad-manager` — list con filtro `kind`
+  - `POST /api/admin/ad-manager/upload` — upload audio (obbligatorio) + visual (opzionale) con normalizzazione audio ffmpeg
+  - `DELETE /api/admin/ad-manager/{spot_id}` — soft delete + rimozione fisica storage
+  - `POST /api/admin/ad-manager/flash` — FLASH AD: inserisce IMMEDIATAMENTE cluster in coda (`count` 1-6)
+  - `POST /api/admin/ad-manager/preview-cluster` — DRY-RUN cluster sample
+  - `GET /api/ad_media/{audio|visual}/{intro|spot|outro}/{filename}` — Object Storage stream con Range
+- **Motore cluster** (`_ad_build_cluster`): weighted-random pick per ruolo, `[intro?] + [N spot random] + [outro?]` concatenati via `follow_up` a cascata (zero-gap tra segmenti, HLS pre-buffer continuo). Deduplication back-to-back nel cluster.
+- **Timeline integration** (`kind=ad_break`):
+  - `POST /api/admin/timeline` accetta `kind=ad_break` con `ad_break_count` (default 2), senza audio_url né DJ
+  - `_timeline_pick_due` intercetta `kind=ad_break` al momento del pick e espande al volo il cluster completo, marcando skip se library vuota
+  - Master Calendar Pro mostra il kind con icona 📢 e badge arancione
+- **LedWall sync**: già supportato via `current.video_url` esposto nel clock — quando un segmento AD ha visual, `/api/ledwall/state` lo mostra automaticamente per la durata del segmento e torna al default alla fine.
+- **UI `AdManagerPanel.js`**:
+  - Banda dedicata "📢 AD MANAGER" nel Dashboard (dopo Night Control)
+  - Form upload: kind selector, audio file, visual file, weight, sponsor_note, start/end date
+  - Filtro per ruolo (All/Intro/Spot/Outro) + contatori
+  - Lista con audio inline preview + badge VISUAL + delete
+  - Bar FLASH AD con `count` input + pulsante "FLASH ADESSO" (disabled se manca almeno 1 spot)
+- **SmartFlowTimelinePanel**: nuovo kind `📢 Break Pubblicitario` con campo dedicato "N. Spot Random" (1-6) visibile solo per ad_break. Submit funziona senza audio_url/DJ.
+
+**Testing**: solo compilazione (backend `python -c "import server"` OK, frontend `webpack compiled` OK). Nessun test agent, nessun health check, nessun burn Suno.
+
+**API totali**: da 155 → 178 paths.

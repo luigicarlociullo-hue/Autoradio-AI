@@ -12,6 +12,7 @@ import AIMasterControlPanel from "@/components/AIMasterControlPanel";
 import PowerPlayMonitor from "@/components/PowerPlayMonitor";
 import ElasticQueuePreview from "@/components/ElasticQueuePreview";
 import NightControlCenter from "@/components/NightControlCenter";
+import AdManagerPanel from "@/components/AdManagerPanel";
 import { GoLivePanel, LedWallMiniPreview, MagazzinoUniversale } from "@/components/CommandCenter2Panels";
 import { toast } from "sonner";
 
@@ -201,6 +202,11 @@ export default function Dashboard() {
         <BandHeader icon="🌙" title="NIGHT CONTROL" subtitle="AI Speaker · Beatmatch · Jingle Library · Virtual Club" color="#C89AFF" />
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
           <NightControlCenter />
+        </div>
+
+        <BandHeader icon="📢" title="AD MANAGER" subtitle="Cluster Intro → Spot Random → Outro con LedWall sync" color="#FF8A3D" />
+        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+          <AdManagerPanel />
         </div>
 
         {/* ══════════════════════════════════════════════════════════════════

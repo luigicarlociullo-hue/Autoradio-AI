@@ -21,6 +21,7 @@ const KIND_COLOR = {
   rubric: "#FF6BAA",
   insert: "#D080FF",
   ad: "#FF5577",
+  ad_break: "#FF8A3D",
 };
 const KIND_LABEL = {
   jingle: "Jingle",
@@ -30,6 +31,7 @@ const KIND_LABEL = {
   rubric: "Rubrica",
   insert: "Inserto libero",
   ad: "Spot",
+  ad_break: "📢 Break Pubblicitario",
 };
 
 // datetime-local wants "YYYY-MM-DDTHH:mm" in *local* tz
@@ -229,9 +231,10 @@ export default function SmartFlowTimelinePanel() {
     // audio_url richiesta SOLO se non è stato scelto un DJ (percorso autonomo).
     // Con DJ selezionato, il backend genera talk (LLM + TTS ElevenLabs) usando
     // il brief se presente, oppure inventando un argomento intelligente.
-    // v13.28 · Segnale Orario non richiede né sorgente né DJ: il backend
-    // riusa il segnale orario reale già pre-generato.
-    if (form.kind !== "time_signal" && !form.audio_url && !form.dj_id) {
+    // v13.28 · Segnale Orario non richiede né sorgente né DJ.
+    // v13.32 · Break Pubblicitario (ad_break) non richiede audio: il server
+    // costruisce al volo il cluster Intro→Spot→Outro dal Ad Manager.
+    if (form.kind !== "time_signal" && form.kind !== "ad_break" && !form.audio_url && !form.dj_id) {
       return toast.error("Scegli una sorgente dal Magazzino OPPURE seleziona un DJ");
     }
     setBusy(true);
@@ -275,6 +278,8 @@ export default function SmartFlowTimelinePanel() {
         brief: form.brief || undefined,
         video_url: form.video_url || undefined,
         recurrence: form.recurrence || "none",
+        // v13.32 · Numero di spot random per Break Pubblicitario
+        ad_break_count: form.kind === "ad_break" ? Number(form.ad_break_count || 2) : undefined,
       };
       const r = await api.post("/admin/timeline", body);
       const ev = r.data?.event || {};
@@ -614,16 +619,31 @@ export default function SmartFlowTimelinePanel() {
             />
           </div>
 
+          {form.kind === "ad_break" && (
+            <div className="md:col-span-1">
+              <label className="label-mono block mb-1" title="Numero di spot random tra Intro e Outro">
+                📢 N. Spot Random
+              </label>
+              <input
+                type="number" min={1} max={6}
+                value={form.ad_break_count || 2}
+                onChange={(e) => setForm({ ...form, ad_break_count: parseInt(e.target.value) || 2 })}
+                className="w-full bg-black border border-white/10 rounded px-2 py-1.5 text-sm text-white font-mono"
+                data-testid="timeline-input-ad-break-count"
+              />
+            </div>
+          )}
+
           <div className="md:col-span-1 flex items-end">
             <button
               onClick={submit}
-              disabled={busy || (form.kind !== "time_signal" && !form.audio_url && !form.dj_id)}
+              disabled={busy || (form.kind !== "time_signal" && form.kind !== "ad_break" && !form.audio_url && !form.dj_id)}
               data-testid="timeline-submit"
               className="w-full px-3 py-2 rounded text-sm font-bold text-black"
               style={{
                 background: KIND_COLOR[form.kind] || "#00E5FF",
                 boxShadow: `0 0 12px ${KIND_COLOR[form.kind] || "#00E5FF"}66`,
-                opacity: busy || (form.kind !== "time_signal" && !form.audio_url && !form.dj_id) ? 0.55 : 1,
+                opacity: busy || (form.kind !== "time_signal" && form.kind !== "ad_break" && !form.audio_url && !form.dj_id) ? 0.55 : 1,
               }}
             >
               {busy ? (form.dj_id && !form.audio_url ? "Genero talk…" : "Inserisco…") : "▸ Inserisci evento"}
