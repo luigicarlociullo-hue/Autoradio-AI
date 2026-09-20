@@ -452,6 +452,7 @@ function NightAssetsBlock() {
 function MaintenanceBlock() {
   const [busyBpm, setBusyBpm] = useState(false);
   const [busyIntro, setBusyIntro] = useState(false);
+  const [busyDur, setBusyDur] = useState(false);
 
   const scanBpm = async () => {
     if (busyBpm) return;
@@ -477,6 +478,25 @@ function MaintenanceBlock() {
     } finally { setBusyIntro(false); }
   };
 
+  // v13.33 · Ricalcola durate reali via ffprobe con fallback Object Storage.
+  // Sincrono (non background) così vediamo subito il resoconto dei probing.
+  const recalcDurations = async () => {
+    if (busyDur) return;
+    if (!window.confirm("Ricalcola durate reali via ffprobe? Scansiona fino a 500 tracce (locali + Object Storage). Zero costo API.")) return;
+    setBusyDur(true);
+    const tid = toast.loading("Ricalcolo durate in corso…");
+    try {
+      const { data } = await api.post("/admin/audio/reprobe-durations?limit=500");
+      toast.success(
+        `Ricalcolo completato · ${data.updated} aggiornate su ${data.scanned}` +
+        ` · local=${data.probed_local} storage=${data.probed_storage} illeggibili=${data.unreadable}`,
+        { id: tid, duration: 8000 }
+      );
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Errore ricalcolo", { id: tid });
+    } finally { setBusyDur(false); }
+  };
+
   const testVoiceOver = () => {
     window.dispatchEvent(new CustomEvent("rai:voice-over:play", { detail: {} }));
     toast.info("Voice-over triggerato · ducking -12dB sul main");
@@ -492,6 +512,15 @@ function MaintenanceBlock() {
         className="btn-outline text-xs flex items-center gap-1.5"
       >
         <RefreshCw className={`w-3 h-3 ${busyBpm ? "animate-spin" : ""}`} /> Scan BPM offline
+      </button>
+      <button
+        data-testid="recalc-durations-btn"
+        onClick={recalcDurations}
+        disabled={busyDur}
+        className="btn-outline text-xs flex items-center gap-1.5"
+        title="Ricalcola duration_sec reale via ffprobe · fallback Object Storage per file non locali"
+      >
+        <RefreshCw className={`w-3 h-3 ${busyDur ? "animate-spin" : ""}`} /> Ricalcola durate
       </button>
       <button
         data-testid="detect-intros-btn"
