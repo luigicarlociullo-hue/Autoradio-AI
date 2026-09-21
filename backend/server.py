@@ -28,15 +28,73 @@ import bpm_service
 import video_service
 
 
-async def synth_speech(text: str, voice_key: str = "female-1", kind: str = ""):
+class AITalkDisabledError(Exception):
+    """Kill-switch `ai_openai_talk` OFF: nessuna generazione voce IA consentita."""
+    pass
+
+
+_SPOKEN_PROMPT_ECHO_RE = None
+
+
+def _extract_spoken_text(raw: str) -> str:
+    """v13.35 · Isola SOLO il parlato dall'output LLM: rimuove code fence,
+    markdown, didascalie sceniche [..]/(..)/*..*, etichette ("Testo:", "Leo:")
+    e righe che riecheggiano le istruzioni del prompt. Mai passare al TTS il
+    prompt grezzo."""
+    import re
+    global _SPOKEN_PROMPT_ECHO_RE
+    if _SPOKEN_PROMPT_ECHO_RE is None:
+        _SPOKEN_PROMPT_ECHO_RE = re.compile(
+            r"^\s*(sei\s+(il|la|un|una|lo)?\s*(dj|speaker|narratore)|sei\s+[\w&\.\-']{1,24},?\s+(speaker|dj|narratore|voce)|"
+            r"rispondi (solo|esclusivamente)|prepara un intervento|"
+            r"genera (\*\*)?spontaneamente|solo il testo del parlato|nessuna didascalia|tono, voce e ironia|"
+            r"parla come se fossi|ecco (il|un) (testo|intervento)|testo del parlato|script:|istruzioni?:|prompt:|system:|user:)",
+            re.IGNORECASE,
+        )
+    t = (raw or "").strip()
+    if not t:
+        return ""
+    t = re.sub(r"^\s*```[a-z]*\s*$", " ", t, flags=re.MULTILINE)  # solo i marker fence
+    t = t.replace("**", "").replace("__", "")
+    t = re.sub(r"\[[^\]\n]{0,80}\]", " ", t)          # [Intro], [ride], [pausa]
+    t = re.sub(r"(?<!\w)\*[^*\n]{1,60}\*(?!\w)", " ", t)  # *sorride*
+    t = re.sub(r"\((?:[^()\n]{0,60})\)", lambda m: "" if re.match(r"^\((ride|pausa|sospira|musica|sfx|fx|jingle|suono|voce|tono)", m.group(0), re.I) else m.group(0), t)
+    lines = []
+    for ln in t.splitlines():
+        s = ln.strip()
+        if not s:
+            continue
+        if _SPOKEN_PROMPT_ECHO_RE.match(s):
+            continue
+        s = re.sub(r"^(testo|parlato|intervento|speaker|dj|leo|aria|max|l&c)\s*[:\-–]\s*", "", s, flags=re.IGNORECASE)
+        s = re.sub(r"^#+\s*", "", s)
+        lines.append(s)
+    out = " ".join(lines).strip()
+    out = out.strip('"“”\'« »').strip()
+    return re.sub(r"\s{2,}", " ", out)
+
+
+async def synth_speech(text: str, voice_key: str = "female-1", kind: str = "", strict_voice: bool = False):
     """Preferred TTS pipeline: ElevenLabs first (best Italian quality), then Bark as fallback.
     `kind` viene passato al layer ElevenLabs per il routing "smart" (usa
     ElevenLabs solo per kind='answer', OpenAI TTS-1-HD per il resto).
+    `strict_voice=True` (v13.35): se il kill-switch `ai_openai_talk` è OFF
+    solleva AITalkDisabledError e NON ripiega mai su Bark (voce generica
+    diversa dallo speaker richiesto) → errore chiaro invece di voce sbagliata.
     Returns (filename, subpath) where subpath is 'tts' or 'audio' for URL routing."""
+    if strict_voice:
+        _ai = await _get_ai_controls()
+        if not _ai.get("ai_openai_talk"):
+            raise AITalkDisabledError(
+                "Generazione IA disattivata: AI Master Control → 🎙️ OPENAI TALK è OFF. "
+                "Nessun fallback su voci pre-registrate di altri speaker."
+            )
     if elevenlabs_service.is_enabled():
         fn = await elevenlabs_service.synth_speech(text, voice_key, kind=kind)
         if fn:
             return fn, "tts"
+    if strict_voice:
+        return None, None
     # fallback to Bark HF space (open-source)
     fn = await bark_synth_speech(text, voice_key)
     if fn:
@@ -286,6 +344,7 @@ class Segment(BaseModel):
     voice_key: Optional[str] = None
     title: str
     script: Optional[str] = None
+    spoken_text: Optional[str] = None  # v13.35 · SOLO parlato (input TTS), mai il prompt
     outro_script: Optional[str] = None  # spoken over music fade-out (music segments)
     track_id: Optional[str] = None
     track_meta: Optional[dict] = None
@@ -3069,6 +3128,7 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
             segment.title = f"Futuro · {topic_choice[:40]}"
             segment.duration_sec = 40
         segment.script = script.strip()
+        segment.spoken_text = _extract_spoken_text(segment.script) or segment.script
 
     # Per i segmenti PARLATI: nessun sottofondo musicale. La voce DJ parla sul
     # silenzio assoluto (richiesta esplicita). Non impostiamo background_loop.
@@ -3081,7 +3141,8 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
     # (v12.15: skip if already pre-rendered, e.g. time_signal served from cache.)
     if elevenlabs_service.is_enabled() and segment.script and not segment.speech_audio_url:
         try:
-            fn, subpath = await synth_speech(segment.script, segment.voice_key or "female-1", kind=segment.kind or "")
+            _tts_in = segment.spoken_text or _extract_spoken_text(segment.script) or segment.script
+            fn, subpath = await synth_speech(_tts_in, segment.voice_key or "female-1", kind=segment.kind or "")
             if fn:
                 segment.speech_audio_url = f"/api/{subpath}/{fn}"
                 update = {"speech_audio_url": segment.speech_audio_url}
@@ -4490,7 +4551,7 @@ async def render_segment_hd(seg_id: str):
     try:
         # Speech (ElevenLabs preferred, Bark fallback)
         if seg.get("script"):
-            fname, subpath = await synth_speech(seg["script"], seg.get("voice_key") or "female-1")
+            fname, subpath = await synth_speech(seg.get("spoken_text") or _extract_spoken_text(seg["script"]) or seg["script"], seg.get("voice_key") or "female-1")
             if fname:
                 speech_url = f"/api/{subpath}/{fname}"
         # Music (Stable Audio) only for music segments
@@ -6160,6 +6221,7 @@ async def admin_timeline_create(payload: dict):
     title = (payload.get("title") or "").strip()[:120] or None
     generated_script = None
     generated_topic = None
+    llm_prompt = None
     event_kind = (payload.get("kind") or "insert").strip()[:40]
 
     # v13.32 · AD_BREAK — evento Timeline che NON richiede audio_url né DJ.
@@ -6210,6 +6272,22 @@ async def admin_timeline_create(payload: dict):
                 "Serve `audio_url` OPPURE selezionare un DJ (con Brief opzionale) "
                 "per generare il talk automaticamente.",
             )
+        # v13.35 · KILL-SWITCH esplicito: se OPENAI TALK è OFF, errore chiaro
+        # PRIMA di spendere LLM. Nessun fallback su audio di altri speaker.
+        _ai_tl = await _get_ai_controls()
+        if not _ai_tl.get("ai_openai_talk"):
+            raise HTTPException(
+                409,
+                "Generazione IA disattivata: AI Master Control → 🎙️ OPENAI TALK è OFF. "
+                f"Impossibile generare l'intervento per {dj_doc.get('name')}. "
+                "Attiva il toggle oppure scegli un audio dal Magazzino.",
+            )
+        if not voice_key:
+            raise HTTPException(
+                409,
+                f"Il DJ {dj_doc.get('name')} non ha una voce (voice_key) configurata: "
+                "generazione rifiutata per non usare una voce diversa.",
+            )
         # 1) Costruisci il prompt LLM
         personality = dj_doc.get("personality") or ""
         provider = dj_doc.get("llm_provider") or "openai"
@@ -6246,23 +6324,30 @@ async def admin_timeline_create(payload: dict):
         script = (script or "").strip()
         if not script:
             raise HTTPException(502, "LLM non ha prodotto testo (credit budget o rete)")
-        generated_script = script
+        # v13.35 · Separazione esplicita: `llm_prompt` (istruzioni) vs
+        # `spoken_text` (SOLO parlato). Al TTS va esclusivamente spoken_text.
+        spoken_text = _extract_spoken_text(script)
+        if not spoken_text:
+            raise HTTPException(502, "LLM ha restituito solo istruzioni/didascalie: nessun parlato utilizzabile")
+        generated_script = spoken_text
+        llm_prompt = {"system": system_prompt, "user": user_prompt, "raw_output": script[:1500]}
 
-        # 2) TTS via ElevenLabs con la voce custom del DJ
-        # Nota: `synth_speech()` (wrapper server.py) ritorna (filename, subpath).
+        # 2) TTS con la voce del DJ richiesto (strict: nessun fallback Bark/voce generica)
         try:
-            fname, subpath = await synth_speech(script, voice_key=voice_key or "female-1", kind="answer")
+            fname, subpath = await synth_speech(spoken_text, voice_key=voice_key, kind="answer", strict_voice=True)
+        except AITalkDisabledError as e:
+            raise HTTPException(409, str(e))
         except Exception as e:
             logger.warning(f"[TIMELINE] TTS synth failed: {e}")
             fname, subpath = None, None
         if not fname:
-            raise HTTPException(502, "TTS non ha prodotto audio (ElevenLabs down o budget)")
+            raise HTTPException(502, f"TTS non ha prodotto audio per la voce di {dj_doc.get('name')} (provider down o budget). Nessun fallback su altra voce.")
         audio_url = f"/api/{subpath or 'tts'}/{fname}"
 
         # 3) Durata reale del file (ffprobe). Fallback stima 0.25s/parola.
         real_dur = await _probe_tts_duration(audio_url)
         if not real_dur:
-            words = max(1, len(script.split()))
+            words = max(1, len(spoken_text.split()))
             real_dur = max(6.0, min(90.0, words * 0.42))
         dur_from_payload = int(round(real_dur)) + 2  # +2s coda di sicurezza
 
@@ -6283,6 +6368,8 @@ async def admin_timeline_create(payload: dict):
         "brief": brief or None,
         "generated_topic": generated_topic,
         "generated_script": (generated_script[:500] if generated_script else None),
+        "spoken_text": generated_script or None,
+        "llm_prompt": llm_prompt,
         "silence_pad_ms": int(payload.get("silence_pad_ms") or 350),
         "video_url": event_video_url,
         "repeat_daily": repeat_daily,

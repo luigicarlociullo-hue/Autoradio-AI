@@ -68,6 +68,8 @@ export default function SmartFlowTimelinePanel() {
   // v13.22 · Config globale di Regia (soggetto default + video default)
   const [regiaCfg, setRegiaCfg] = useState({ default_subject: "", ledwall_default_video_url: "" });
   const [regiaBusy, setRegiaBusy] = useState(false);
+  // v13.35 · Stato reale kill-switch generazione IA (ai_openai_talk)
+  const [aiTalk, setAiTalk] = useState(null); // null = sconosciuto, true/false
   const [form, setForm] = useState(() => {
     const t = new Date();
     t.setMinutes(t.getMinutes() + 5, 0, 0);
@@ -142,6 +144,12 @@ export default function SmartFlowTimelinePanel() {
       });
     } catch {}
   };
+  const loadAiTalk = async () => {
+    try {
+      const r = await api.get(`/admin/ai-controls`);
+      setAiTalk(!!r.data?.controls?.ai_openai_talk);
+    } catch {}
+  };
   const saveRegiaCfg = async (patch) => {
     setRegiaBusy(true);
     try {
@@ -163,10 +171,11 @@ export default function SmartFlowTimelinePanel() {
     } catch { toast.error("Errore eliminazione video"); }
   };
   useEffect(() => {
-    loadNow(); loadEvents("pending"); loadEvents("consumed"); loadSources(); loadDjs(); loadVideos(); loadRegiaCfg();
+    loadNow(); loadEvents("pending"); loadEvents("consumed"); loadSources(); loadDjs(); loadVideos(); loadRegiaCfg(); loadAiTalk();
     pollRef.current = setInterval(() => {
       loadNow();
       loadEvents("pending");
+      loadAiTalk();
     }, 8000);
     return () => clearInterval(pollRef.current);
   }, []);
@@ -334,6 +343,36 @@ export default function SmartFlowTimelinePanel() {
           </div>
         </div>
       </div>
+
+      {/* v13.35 · Banner stato generazione IA (kill-switch ai_openai_talk) */}
+      {aiTalk === false && (
+        <div
+          className="rounded-lg p-3 mb-4 flex items-center justify-between gap-3"
+          style={{ background: "rgba(255,45,149,0.10)", border: "1px solid rgba(255,45,149,0.55)" }}
+          data-testid="ai-talk-disabled-banner"
+        >
+          <div>
+            <div className="text-sm font-bold" style={{ color: "#FF6BAA" }}>⛔ Generazione IA disattivata · OPENAI TALK = OFF</div>
+            <div className="text-[11px] font-mono text-zinc-300 mt-0.5">
+              Gli interventi a tema con DJ e la pre-generazione voce sono bloccati (kill-switch <code>ai_openai_talk</code>).
+              Nessun fallback su voci pre-registrate di altri speaker: la richiesta verrà rifiutata con errore.
+              Attivalo da <b>AI Master Control → 🎙️ OPENAI TALK</b>.
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={async () => { try { await api.patch(`/admin/ai-controls`, { ai_openai_talk: true }); toast.success("OPENAI TALK attivato"); loadAiTalk(); } catch { toast.error("Errore attivazione"); } }}
+            data-testid="ai-talk-enable-btn"
+            className="px-3 py-2 rounded text-xs font-bold text-black whitespace-nowrap"
+            style={{ background: "#80FFB4" }}
+          >▸ Attiva ora</button>
+        </div>
+      )}
+      {aiTalk === true && (
+        <div className="text-[10px] font-mono mb-3" style={{ color: "#80FFB4" }} data-testid="ai-talk-enabled-badge">
+          ● Generazione IA attiva (OPENAI TALK = ON)
+        </div>
+      )}
 
       {/* v13.22 · REGIA CONFIG UNIVERSALE — barra in cima */}
       <div

@@ -686,3 +686,10 @@ Vedi turni precedenti in questa sessione:
 - **UI Smart Recurrence**: controllo ripetibile "＋ aggiungi MP3 concatenato" (qualsiasi kind, con/senza DJ), `data-testid` `rr-followup-add`, `rr-followup-row-{i}`, `rr-followup-remove-{i}`.
 - Verifica: curl + script in-process (materializzazione, pick, iniezione reale nel clock: 2 follow-up in testa in ordine). Nessun testing agent (ZERO WASTE).
 - Backlog: Dual-Brain DJ (P1), Identità Digitale avatar (P2).
+
+## v13.35 · KILL-SWITCH VISIBILE + SPOKEN_TEXT ISOLATO (2026-09-21)
+- Flag `ai_openai_talk`: vive in `station.state` (Mongo, persistente), letto via `_get_ai_controls()` (cache 3s), GET/PATCH `/admin/ai-controls`. In produzione risultava OFF → `[dj-pregen] SKIP tick`.
+- UI: banner rosso "⛔ Generazione IA disattivata · OPENAI TALK = OFF" in SmartFlowTimelinePanel (poll 8s) con bottone "Attiva ora" (`ai-talk-disabled-banner`, `ai-talk-enable-btn`); badge verde quando ON.
+- `POST /admin/timeline` (talk a tema con DJ): se OFF → **409** chiaro PRIMA di chiamare LLM; se il DJ non ha `voice_key` → 409; TTS con `strict_voice=True` (nessun fallback Bark/voce generica, nessun audio di altri speaker) → 502 esplicito se il provider fallisce.
+- `synth_speech(..., strict_voice)` + `AITalkDisabledError` nel wrapper server.py.
+- `_extract_spoken_text()`: isola SOLO il parlato (rimuove fence, markdown, [didascalie], *azioni*, (ride), etichette, righe che riecheggiano il prompt). Evento timeline salva `spoken_text` + `llm_prompt{system,user,raw_output}`; `Segment.spoken_text` nuovo campo; TTS (generate_segment, render_hd, timeline) riceve esclusivamente spoken_text.
