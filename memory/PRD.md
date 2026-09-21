@@ -677,3 +677,12 @@ Vedi turni precedenti in questa sessione:
 **NON toccati** (come da ordine): `_beatmatch_render_pair`, `_ad_build_cluster`, `/admin/tracks/upload`, path di ingestione Suno.
 
 **Regressioni**: nessuna. Il router (161 openapi paths) e il flusso HLS restano identici.
+
+## v13.34 · SMART RECURRENCE CONSOLIDATA + SEQUENZE CONCATENATE (2026-09-21)
+- **UI** (`SmartFlowTimelinePanel.js`): rimosso pannello "SEQUENZA ORA ESATTA + SPOT / ARMA" e opzione "Ogni ora" dal menu Ricorrenza. Tutta la ricorrenza passa da Smart Recurrence (rrule). Endpoint `/admin/timeline/ora-esatta` mantenuto lato backend (compat, nessuna UI).
+- **follow_ups** (lista ordinata `[{audio_url,title,artist,duration_sec,video_url}]`): accettato da `POST /admin/timeline` e `POST /admin/timeline/rrule` (`_sanitize_follow_ups`), propagato ai figli via `_rrule_materialize_due`, esposto da `_timeline_pick_due`, iniettato in blocco in testa alla coda in `_clock_advance` (pattern `admin_ad_manager_flash`). `follow_up` singolo legacy ancora supportato (va per primo).
+- **ad_break**: catena convertita da follow_up annidati (bug: si fermava al 1° elemento) a lista piatta `follow_ups`.
+- **time_signal live**: `_timeline_pick_due` ri-risolve l'audio dell'ora corrente (Europe/Rome) per `kind in (ora_esatta, time_signal)`; rrule con `kind=time_signal` senza audio salva marker `time_signal:live` (skippato se cache miss). Helper `_resolve_current_hour_time_signal`.
+- **UI Smart Recurrence**: controllo ripetibile "＋ aggiungi MP3 concatenato" (qualsiasi kind, con/senza DJ), `data-testid` `rr-followup-add`, `rr-followup-row-{i}`, `rr-followup-remove-{i}`.
+- Verifica: curl + script in-process (materializzazione, pick, iniezione reale nel clock: 2 follow-up in testa in ordine). Nessun testing agent (ZERO WASTE).
+- Backlog: Dual-Brain DJ (P1), Identità Digitale avatar (P2).

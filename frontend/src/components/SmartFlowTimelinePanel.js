@@ -68,10 +68,6 @@ export default function SmartFlowTimelinePanel() {
   // v13.22 · Config globale di Regia (soggetto default + video default)
   const [regiaCfg, setRegiaCfg] = useState({ default_subject: "", ledwall_default_video_url: "" });
   const [regiaBusy, setRegiaBusy] = useState(false);
-  // v13.24 · Sequenza Ora Esatta + Spot
-  const [hourly, setHourly] = useState({ config: { enabled: false }, next_event: null });
-  const [hourlyForm, setHourlyForm] = useState({ ora_esatta_source_id: "", spot_source_id: "" });
-  const [hourlyBusy, setHourlyBusy] = useState(false);
   const [form, setForm] = useState(() => {
     const t = new Date();
     t.setMinutes(t.getMinutes() + 5, 0, 0);
@@ -95,6 +91,12 @@ export default function SmartFlowTimelinePanel() {
       rr_days: [0,1,2,3,4,5,6], // Mon..Sun default
     };
   });
+  // v13.33 · Sequenza concatenata multipla (lista ordinata di source_id dal Magazzino)
+  const [followUpIds, setFollowUpIds] = useState([]);
+  const followUps = useMemo(
+    () => followUpIds.map((id) => sources.find((s) => s.id === id)).filter(Boolean),
+    [followUpIds, sources]
+  );
   const pollRef = useRef(null);
 
   const loadNow = async () => {
@@ -160,48 +162,8 @@ export default function SmartFlowTimelinePanel() {
       loadVideos();
     } catch { toast.error("Errore eliminazione video"); }
   };
-  // v13.24 · Sequenza Ora Esatta + Spot
-  const loadHourly = async () => {
-    try {
-      const r = await api.get(`/admin/timeline/ora-esatta`);
-      setHourly(r.data || { config: { enabled: false }, next_event: null });
-    } catch {}
-  };
-  const armHourly = async () => {
-    setHourlyBusy(true);
-    try {
-      const oraSrc = sources.find((s) => s.id === hourlyForm.ora_esatta_source_id);
-      const spotSrc = sources.find((s) => s.id === hourlyForm.spot_source_id);
-      const body = {};
-      if (oraSrc) { body.audio_url = oraSrc.audio_url; body.duration_sec = Math.max(6, Math.round(oraSrc.duration_sec || 12)); }
-      if (spotSrc) {
-        body.spot_audio_url = spotSrc.audio_url;
-        body.spot_title = spotSrc.title;
-        body.spot_artist = spotSrc.artist;
-        body.spot_duration_sec = Math.max(5, Math.round(spotSrc.duration_sec || 20));
-      }
-      const r = await api.post(`/admin/timeline/ora-esatta`, body);
-      toast.success(`🕐 Sequenza armata @ ${new Date(r.data.event.scheduled_at).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}`);
-      await loadHourly();
-      loadEvents("pending");
-    } catch (e) {
-      toast.error(e?.response?.data?.detail || "Errore Sequenza");
-    } finally { setHourlyBusy(false); }
-  };
-  const disarmHourly = async () => {
-    if (!window.confirm("Disarmare la Sequenza Ora Esatta+Spot? Verrà rimossa da tutte le occorrenze future.")) return;
-    setHourlyBusy(true);
-    try {
-      await api.delete(`/admin/timeline/ora-esatta`);
-      toast.success("Sequenza disarmata");
-      await loadHourly();
-      loadEvents("pending");
-    } catch { toast.error("Errore disarmo"); }
-    finally { setHourlyBusy(false); }
-  };
-
   useEffect(() => {
-    loadNow(); loadEvents("pending"); loadEvents("consumed"); loadSources(); loadDjs(); loadVideos(); loadRegiaCfg(); loadHourly();
+    loadNow(); loadEvents("pending"); loadEvents("consumed"); loadSources(); loadDjs(); loadVideos(); loadRegiaCfg();
     pollRef.current = setInterval(() => {
       loadNow();
       loadEvents("pending");
@@ -243,15 +205,21 @@ export default function SmartFlowTimelinePanel() {
       // un evento singolo. Il backend genererà le occorrenze concrete man
       // mano che si avvicinano e le espande virtualmente per il calendar.
       if (form.smart_recurrence) {
-        if (!form.audio_url) { setBusy(false); return toast.error("Smart Recurrence richiede un audio dal Magazzino"); }
+        if (!form.audio_url && form.kind !== "time_signal") { setBusy(false); return toast.error("Smart Recurrence richiede un audio dal Magazzino"); }
         const rBody = {
           kind: form.kind,
           title: form.title || undefined,
-          audio_url: form.audio_url,
+          audio_url: form.audio_url || undefined,
           duration_sec: Number(form.duration_sec) || 30,
           dj_id: form.dj_id || undefined,
           video_url: form.video_url || undefined,
           brief: form.brief || undefined,
+          follow_ups: followUps.map((s) => ({
+            audio_url: s.audio_url,
+            title: s.title,
+            artist: s.artist,
+            duration_sec: Math.max(1, Math.round(s.duration_sec || 20)),
+          })),
           rrule: {
             start_hour: Number(form.rr_start_hour),
             end_hour: Number(form.rr_end_hour),
@@ -261,7 +229,8 @@ export default function SmartFlowTimelinePanel() {
         };
         const rr = await api.post("/admin/timeline/rrule", rBody);
         const tpl = rr.data?.template;
-        toast.success(`🔁 Template creato · ogni ${tpl.rrule.frequency_minutes}min · ${tpl.rrule.start_hour}:00→${tpl.rrule.end_hour}:00`);
+        toast.success(`🔁 Template creato · ogni ${tpl.rrule.frequency_minutes}min · ${tpl.rrule.start_hour}:00→${tpl.rrule.end_hour}:00${followUps.length ? ` · +${followUps.length} MP3 concatenati` : ""}`);
+        setFollowUpIds([]);
         loadEvents("pending");
         setBusy(false);
         return;
@@ -432,96 +401,6 @@ export default function SmartFlowTimelinePanel() {
             </div>
           </div>
         </div>
-      </div>
-
-      {/* v13.24 · SEQUENZA ORA ESATTA + SPOT — trigger ricorrente orario */}
-      <div
-        className="rounded-lg p-3 mb-4"
-        style={{
-          background: hourly.config?.enabled ? "rgba(0,229,255,0.06)" : "rgba(255,45,149,0.04)",
-          border: `1px solid ${hourly.config?.enabled ? "rgba(0,229,255,0.32)" : "rgba(255,255,255,0.10)"}`,
-        }}
-        data-testid="hourly-sequence-panel"
-      >
-        <div className="flex items-center justify-between mb-2">
-          <div className="label-mono" style={{ color: hourly.config?.enabled ? "#00E5FF" : "#FF6BAA" }}>
-            🕐 SEQUENZA ORA ESATTA + SPOT · ricorrenza oraria automatica
-          </div>
-          <div className="text-[10px] font-mono" style={{ color: hourly.config?.enabled ? "#80FFB4" : "#888" }}>
-            {hourly.config?.enabled
-              ? `ARMATA · prossima :00 → ${hourly.next_event ? new Date(hourly.next_event.scheduled_at).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : "—"}`
-              : "DISARMATA · scegli sorgenti e attiva"}
-          </div>
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
-          <div>
-            <label className="label-mono block mb-1" title="Audio dell'annuncio orario. Se vuoto, usa l'ultimo time-signal pre-generato.">
-              🎙 Audio Ora Esatta (opz.)
-            </label>
-            <select
-              value={hourlyForm.ora_esatta_source_id}
-              onChange={(e) => setHourlyForm({ ...hourlyForm, ora_esatta_source_id: e.target.value })}
-              className="w-full bg-black border border-white/10 rounded px-2 py-1.5 text-sm text-white"
-              data-testid="hourly-ora-esatta-source"
-            >
-              <option value="">— usa time-signal pre-generato —</option>
-              {sources.slice(0, 300).map((s) => (
-                <option key={s.id} value={s.id}>[{s.kind}] {s.title} ({Math.round(s.duration_sec || 0)}s)</option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="label-mono block mb-1" title="Spot pubblicitario o jingle che parte SUBITO dopo l'Ora Esatta (zero-gap, pre-buffered).">
-              📢 Spot a seguire (concatenato)
-            </label>
-            <select
-              value={hourlyForm.spot_source_id}
-              onChange={(e) => setHourlyForm({ ...hourlyForm, spot_source_id: e.target.value })}
-              className="w-full bg-black border border-white/10 rounded px-2 py-1.5 text-sm text-white"
-              data-testid="hourly-spot-source"
-            >
-              <option value="">— nessuno spot associato —</option>
-              {sources.slice(0, 300).map((s) => (
-                <option key={s.id} value={s.id}>[{s.kind}] {s.title} — {s.artist} ({Math.round(s.duration_sec || 0)}s)</option>
-              ))}
-            </select>
-          </div>
-          <div className="flex items-end gap-2">
-            <button
-              onClick={armHourly}
-              disabled={hourlyBusy}
-              data-testid="hourly-arm-btn"
-              className="flex-1 px-3 py-2 rounded text-sm font-bold text-black"
-              style={{
-                background: hourly.config?.enabled ? "#80FFB4" : "#00E5FF",
-                opacity: hourlyBusy ? 0.55 : 1,
-                boxShadow: `0 0 12px ${hourly.config?.enabled ? "#80FFB4" : "#00E5FF"}66`,
-              }}
-            >
-              {hourlyBusy ? "…" : (hourly.config?.enabled ? "🔄 Aggiorna" : "▸ ARMA sequenza")}
-            </button>
-            {hourly.config?.enabled && (
-              <button
-                onClick={disarmHourly}
-                disabled={hourlyBusy}
-                data-testid="hourly-disarm-btn"
-                className="px-3 py-2 rounded text-sm font-bold text-white"
-                style={{ background: "rgba(255,45,149,0.25)", border: "1px solid rgba(255,45,149,0.6)" }}
-                title="Disarma la sequenza"
-              >
-                ✕
-              </button>
-            )}
-          </div>
-        </div>
-        {hourly.config?.enabled && (
-          <div className="text-[10px] font-mono text-zinc-400 mt-2 flex flex-wrap gap-3">
-            <span>⏱ Ora Esatta: {hourly.config.ora_esatta_audio_url ? hourly.config.ora_esatta_audio_url.split("/").slice(-1)[0] : "—"}</span>
-            {hourly.config.spot_audio_url && (
-              <span>📢 Spot: <b style={{ color: "#80FFB4" }}>{hourly.config.spot_title || hourly.config.spot_audio_url.split("/").slice(-1)[0]}</b> ({hourly.config.spot_duration_sec}s) · <b style={{color:"#00E5FF"}}>zero-gap</b> via follow-up</span>
-            )}
-          </div>
-        )}
       </div>
 
       {/* ── Form inserimento ───────────────────────────────────────────── */}
@@ -720,7 +599,6 @@ export default function SmartFlowTimelinePanel() {
               data-testid="timeline-input-recurrence"
             >
               <option value="none">Nessuna (una volta sola)</option>
-              <option value="hourly">Ogni ora</option>
               <option value="daily">Ogni giorno</option>
               <option value="weekly">Ogni settimana</option>
             </select>
@@ -798,6 +676,33 @@ export default function SmartFlowTimelinePanel() {
                     );
                   })}
                 </div>
+              </div>
+              {/* v13.33 · Sequenza concatenata multipla (qualsiasi kind, con o senza DJ) */}
+              <div className="md:col-span-4 rounded p-2" style={{ background: "rgba(128,255,180,0.04)", border: "1px dashed rgba(128,255,180,0.3)" }} data-testid="rr-followups-panel">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="label-mono" style={{ color: "#80FFB4" }}>🔗 MP3 concatenati a seguire (zero-gap, in ordine)</span>
+                  <span className="text-[10px] font-mono text-zinc-500">{followUps.length} elementi · {followUps.reduce((a, s) => a + Math.round(s.duration_sec || 0), 0)}s</span>
+                </div>
+                {followUps.map((s, i) => (
+                  <div key={`${s.id}-${i}`} className="flex items-center gap-2 text-xs font-mono py-0.5" data-testid={`rr-followup-row-${i}`}>
+                    <span className="text-zinc-500 w-5">{i + 1}.</span>
+                    <span className="flex-1 truncate text-zinc-200">[{s.kind}] {s.title} — {s.artist} ({Math.round(s.duration_sec || 0)}s)</span>
+                    <button type="button" onClick={() => setFollowUpIds((l) => l.filter((_, j) => j !== i))}
+                      data-testid={`rr-followup-remove-${i}`}
+                      className="px-1.5 rounded text-[10px]" style={{ color: "#FF6BAA", border: "1px solid rgba(255,45,149,0.4)" }}>✕</button>
+                  </div>
+                ))}
+                <select
+                  value=""
+                  onChange={(e) => { if (e.target.value) setFollowUpIds((l) => [...l, e.target.value]); }}
+                  data-testid="rr-followup-add"
+                  className="w-full mt-1 bg-black border border-white/10 rounded px-2 py-1.5 text-sm text-white"
+                >
+                  <option value="">＋ aggiungi MP3 concatenato…</option>
+                  {sources.slice(0, 300).map((s) => (
+                    <option key={s.id} value={s.id}>[{s.kind}] {s.title} — {s.artist} ({Math.round(s.duration_sec || 0)}s)</option>
+                  ))}
+                </select>
               </div>
               <div className="md:col-span-4 text-[10px] font-mono text-zinc-400">
                 💡 Anteprima:  {form.rr_days.length}/7 giorni · dalle {String(form.rr_start_hour).padStart(2,"0")}:00 alle {String(form.rr_end_hour).padStart(2,"0")}:00 · ogni {form.rr_frequency_minutes}min

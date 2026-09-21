@@ -5881,6 +5881,47 @@ _CLOCK_QUEUE_LOOKAHEAD = 8   # numero di brani in coda dopo il current
 # brano corrente termina naturalmente (via `_is_expired` che rispetta
 # `duration_sec`). Zero troncamenti, mai su onEnded.
 
+def _sanitize_follow_ups(raw) -> list:
+    """v13.33 · Normalizza la lista ordinata `follow_ups` (sequenza concatenata
+    multipla). Ogni elemento: {audio_url, title, artist?, duration_sec, video_url?}."""
+    out = []
+    if not isinstance(raw, list):
+        return out
+    for item in raw[:12]:
+        if not isinstance(item, dict):
+            continue
+        au = (item.get("audio_url") or "").strip()
+        if not au:
+            continue
+        try:
+            dur = int(item.get("duration_sec") or 20)
+        except Exception:
+            dur = 20
+        out.append({
+            "audio_url": au,
+            "title": (item.get("title") or "Spot").strip()[:120],
+            "artist": (item.get("artist") or "").strip()[:120] or None,
+            "duration_sec": max(1, dur),
+            "video_url": (item.get("video_url") or "").strip() or None,
+        })
+    return out
+
+
+async def _resolve_current_hour_time_signal() -> Optional[str]:
+    """Audio del segnale orario dell'ora REALE corrente (Europe/Rome) dalla cache."""
+    try:
+        from zoneinfo import ZoneInfo
+        _it_now = datetime.now(ZoneInfo("Europe/Rome"))
+    except Exception:
+        _it_now = datetime.now(timezone.utc)
+    _hour_key = _it_now.strftime("%Y-%m-%d %H")
+    _fresh_ts = await db.time_signal_cache.find_one({"_id": _hour_key})
+    if _fresh_ts and _fresh_ts.get("speech_audio_url"):
+        return _fresh_ts["speech_audio_url"]
+    logger.warning(f"[time-signal] cache miss per hour_key={_hour_key}")
+    return None
+
+
 async def _timeline_pick_due() -> Optional[dict]:
     """Ritorna un evento timeline maturo (scheduled_at <= now) e lo marca
     come `consumed` atomicamente. Ignora eventi troppo vecchi (>2h).
@@ -5941,18 +5982,20 @@ async def _timeline_pick_due() -> Optional[dict]:
     # sulla cache dell'ora REALE corrente (stesso hour_key usato dal
     # pregenerator/percorso automatico). find_one (non delete): l'entry
     # resta disponibile anche per l'eventuale segnale orario automatico.
-    if doc.get("kind") == "ora_esatta":
-        try:
-            from zoneinfo import ZoneInfo
-            _it_now = datetime.now(ZoneInfo("Europe/Rome"))
-        except Exception:
-            _it_now = datetime.now(timezone.utc)
-        _hour_key = _it_now.strftime("%Y-%m-%d %H")
-        _fresh_ts = await db.time_signal_cache.find_one({"_id": _hour_key})
-        if _fresh_ts and _fresh_ts.get("speech_audio_url"):
-            doc["audio_url"] = _fresh_ts["speech_audio_url"]
+    # v13.33 · Estesa anche a kind=time_signal (inclusi i figli rrule): il
+    # template congela l'audio alla creazione, qui si ri-risolve sull'ora live.
+    if doc.get("kind") in ("ora_esatta", "time_signal"):
+        _live_au = await _resolve_current_hour_time_signal()
+        if _live_au:
+            doc["audio_url"] = _live_au
+            if doc.get("kind") == "time_signal":
+                _rd = await _probe_tts_duration(_live_au)
+                if _rd:
+                    doc["duration_sec"] = int(round(_rd)) + 1
+        elif (doc.get("audio_url") or "").startswith("time_signal:"):
+            doc["audio_url"] = None
         else:
-            logger.warning(f"[ora-esatta] cache miss per hour_key={_hour_key}, uso audio_url congelato come fallback")
+            logger.warning(f"[time-signal] uso audio_url congelato come fallback per {doc.get('id')}")
     # Costruisce l'entry compatibile con la queue del clock
     entry = {
         "id": doc.get("id") or f"tl-{uuid.uuid4().hex[:10]}",
@@ -5986,6 +6029,8 @@ async def _timeline_pick_due() -> Optional[dict]:
         # HLS continuo). Il follow-up NON è ricorrente di suo — è agganciato
         # al padre e ripete solo quando ripete il padre.
         "follow_up": doc.get("follow_up") or None,
+        # v13.33 · Sequenza concatenata multipla (lista ordinata, iniettata in blocco)
+        "follow_ups": doc.get("follow_ups") or [],
     }
     # v13.32 · AD_BREAK — quando l'evento matura, espandi al volo il cluster
     # [intro]+[N spot]+[outro] e ritorna la PRIMA entry, incatenando le altre
@@ -6006,17 +6051,21 @@ async def _timeline_pick_due() -> Optional[dict]:
             )
             logger.warning(f"[ad-break] evento {doc.get('id')} skippato: nessun spot disponibile")
             return None
-        # Concatena come follow_up a cascata
-        for i in range(len(cluster) - 1, 0, -1):
-            cluster[i - 1]["follow_up"] = {
-                "id": cluster[i].get("id"),
-                "title": cluster[i].get("title"),
-                "artist": cluster[i].get("artist"),
-                "audio_url": cluster[i].get("audio_url"),
-                "duration_sec": cluster[i].get("duration_sec"),
-                "video_url": cluster[i].get("video_url"),
-            }
+        # v13.33 · Lista piatta follow_ups (prima: follow_up annidato che
+        # si interrompeva dopo il primo elemento perché l'iniezione nel clock
+        # non ricopiava il follow_up nidificato).
         head = cluster[0]
+        head["follow_ups"] = [
+            {
+                "id": c.get("id"),
+                "title": c.get("title"),
+                "artist": c.get("artist"),
+                "audio_url": c.get("audio_url"),
+                "duration_sec": c.get("duration_sec"),
+                "video_url": c.get("video_url"),
+            }
+            for c in cluster[1:]
+        ]
         head["timeline_kind"] = "ad_break"
         head["kind"] = "ad_break"
         logger.info(f"[ad-break] cluster {len(cluster)} elementi lanciato via Timeline {doc.get('id')}")
@@ -6106,6 +6155,7 @@ async def admin_timeline_create(payload: dict):
             "duration_sec": int(follow_up_raw.get("duration_sec") or 20),
             "video_url": (follow_up_raw.get("video_url") or "").strip() or None,
         }
+    follow_ups = _sanitize_follow_ups(payload.get("follow_ups"))
     dur_from_payload = int(payload.get("duration_sec") or 30)
     title = (payload.get("title") or "").strip()[:120] or None
     generated_script = None
@@ -6238,6 +6288,7 @@ async def admin_timeline_create(payload: dict):
         "repeat_daily": repeat_daily,
         "recurrence": recurrence or "none",
         "follow_up": follow_up,
+        "follow_ups": follow_ups,
         "status": "pending",
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -6410,6 +6461,12 @@ async def admin_timeline_create_rrule(payload: dict):
     if not isinstance(rrule, dict) or rrule.get("frequency_minutes") is None:
         raise HTTPException(400, "rrule.frequency_minutes richiesto")
     audio_url = (payload.get("audio_url") or "").strip()
+    tpl_kind = (payload.get("kind") or "insert").strip()[:40]
+    tpl_title = (payload.get("title") or "").strip()[:120] or None
+    if not audio_url and tpl_kind == "time_signal":
+        # v13.33 · Marker: i figli ri-risolvono l'audio dell'ora live in _timeline_pick_due
+        audio_url = "time_signal:live"
+        tpl_title = tpl_title or "🕐 Segnale orario"
     if not audio_url:
         raise HTTPException(400, "audio_url richiesto per il template")
     # Risolvi DJ opzionale
@@ -6421,6 +6478,7 @@ async def admin_timeline_create_rrule(payload: dict):
         dj_doc = await db.djs.find_one(q, {"_id": 0, "id": 1, "name": 1, "voice_key": 1})
         if dj_doc:
             dj_id = dj_doc.get("id"); dj_name = dj_doc.get("name"); voice_key = dj_doc.get("voice_key")
+    follow_ups = _sanitize_follow_ups(payload.get("follow_ups"))
     # Sanitize rrule
     clean_rrule = {
         "start_hour": max(0, min(23, int(rrule.get("start_hour", 0)))),
@@ -6434,13 +6492,14 @@ async def admin_timeline_create_rrule(payload: dict):
     now = datetime.now(timezone.utc)
     tpl = {
         "id": f"tpl-{uuid.uuid4().hex[:12]}",
-        "kind": (payload.get("kind") or "insert").strip()[:40],
-        "title": (payload.get("title") or "").strip()[:120] or None,
+        "kind": tpl_kind,
+        "title": tpl_title,
         "audio_url": audio_url,
         "duration_sec": int(payload.get("duration_sec") or 30),
         "dj_id": dj_id, "dj_name": dj_name, "voice_key": voice_key,
         "brief": (payload.get("brief") or "").strip() or None,
         "video_url": (payload.get("video_url") or "").strip() or None,
+        "follow_ups": follow_ups,
         "rrule": clean_rrule,
         "status": "template",
         "scheduled_at": now.isoformat(),  # solo per ordinamento; il vero orario è dato da rrule
@@ -7156,19 +7215,28 @@ async def _clock_advance(force: bool = False) -> dict:
         # alla queue. La transizione Ora Esatta → Spot diventa "zero gap":
         # il manifest HLS include già il segmento successivo mentre l'ora
         # esatta è ancora in onda (pre-buffer client).
+        # v13.33 · Sequenza concatenata multipla: `follow_up` singolo (legacy)
+        # + lista ordinata `follow_ups`, iniettati TUTTI in blocco in testa
+        # alla coda (stesso pattern di admin_ad_manager_flash: cluster + queue).
         _followup = promo.pop("follow_up", None)
-        if _followup and isinstance(_followup, dict) and _followup.get("audio_url"):
-            fu_entry = {
-                "id": _followup.get("id") or f"fu-{uuid.uuid4().hex[:10]}",
-                "title": _followup.get("title") or "Spot",
-                "artist": _followup.get("artist") or "R-A.I. Advertising",
-                "audio_url": _followup["audio_url"],
-                "duration_sec": float(_followup.get("duration_sec") or 20),
+        _followups = promo.pop("follow_ups", None) or []
+        _chain = ([_followup] if isinstance(_followup, dict) else []) + [x for x in _followups if isinstance(x, dict)]
+        fu_entries = []
+        for _fu in _chain:
+            if not _fu.get("audio_url"):
+                continue
+            fu_entries.append({
+                "id": _fu.get("id") or f"fu-{uuid.uuid4().hex[:10]}",
+                "title": _fu.get("title") or "Spot",
+                "artist": _fu.get("artist") or "R-A.I. Advertising",
+                "audio_url": _fu["audio_url"],
+                "duration_sec": float(_fu.get("duration_sec") or 20),
                 "is_follow_up": True,
                 "parent_id": promo.get("id"),
-                "video_url": _followup.get("video_url"),
-            }
-            q = [fu_entry] + (q or [])
+                "video_url": _fu.get("video_url"),
+            })
+        if fu_entries:
+            q = fu_entries + (q or [])
         clock["current"] = promo
         clock["queue"] = q
         changed = True
