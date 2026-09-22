@@ -100,7 +100,7 @@ async def _synth_openai(text: str, voice_key: str) -> bytes | None:
         return None
 
 
-async def _synth_elevenlabs(text: str, voice_key: str, kind: str = "") -> bytes | None:
+async def _synth_elevenlabs(text: str, voice_key: str, kind: str = "", dj_id: str | None = None) -> bytes | None:
     """ElevenLabs primario (eleven_multilingual_v2). Ritorna bytes mp3 o None.
 
     Il parametro `kind` abilita il routing "smart" (default v12.11):
@@ -156,6 +156,11 @@ async def _synth_elevenlabs(text: str, voice_key: str, kind: str = "") -> bytes 
     # `eleven_voice_id`, `eleven_model` o `voice_settings` valorizzati, li usa
     # (permette a Leo/Aria/Max/L&C di avere voci Turbo v2.5 custom senza
     # patchare la mappa hardcoded). Fallback: mappa VOICE_KEY_TO_ELEVEN.
+    # v13.36 · `voice_key` NON è garantito unico tra i DJ (più DJ possono
+    # condividere lo stesso preset, es. "female-1"): se il chiamante conosce
+    # il `dj_id` esatto, lo si usa come chiave primaria di lookup — altrimenti
+    # si ricade sul lookup per voice_key (comportamento legacy, ambiguo in
+    # presenza di duplicati).
     voice_id = VOICE_KEY_TO_ELEVEN.get(voice_key, DEFAULT_ELEVEN_ID)
     model_id = "eleven_multilingual_v2"
     vs = {"stability": 0.4, "similarity_boost": 0.8, "style": 0.5, "use_speaker_boost": True}
@@ -164,8 +169,9 @@ async def _synth_elevenlabs(text: str, voice_key: str, kind: str = "") -> bytes 
         _murl = os.environ.get("MONGO_URL"); _dbn = os.environ.get("DB_NAME")
         if _murl and _dbn:
             _c = AsyncIOMotorClient(_murl)
+            _dj_lookup = {"id": dj_id} if dj_id else {"voice_key": voice_key}
             _dj = await _c[_dbn].djs.find_one(
-                {"voice_key": voice_key},
+                _dj_lookup,
                 {"_id": 0, "eleven_voice_id": 1, "eleven_model": 1, "voice_settings": 1},
             )
             _c.close()
@@ -196,14 +202,19 @@ async def _synth_elevenlabs(text: str, voice_key: str, kind: str = "") -> bytes 
         return None
 
 
-async def synth_speech(text: str, voice_key: str = "female-1", kind: str = "") -> str | None:
+async def synth_speech(text: str, voice_key: str = "female-1", kind: str = "", dj_id: str | None = None) -> str | None:
     """
     Genera TTS. Primario ElevenLabs, fallback OpenAI TTS-1-HD (Universal Key).
     Il parametro `kind` abilita il routing "smart" (ElevenLabs solo per 'answer').
     Ritorna il filename dentro TTS_DIR, o None se entrambi falliscono.
 
+    `dj_id` (v13.36): quando noto, disambigua il lookup per-DJ e la cache
+    quando più DJ condividono lo stesso `voice_key` (es. due DJ entrambi
+    "female-1") — senza, due DJ del genere risulterebbero indistinguibili
+    sia nella risoluzione della voce ElevenLabs sia nella cache TTS.
+
     CACHE: prima di chiamare l'API, cerca in db.tts_cache un record con la
-    stessa `content_hash` (SHA256 di voice_key+kind+text). Se esiste,
+    stessa `content_hash` (SHA256 di dj_id/voice_key+kind+text). Se esiste,
     riutilizza il file audio già presente su Object Storage — nessuna
     chiamata al provider TTS, zero spreco.
     """
@@ -213,7 +224,7 @@ async def synth_speech(text: str, voice_key: str = "female-1", kind: str = "") -
 
     # ---- Cache lookup ---------------------------------------------------
     content_hash = hashlib.sha256(
-        f"{voice_key}|{kind}|{text}".encode("utf-8")
+        f"{dj_id or voice_key}|{kind}|{text}".encode("utf-8")
     ).hexdigest()
     cached_filename = None
     try:
@@ -238,7 +249,7 @@ async def synth_speech(text: str, voice_key: str = "female-1", kind: str = "") -
 
     # ---- Cache MISS: genera davvero ------------------------------------
     # 1) ElevenLabs (primary — HD voice) — con smart-routing su kind
-    audio = await _synth_elevenlabs(text, voice_key, kind=kind)
+    audio = await _synth_elevenlabs(text, voice_key, kind=kind, dj_id=dj_id)
     provider = "elevenlabs"
 
     # 2) Fallback OpenAI TTS-1-HD (only if ElevenLabs failed / not configured)
@@ -275,6 +286,7 @@ async def synth_speech(text: str, voice_key: str = "female-1", kind: str = "") -
                 {"$set": {
                     "filename": filename,
                     "voice_key": voice_key,
+                    "dj_id": dj_id,
                     "kind": kind,
                     "provider": provider,
                     "text_preview": text[:200],

@@ -74,13 +74,15 @@ def _extract_spoken_text(raw: str) -> str:
     return re.sub(r"\s{2,}", " ", out)
 
 
-async def synth_speech(text: str, voice_key: str = "female-1", kind: str = "", strict_voice: bool = False):
+async def synth_speech(text: str, voice_key: str = "female-1", kind: str = "", strict_voice: bool = False, dj_id: str | None = None):
     """Preferred TTS pipeline: ElevenLabs first (best Italian quality), then Bark as fallback.
     `kind` viene passato al layer ElevenLabs per il routing "smart" (usa
     ElevenLabs solo per kind='answer', OpenAI TTS-1-HD per il resto).
     `strict_voice=True` (v13.35): se il kill-switch `ai_openai_talk` è OFF
     solleva AITalkDisabledError e NON ripiega mai su Bark (voce generica
     diversa dallo speaker richiesto) → errore chiaro invece di voce sbagliata.
+    `dj_id` (v13.36): quando noto, disambigua la risoluzione voce/cache tra
+    DJ che condividono lo stesso `voice_key` (es. due DJ "female-1").
     Returns (filename, subpath) where subpath is 'tts' or 'audio' for URL routing."""
     if strict_voice:
         _ai = await _get_ai_controls()
@@ -90,7 +92,7 @@ async def synth_speech(text: str, voice_key: str = "female-1", kind: str = "", s
                 "Nessun fallback su voci pre-registrate di altri speaker."
             )
     if elevenlabs_service.is_enabled():
-        fn = await elevenlabs_service.synth_speech(text, voice_key, kind=kind)
+        fn = await elevenlabs_service.synth_speech(text, voice_key, kind=kind, dj_id=dj_id)
         if fn:
             return fn, "tts"
     if strict_voice:
@@ -3130,8 +3132,30 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
         segment.script = script.strip()
         segment.spoken_text = _extract_spoken_text(segment.script) or segment.script
 
-    # Per i segmenti PARLATI: nessun sottofondo musicale. La voce DJ parla sul
-    # silenzio assoluto (richiesta esplicita). Non impostiamo background_loop.
+    # v13.36 · FIX (ticket #247410, "non posso usare un sottofondo sul
+    # parlato"): prima d'ora QUALSIASI bed era escluso a priori sui segmenti
+    # parlati ("silenzio assoluto, richiesta esplicita") — ma il bed attivo
+    # configurato in Regia (station.state.active_bed_url) è pensato apposta
+    # per suonare sotto il parlato quando l'utente lo attiva. Applichiamo qui
+    # la STESSA regola di binding già usata dal player (radioEngine.js
+    # _playSpeechWithBed): bed universale (loop_bind_speaker=null) sempre
+    # applicato; bed agganciato a un DJ specifico solo se il nome combacia.
+    try:
+        _st_bed = await db.station.find_one({"_id": "state"}, {"active_bed_url": 1}) or {}
+        _active_bed_url = _st_bed.get("active_bed_url") or None
+        if _active_bed_url:
+            _bed_doc = await db.tracks.find_one(
+                {"audio_url": _active_bed_url, "is_loop": True, "deleted_at": None},
+                {"_id": 0, "loop_bind_speaker": 1},
+            )
+            _bound_to = (_bed_doc or {}).get("loop_bind_speaker") or None
+            _bind_ok = (not _bound_to) or (
+                segment.dj_name and str(_bound_to).strip().lower() == str(segment.dj_name).strip().lower()
+            )
+            if _bind_ok:
+                segment.background_loop = _active_bed_url
+    except Exception as _e:
+        logger.debug(f"[bed] resolve fallito per segmento parlato: {_e}")
 
     await db.segments.insert_one(segment.model_dump())
     await db.station.update_one({"_id": "state"}, {"$inc": {"total_segments": 1}}, upsert=True)
@@ -3142,13 +3166,13 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
     if elevenlabs_service.is_enabled() and segment.script and not segment.speech_audio_url:
         try:
             _tts_in = segment.spoken_text or _extract_spoken_text(segment.script) or segment.script
-            fn, subpath = await synth_speech(_tts_in, segment.voice_key or "female-1", kind=segment.kind or "")
+            fn, subpath = await synth_speech(_tts_in, segment.voice_key or "female-1", kind=segment.kind or "", dj_id=segment.dj_id)
             if fn:
                 segment.speech_audio_url = f"/api/{subpath}/{fn}"
                 update = {"speech_audio_url": segment.speech_audio_url}
                 # For music segments, also render outro
                 if segment.kind == "music" and segment.outro_script:
-                    of, os_ = await synth_speech(segment.outro_script, segment.voice_key or "female-1", kind=segment.kind)
+                    of, os_ = await synth_speech(segment.outro_script, segment.voice_key or "female-1", kind=segment.kind, dj_id=segment.dj_id)
                     if of:
                         segment.outro_speech_url = f"/api/{os_}/{of}"
                         update["outro_speech_url"] = segment.outro_speech_url
@@ -4367,8 +4391,19 @@ async def set_station_mix(payload: dict):
 
 
 @api_router.post("/admin/beds/upload")
-async def upload_bed(file: UploadFile = File(...), name: str = Form("")):
-    """Upload di un loop musicale (sottofondo). MP3 <= 10MB."""
+async def upload_bed(file: UploadFile = File(...), name: str = Form(""), loop_bind_speaker: str = Form(None)):
+    """Upload di un loop musicale (sottofondo). MP3 <= 10MB.
+
+    v13.36 · FIX (ticket #247410, sottofondo mai udibile): questo sistema
+    (collezione `beds`, endpoint /admin/beds/*) e il sistema separato di
+    loop nella libreria tracce (collezione `tracks`, kind=loop, campo
+    `loop_bind_speaker` esposto in Dashboard come "Aggancia a Speaker")
+    non comunicavano affatto: il cliente impostava l'aggancio-a-speaker sui
+    loop caricati in libreria, ma la riproduzione live legge SOLO da questa
+    collezione `beds` (via station.state.active_bed_url) — quindi
+    l'aggancio configurato non veniva mai considerato. Ora `loop_bind_speaker`
+    è accettato anche qui, così l'aggancio funziona end-to-end sul sistema
+    effettivamente usato in riproduzione."""
     if not (file.filename or "").lower().endswith(".mp3"):
         raise HTTPException(400, "Solo file .mp3")
     data = await file.read()
@@ -4392,6 +4427,7 @@ async def upload_bed(file: UploadFile = File(...), name: str = Form("")):
         "name": display_name,
         "audio_url": f"/api/beds/{local_name}",
         "file_size": len(data),
+        "loop_bind_speaker": (loop_bind_speaker or "").strip() or None,
         "uploaded_at": now_iso(),
     }
     await db.beds.insert_one(doc)
@@ -4417,6 +4453,19 @@ async def activate_bed(bed_id: str):
         upsert=True,
     )
     return {"ok": True, "active_bed_url": bed["audio_url"]}
+
+
+@api_router.patch("/admin/beds/{bed_id}/bind")
+async def bind_bed(bed_id: str, payload: dict):
+    """v13.36 · FIX (ticket #247410): imposta/rimuove l'aggancio a uno
+    speaker specifico per un bed gia' caricato, senza doverlo ri-caricare.
+    Body: {"loop_bind_speaker": "<nome DJ>"|null}."""
+    bed = await db.beds.find_one({"id": bed_id})
+    if not bed:
+        raise HTTPException(404, "Bed non trovato")
+    bind = (payload.get("loop_bind_speaker") or "").strip() or None
+    await db.beds.update_one({"id": bed_id}, {"$set": {"loop_bind_speaker": bind}})
+    return {"ok": True, "id": bed_id, "loop_bind_speaker": bind}
 
 
 @api_router.delete("/admin/beds/{bed_id}")
@@ -4551,7 +4600,7 @@ async def render_segment_hd(seg_id: str):
     try:
         # Speech (ElevenLabs preferred, Bark fallback)
         if seg.get("script"):
-            fname, subpath = await synth_speech(seg.get("spoken_text") or _extract_spoken_text(seg["script"]) or seg["script"], seg.get("voice_key") or "female-1")
+            fname, subpath = await synth_speech(seg.get("spoken_text") or _extract_spoken_text(seg["script"]) or seg["script"], seg.get("voice_key") or "female-1", dj_id=seg.get("dj_id"))
             if fname:
                 speech_url = f"/api/{subpath}/{fname}"
         # Music (Stable Audio) only for music segments
@@ -6334,7 +6383,7 @@ async def admin_timeline_create(payload: dict):
 
         # 2) TTS con la voce del DJ richiesto (strict: nessun fallback Bark/voce generica)
         try:
-            fname, subpath = await synth_speech(spoken_text, voice_key=voice_key, kind="answer", strict_voice=True)
+            fname, subpath = await synth_speech(spoken_text, voice_key=voice_key, kind="answer", strict_voice=True, dj_id=dj_id)
         except AITalkDisabledError as e:
             raise HTTPException(409, str(e))
         except Exception as e:
@@ -6404,6 +6453,99 @@ async def admin_timeline_delete(event_id: str):
         cr = await db.timeline_events.delete_many({"parent_id": event_id, "status": "pending"})
         cascaded = cr.deleted_count
     return {"ok": r.deleted_count > 0, "cascaded_children": cascaded}
+
+
+@api_router.patch("/admin/timeline/{event_id}")
+async def admin_timeline_update(event_id: str, payload: dict):
+    """v13.36 FIX (ticket #247410, come modifico un evento gia' creato):
+    prima d'ora timeline_events supportava solo delete; per aggiungere uno
+    spot concatenato dopo, o correggere audio/orario, l'unica via era
+    cancellare e ricreare da zero (perdendo follow_ups gia' configurati).
+
+    Aggiorna in place solo i campi presenti nel payload (stesso set validato
+    da POST /admin/timeline e /admin/timeline/rrule); i campi omessi restano
+    invariati. Funziona sia su eventi one-shot (status=pending) sia su
+    template ricorrenti (status=template): un template aggiornato si
+    riflette solo sulle occorrenze future non ancora materializzate, mai su
+    quelle gia' consumate (storico immutabile).
+
+    Campi non modificabili via questo endpoint: id, status, created_at,
+    parent_id, consumed_at - gestiti dal ciclo di vita interno.
+
+    Body: qualunque sottoinsieme di scheduled_at, kind, title, artist,
+    audio_url, duration_sec, dj_id, dj_name, brief, video_url, follow_ups,
+    rrule. Se dj_id/dj_name cambia, voice_key viene ri-risolto dal DJ
+    corrispondente (stessa logica di creazione)."""
+    existing = await db.timeline_events.find_one({"id": event_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(404, "Evento non trovato")
+    update: dict = {}
+    if "scheduled_at" in payload:
+        sched = (payload.get("scheduled_at") or "").strip()
+        if sched:
+            try:
+                datetime.fromisoformat(sched.replace("Z", "+00:00"))
+            except Exception:
+                raise HTTPException(400, "scheduled_at non parsabile come ISO datetime")
+            update["scheduled_at"] = sched
+    if "kind" in payload:
+        k = (payload.get("kind") or "").strip()[:40]
+        if k:
+            update["kind"] = k
+    if "title" in payload:
+        update["title"] = (payload.get("title") or "").strip()[:120] or None
+    if "artist" in payload:
+        update["artist"] = (payload.get("artist") or "").strip()[:120] or None
+    if "audio_url" in payload:
+        au = (payload.get("audio_url") or "").strip()
+        if not au and existing.get("kind") not in ("time_signal", "ora_esatta"):
+            raise HTTPException(400, "audio_url non puo' essere svuotato per questo tipo di evento")
+        update["audio_url"] = au or None
+    if "duration_sec" in payload:
+        try:
+            update["duration_sec"] = int(payload.get("duration_sec") or 30)
+        except Exception:
+            raise HTTPException(400, "duration_sec non valido")
+    if "brief" in payload:
+        update["brief"] = (payload.get("brief") or "").strip() or None
+    if "video_url" in payload:
+        update["video_url"] = (payload.get("video_url") or "").strip() or None
+    if "dj_id" in payload or "dj_name" in payload:
+        dj_id = (payload.get("dj_id") or "").strip() or None
+        dj_name = (payload.get("dj_name") or "").strip() or None
+        voice_key = None
+        if dj_id or dj_name:
+            q = {"id": dj_id} if dj_id else {"name": dj_name}
+            dj_doc = await db.djs.find_one(q, {"_id": 0, "id": 1, "name": 1, "voice_key": 1})
+            if dj_doc:
+                dj_id = dj_doc.get("id"); dj_name = dj_doc.get("name"); voice_key = dj_doc.get("voice_key")
+        update["dj_id"] = dj_id
+        update["dj_name"] = dj_name
+        update["voice_key"] = voice_key
+    if "follow_ups" in payload:
+        update["follow_ups"] = _sanitize_follow_ups(payload.get("follow_ups"))
+    if "rrule" in payload:
+        if existing.get("status") != "template":
+            raise HTTPException(400, "rrule modificabile solo sui template ricorrenti")
+        rrule = payload.get("rrule") or {}
+        if not isinstance(rrule, dict):
+            raise HTTPException(400, "rrule non valido")
+        prev_rrule = existing.get("rrule") or {}
+        update["rrule"] = {
+            "start_hour": max(0, min(23, int(rrule.get("start_hour", prev_rrule.get("start_hour", 0))))),
+            "end_hour": max(0, min(24, int(rrule.get("end_hour", prev_rrule.get("end_hour", 24))))),
+            "anchor_minute": max(0, min(59, int(rrule.get("anchor_minute", prev_rrule.get("anchor_minute", 0))))),
+            "frequency_minutes": max(1, min(1440, int(rrule.get("frequency_minutes", prev_rrule.get("frequency_minutes", 60))))),
+            "days_of_week": [int(d) for d in (rrule.get("days_of_week") or prev_rrule.get("days_of_week") or list(range(7))) if 0 <= int(d) <= 6],
+            "start_date": (rrule.get("start_date") or prev_rrule.get("start_date") or datetime.now(timezone.utc).date().isoformat()),
+            "end_date": (rrule.get("end_date") if "end_date" in rrule else prev_rrule.get("end_date")),
+        }
+    if not update:
+        return {"ok": True, "event": existing, "changed": False}
+    update["updated_at"] = now_iso()
+    await db.timeline_events.update_one({"id": event_id}, {"$set": update})
+    fresh = await db.timeline_events.find_one({"id": event_id}, {"_id": 0})
+    return {"ok": True, "event": fresh, "changed": True}
 
 
 # ============================================================================
@@ -6695,13 +6837,14 @@ async def _probe_tts_duration(url: Optional[str], pad_sec: float = 0.0) -> Optio
     sempre (nessun listener di recovery). Restituire None qui permette al
     chiamante di scartare il segmento invece di mandarlo in onda.
 
-    v13.20 · `pad_sec` (default 0, stesso comportamento di prima per i
-    chiamanti esistenti che già applicano il proprio padding, es. la
-    Timeline). I chiamanti del clock DJ passano pad_sec=2.0 — stessa coda
-    di sicurezza già usata da `/api/admin/timeline` — perché ffprobe su
-    MP3 VBR può sottostimare la durata reale: senza il padding il clock
-    passava al segmento successivo un attimo prima che l'audio finisse
-    davvero, tagliando le ultime parole del DJ.
+    v13.20 → v13.36 · `pad_sec` (default 0, stesso comportamento di prima per
+    i chiamanti esistenti che già applicano il proprio padding, es. la
+    Timeline). I chiamanti del clock DJ passano pad_sec=0.8 — coda di
+    sicurezza contro la sottostima ffprobe su MP3 VBR (senza padding il
+    clock tagliava le ultime parole del DJ). v13.20 usava 2.0s, ma questo
+    ritardava visibilmente l'inizio dell'intervento successivo (ticket
+    #247410, "interventi vocali partono in ritardo"): 0.8s è il compromesso
+    scelto tra i due sintomi opposti.
 
     v13.25 · esteso a QUALSIASI audio locale (/api/tts/, /api/suno_audio/,
     /api/audio/, /api/community_audio/): stessa logica, resolve del path
@@ -6819,8 +6962,8 @@ def _resolve_local_path_from_url(url: str) -> Optional[Path]:
 @api_router.post("/admin/audio/reprobe-durations")
 async def admin_audio_reprobe_durations(limit: int = 500):
     """v13.25 · Ricalcola `duration_sec` per le tracce esistenti usando
-    ffprobe sul file fisico. Aggiunge 0.4s di margine di sicurezza per
-    evitare che lo `station_clock` avanzi un attimo prima che l'audio finisca
+    ffprobe sul file fisico. Aggiunge un margine di sicurezza per evitare
+    che lo `station_clock` avanzi un attimo prima che l'audio finisca
     (taglio dell'inizio del brano successivo su decoder Bluetooth).
     Idempotente: si può rilanciare in sicurezza dopo ogni ingest.
 
@@ -6829,7 +6972,13 @@ async def admin_audio_reprobe_durations(limit: int = 500):
     scarica l'MP3 da Object Storage in un tempfile, esegue ffprobe come
     per il path locale, e rimuove il temp in un blocco `finally`.
     Mappatura URL→storage-key: suno_audio→suno, tts→tts, community_audio→community.
-    `/api/audio/` resta locale-only (nessun equivalente storage)."""
+    `/api/audio/` resta locale-only (nessun equivalente storage).
+
+    v13.36 · FIX (brano tagliato a metà, ticket #247410): il margine era
+    0.4s, troppo piccolo per MP3 VBR (bitrate variabile) dove ffprobe può
+    sottostimare la durata reale anche di 1-2s — esattamente la stessa
+    classe di problema già risolta per i segmenti DJ in `_probe_tts_duration`
+    con pad_sec=2.0 (v13.20). Allineato allo stesso margine qui."""
     import tempfile as _tempfile
     import os as _os
 
@@ -6889,7 +7038,7 @@ async def admin_audio_reprobe_durations(limit: int = 500):
                 logger.warning(f"[reprobe] track {tid} unreadable · ffprobe non ha ritornato durata (source={source})")
                 unreadable += 1
                 continue
-            real = float(d) + 0.4  # safety margin
+            real = float(d) + 2.0  # v13.36 · safety margin (was 0.4s, too thin for VBR MP3)
             if source == "local":
                 probed_local += 1
             else:
@@ -6942,7 +7091,7 @@ async def admin_audio_normalize_one(track_id: str):
             f.write(result["normalized_bytes"])
     except Exception as e:
         raise HTTPException(500, f"Scrittura file fallita: {e}")
-    real = float(result["duration_sec"]) + 0.4
+    real = float(result["duration_sec"]) + 2.0  # v13.36 · aligned with reprobe margin (was 0.4s)
     await db.tracks.update_one(
         {"id": track_id},
         {"$set": {"duration_sec": round(real, 3),
@@ -6975,7 +7124,7 @@ async def _clock_pick_spoken_segment() -> Optional[dict]:
         leo_url = pq_doc.get("leo_speech_url")
         max_url = pq_doc.get("max_speech_url")
         if leo_url:
-            dur = await _probe_tts_duration(leo_url, pad_sec=2.0)
+            dur = await _probe_tts_duration(leo_url, pad_sec=0.8)  # v13.36 · was 2.0, causava interventi in ritardo
             if dur is not None:
                 if max_url:
                     # rimette Max in coda (created_at aggiornato) per il prossimo turno DJ
@@ -6989,7 +7138,7 @@ async def _clock_pick_spoken_segment() -> Optional[dict]:
                 }
             leo_url = None  # file mancante: prova Max sotto
         if max_url:
-            dur = await _probe_tts_duration(max_url, pad_sec=2.0)
+            dur = await _probe_tts_duration(max_url, pad_sec=0.8)  # v13.36 · was 2.0, causava interventi in ritardo
             if dur is not None:
                 return {
                     "id": f"{pq_doc['id']}-max", "title": pq_doc.get("title") or "Dual-Brain · Max",
@@ -6998,7 +7147,7 @@ async def _clock_pick_spoken_segment() -> Optional[dict]:
         return None
     if kind in ("pill_past", "pill_future"):
         url = pq_doc.get("speech_url")
-        dur = await _probe_tts_duration(url, pad_sec=2.0)
+        dur = await _probe_tts_duration(url, pad_sec=0.8)  # v13.36 · was 2.0, causava interventi in ritardo
         if dur is None:
             return None
         return {
@@ -7125,7 +7274,7 @@ async def _dj_pregen_once():
         seg = await generate_segment(kind=rubric)
         if not seg or not seg.speech_audio_url:
             return False
-        dur = await _probe_tts_duration(seg.speech_audio_url, pad_sec=2.0)
+        dur = await _probe_tts_duration(seg.speech_audio_url, pad_sec=0.8)  # v13.36 · was 2.0, causava interventi in ritardo
         if dur is None:
             return False
         await db.priority_queue.insert_one({
@@ -9473,6 +9622,7 @@ async def _time_signal_pregenerator():
                     provider = dj.get("llm_provider", "openai")
                     model = dj.get("llm_model", "gpt-5.2")
                     voice_key = dj.get("voice_key", "nova")
+                    dj_id = dj.get("id")
                     time_str = f"{upcoming.hour:02d}:00"
                     worlds = [
                         "Marte", "Giove", "una galassia parallela", "il futuro anteriore",
@@ -9500,7 +9650,7 @@ async def _time_signal_pregenerator():
                             f"Sono le {time_str} su R-A.I. Radio! Anche su {world} è la stessa ora, "
                             "ma solo qui la festa non finisce mai!"
                         )
-                    fn, subpath = await synth_speech(script, voice_key, kind="time_signal")
+                    fn, subpath = await synth_speech(script, voice_key, kind="time_signal", dj_id=dj_id)
                     if fn:
                         await db.time_signal_cache.update_one(
                             {"_id": hour_key},

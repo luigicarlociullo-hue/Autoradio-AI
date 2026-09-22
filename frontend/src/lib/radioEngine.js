@@ -723,7 +723,13 @@ class RadioEngine {
     const bedUrl = segment.background_loop || this._activeBedUrl || null;
     if (bedUrl) {
       const boundTo = this._activeBedSpeaker || null;
-      const segSpeaker = segment.voice_key || segment.speaker_key || segment.dj_name || null;
+      // v13.36 · FIX (ticket #247410): `loop_bind_speaker` è un NOME libero
+      // (es. "Leo", "Meteo" — vedi placeholder nel form di upload), mai un
+      // voice_key ("female-1"). Il match precedente controllava voice_key
+      // per primo: quasi ogni segmento ha un voice_key non-null, quindi il
+      // confronto con dj_name non veniva mai raggiunto e un bed agganciato
+      // a uno speaker specifico non partiva praticamente mai.
+      const segSpeaker = segment.dj_name || segment.speaker_key || segment.kind || null;
       const bindOk = !boundTo || (segSpeaker && String(boundTo).toLowerCase() === String(segSpeaker).toLowerCase());
       if (bindOk) {
         return this._playSpeechWithBed(segment);

@@ -465,8 +465,13 @@ export default function PublicRadio() {
         if (prevKind) {
           const musicToSpeech = prevKind === "music" && seg.kind !== "music";
           const speechToMusic = prevKind !== "music" && seg.kind === "music";
+          // v13.36 · FIX (ticket #247410): l'FX di transizione era limitato
+          // a music<->talk. Il cliente chiedeva esplicitamente l'FX anche
+          // "tra segmenti e song" (song-to-song incluso) — aggiunta la
+          // terza condizione musicToMusic.
+          const musicToMusic = prevKind === "music" && seg.kind === "music";
           const isJingleTransition = prevKind === "jingle" || seg.kind === "jingle";
-          if ((musicToSpeech || speechToMusic) && !isJingleTransition) {
+          if ((musicToSpeech || speechToMusic || musicToMusic) && !isJingleTransition) {
             // v13.35 · Se il Direttore ha configurato un FX di transizione
             // persistente, usa quello (file caricato) invece dello stinger
             // procedurale. Fallback allo stinger se il fetch è ancora

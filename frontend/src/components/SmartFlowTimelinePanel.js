@@ -95,6 +95,12 @@ export default function SmartFlowTimelinePanel() {
   });
   // v13.33 · Sequenza concatenata multipla (lista ordinata di source_id dal Magazzino)
   const [followUpIds, setFollowUpIds] = useState([]);
+  // v13.36 · FIX (ticket #247410, come modifico un evento gia' creato):
+  // stato per la modifica inline di un evento pending gia' esistente —
+  // prima d'ora l'unica azione disponibile era la cancellazione (✕).
+  const [editingId, setEditingId] = useState(null);
+  const [editDraft, setEditDraft] = useState(null); // { scheduled_at, title, duration_sec, followUpIds: [] }
+  const [editBusy, setEditBusy] = useState(false);
   const followUps = useMemo(
     () => followUpIds.map((id) => sources.find((s) => s.id === id)).filter(Boolean),
     [followUpIds, sources]
@@ -287,6 +293,61 @@ export default function SmartFlowTimelinePanel() {
       toast.success("Evento rimosso");
       setPending((p) => p.filter((e) => e.id !== id));
     } catch { toast.error("Errore rimozione"); }
+  };
+
+  // v13.36 · FIX (ticket #247410): modifica inline di un evento pending gia'
+  // creato — orario, titolo, durata, e aggiunta/rimozione di spot concatenati
+  // (follow_ups) dopo la creazione, il caso d'uso esplicitamente richiesto dal
+  // cliente ("se voglio aggiungerli in un secondo momento?").
+  const startEdit = (ev) => {
+    setEditingId(ev.id);
+    setEditDraft({
+      scheduled_at: toLocalInput(new Date(ev.scheduled_at)),
+      title: ev.title || "",
+      duration_sec: ev.duration_sec || 30,
+      followUpIds: [],
+    });
+  };
+
+  const cancelEdit = () => { setEditingId(null); setEditDraft(null); };
+
+  const saveEdit = async (ev) => {
+    if (!editDraft) return;
+    setEditBusy(true);
+    try {
+      const patch = {};
+      const iso = fromLocalInput(editDraft.scheduled_at).toISOString();
+      if (iso !== ev.scheduled_at) patch.scheduled_at = iso;
+      if (editDraft.title !== (ev.title || "")) patch.title = editDraft.title;
+      if (Number(editDraft.duration_sec) !== ev.duration_sec) patch.duration_sec = Number(editDraft.duration_sec);
+      if (editDraft.followUpIds && editDraft.followUpIds.length) {
+        const existingFu = ev.follow_ups || [];
+        const newFu = editDraft.followUpIds
+          .map((id) => sources.find((s) => s.id === id))
+          .filter(Boolean)
+          .map((s) => ({
+            audio_url: s.audio_url,
+            title: s.title,
+            artist: s.artist,
+            duration_sec: Math.max(1, Math.round(s.duration_sec || 20)),
+          }));
+        patch.follow_ups = [...existingFu, ...newFu];
+      }
+      if (Object.keys(patch).length === 0) {
+        toast("Nessuna modifica da salvare");
+        cancelEdit();
+        return;
+      }
+      const r = await api.patch(`/admin/timeline/${ev.id}`, patch);
+      const updated = r.data?.event;
+      if (updated) {
+        setPending((p) => p.map((e) => (e.id === ev.id ? updated : e)));
+      }
+      toast.success("Evento aggiornato");
+      cancelEdit();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Errore aggiornamento");
+    } finally { setEditBusy(false); }
   };
 
   // ── minutes-until helper ───────────────────────────────────────────────
@@ -852,6 +913,14 @@ export default function SmartFlowTimelinePanel() {
                     {until?.label}
                   </div>
                   <button
+                    onClick={() => (editingId === ev.id ? cancelEdit() : startEdit(ev))}
+                    data-testid={`timeline-edit-${ev.id}`}
+                    className="text-zinc-400 hover:text-cyan-300 text-sm px-1"
+                    title="Modifica evento"
+                  >
+                    ✏️
+                  </button>
+                  <button
                     onClick={() => remove(ev.id)}
                     data-testid={`timeline-remove-${ev.id}`}
                     className="text-zinc-400 hover:text-red-400 text-sm px-1"
@@ -869,6 +938,92 @@ export default function SmartFlowTimelinePanel() {
             </div>
           );
         })}
+        {/* v13.36 · FIX (ticket #247410): pannello di modifica inline per l'evento
+            pending attualmente in editing. Renderizzato fuori dal .map sopra per
+            semplicità (una sola card di edit visibile alla volta). */}
+        {editingId && editDraft && (() => {
+          const ev = pending.find((e) => e.id === editingId);
+          if (!ev) return null;
+          return (
+            <div
+              className="px-3 py-3 border-b border-white/10"
+              style={{ background: "rgba(0,229,255,0.06)" }}
+              data-testid={`timeline-edit-panel-${ev.id}`}
+            >
+              <div className="text-[10px] font-mono uppercase tracking-wider text-cyan-300 mb-2">
+                Modifica evento · {KIND_LABEL[ev.kind] || ev.kind}
+              </div>
+              <div className="grid sm:grid-cols-3 gap-2 mb-2">
+                <div>
+                  <label className="label-mono block mb-1 text-[10px]">Orario</label>
+                  <input
+                    type="datetime-local"
+                    value={editDraft.scheduled_at}
+                    onChange={(e) => setEditDraft((d) => ({ ...d, scheduled_at: e.target.value }))}
+                    className="w-full bg-zinc-900 border border-white/10 rounded px-2 py-1 text-white text-xs"
+                  />
+                </div>
+                <div>
+                  <label className="label-mono block mb-1 text-[10px]">Titolo</label>
+                  <input
+                    type="text"
+                    value={editDraft.title}
+                    onChange={(e) => setEditDraft((d) => ({ ...d, title: e.target.value }))}
+                    className="w-full bg-zinc-900 border border-white/10 rounded px-2 py-1 text-white text-xs"
+                  />
+                </div>
+                <div>
+                  <label className="label-mono block mb-1 text-[10px]">Durata (s)</label>
+                  <input
+                    type="number"
+                    min="1"
+                    value={editDraft.duration_sec}
+                    onChange={(e) => setEditDraft((d) => ({ ...d, duration_sec: e.target.value }))}
+                    className="w-full bg-zinc-900 border border-white/10 rounded px-2 py-1 text-white text-xs"
+                  />
+                </div>
+              </div>
+              <div className="mb-2">
+                <label className="label-mono block mb-1 text-[10px]">
+                  Aggiungi spot concatenati dopo l'evento (opzionale)
+                  {ev.follow_ups?.length ? ` · già presenti: ${ev.follow_ups.length}` : ""}
+                </label>
+                <select
+                  multiple
+                  value={editDraft.followUpIds}
+                  onChange={(e) => setEditDraft((d) => ({
+                    ...d,
+                    followUpIds: Array.from(e.target.selectedOptions).map((o) => o.value),
+                  }))}
+                  className="w-full bg-zinc-900 border border-white/10 rounded px-2 py-1 text-white text-xs"
+                  style={{ minHeight: "64px" }}
+                  data-testid={`timeline-edit-followups-${ev.id}`}
+                >
+                  {sources.map((s) => (
+                    <option key={s.id} value={s.id}>{s.title}{s.artist ? ` — ${s.artist}` : ""}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => saveEdit(ev)}
+                  disabled={editBusy}
+                  data-testid={`timeline-edit-save-${ev.id}`}
+                  className="px-3 py-1 rounded text-xs font-mono bg-cyan-500/20 border border-cyan-400/40 text-cyan-200 hover:bg-cyan-500/30 disabled:opacity-50"
+                >
+                  {editBusy ? "Salvataggio…" : "Salva"}
+                </button>
+                <button
+                  onClick={cancelEdit}
+                  disabled={editBusy}
+                  className="px-3 py-1 rounded text-xs font-mono bg-white/5 border border-white/10 text-zinc-300 hover:bg-white/10"
+                >
+                  Annulla
+                </button>
+              </div>
+            </div>
+          );
+        })()}
       </div>
     </section>
   );
