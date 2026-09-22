@@ -53,7 +53,7 @@ VOICE_KEY_TO_ELEVEN = {
     "male-1":   "ErXwobaYiN019PkySvjV",
     "male-2":   "pNInz6obpgDQGcFmaJgB",
     "male-3":   "TxGEqnHWrfWFTfGW9XjX",
-    "male-4":   "VR6AewLTigWG4xSOukaG",
+    "male-4":   "nse3woUFSMa13Q3ZFI3y",  # L&C · Direttore Pazzo (aggiornato 2026-09)
     "male-5":   "yoZ06aMxZJJ28mfd3POQ",
 }
 DEFAULT_ELEVEN_ID = "pNInz6obpgDQGcFmaJgB"

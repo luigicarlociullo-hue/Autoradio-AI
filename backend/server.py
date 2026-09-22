@@ -9468,6 +9468,19 @@ async def on_startup():
     _persisted = {k: bool(_st_ai.get(k)) for k in _AI_CONTROLS_KEYS}
     _active = [k for k, v in _persisted.items() if v]
     _invalidate_ai_controls_cache()
+    # v13.37 · Migrazione one-shot Voice ID L&C (Direttore Pazzo) → nse3woUFSMa13Q3ZFI3y.
+    # Idempotente: allinea il record DJ (override prioritario sulla mappa) e
+    # svuota la cache TTS della vecchia voce, così vale anche in produzione.
+    try:
+        _LC_VOICE = "nse3woUFSMa13Q3ZFI3y"
+        await db.djs.update_many({"name": "L&C", "eleven_voice_id": {"$ne": _LC_VOICE}}, {"$set": {"eleven_voice_id": _LC_VOICE}})
+        _st_mig = await db.station.find_one({"_id": "state"}, {"lc_voice_migrated": 1}) or {}
+        if _st_mig.get("lc_voice_migrated") != _LC_VOICE:
+            _purged = await db.tts_cache.delete_many({"voice_key": "male-4"})
+            await db.station.update_one({"_id": "state"}, {"$set": {"lc_voice_migrated": _LC_VOICE}}, upsert=True)
+            logger.info(f"[startup] L&C voice → {_LC_VOICE} · tts_cache male-4 purged ({_purged.deleted_count})")
+    except Exception as e:
+        logger.warning(f"[startup] L&C voice migration skipped: {e}")
     if _active:
         logger.info(f"[startup] AI Master Control caricato da Mongo · {len(_active)}/7 ATTIVI: {_active}")
     else:
