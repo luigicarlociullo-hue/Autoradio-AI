@@ -7311,8 +7311,16 @@ async def _clock_pick_dj_jingle() -> Optional[dict]:
     return tr
 
 
-async def _clock_pick_track() -> Optional[dict]:
-    """Pesca il prossimo brano rispettando day/night. Non decrementa altro."""
+async def _clock_pick_track(exclude_ids: Optional[set] = None) -> Optional[dict]:
+    """Pesca il prossimo brano rispettando day/night. Non decrementa altro.
+
+    v13.37 · `exclude_ids`: ID già presenti in current/queue nello stesso
+    passaggio di riempimento. Vengono esclusi dal pool di candidati PRIMA
+    dello shuffle, così la stessa traccia non può occupare più slot della
+    coda contemporaneamente (last_played_at si aggiorna solo alla
+    promozione a current, quindi da solo non basta a deduplicare)."""
+    _excl = {i for i in (exclude_ids or set()) if i}
+    _not_queued = {"id": {"$nin": list(_excl)}} if _excl else {}
     # v13.7 · Human Priority: se ON, community tracks in cima
     try:
         _ai = await _get_ai_controls()
@@ -7346,7 +7354,7 @@ async def _clock_pick_track() -> Optional[dict]:
     if _ai.get("ai_human_priority"):
         tr_com = await db.tracks.find_one(
             {"source": "community", "status": "ready", "audio_url": {"$ne": None},
-             "on_air": {"$ne": False}, "deleted_at": None, **dp},
+             "on_air": {"$ne": False}, "deleted_at": None, **dp, **_not_queued},
             {"_id": 0, "id": 1, "title": 1, "artist": 1, "audio_url": 1, "duration_sec": 1, "bpm": 1},
             sort=[("last_played_at", 1)],
         )
@@ -7367,6 +7375,7 @@ async def _clock_pick_track() -> Optional[dict]:
             {"$or": [{"is_jingle": {"$exists": False}}, {"is_jingle": False}]},
             dp, _window, _window_end,
         ],
+        **_not_queued,
     }
     # v13.17 · Pesca a caso tra i brani meno recenti (pool + shuffle) invece
     # del rigido "meno recente" (FIFO), che produceva un ordine fisso e
@@ -7378,7 +7387,7 @@ async def _clock_pick_track() -> Optional[dict]:
     tr = random.choice(tr_pool) if tr_pool else None
     if not tr:
         tr_pool = await db.tracks.find(
-            {"status": "ready", "audio_url": {"$ne": None}, "on_air": {"$ne": False}, "deleted_at": None},
+            {"status": "ready", "audio_url": {"$ne": None}, "on_air": {"$ne": False}, "deleted_at": None, **_not_queued},
             {"_id": 0, "id": 1, "title": 1, "artist": 1, "audio_url": 1, "duration_sec": 1, "bpm": 1},
         ).sort([("last_played_at", 1)]).limit(_pool_size).to_list(length=_pool_size)
         tr = random.choice(tr_pool) if tr_pool else None
@@ -7441,7 +7450,9 @@ async def _clock_advance(force: bool = False) -> dict:
         else:
             q = clock.get("queue") or []
         if not promo:
-            promo = await _clock_pick_track()
+            promo = await _clock_pick_track(
+                exclude_ids={(clock.get("current") or {}).get("id")} | {t.get("id") for t in q}
+            )
         if not promo:
             break
         promo = dict(promo)
@@ -7506,6 +7517,12 @@ async def _clock_advance(force: bool = False) -> dict:
         _speaker_on = True
 
     # Riempi la queue fino al lookahead con injection DJ ogni N brani
+    # v13.37 · `_queued_ids`: current + TUTTI gli ID già in coda. Aggiornato
+    # ad ogni append e passato a _clock_pick_track come esclusione, così lo
+    # stesso brano non può finire in più slot nello stesso passaggio.
+    _queued_ids = {(clock.get("current") or {}).get("id")}
+    _queued_ids |= {t.get("id") for t in (clock.get("queue") or [])}
+    _queued_ids.discard(None)
     while len(clock.get("queue") or []) < _CLOCK_QUEUE_LOOKAHEAD:
         # Decidi se inserire un jingle DJ o un brano musicale
         counter = int(clock.get("music_counter") or 0)
@@ -7527,7 +7544,7 @@ async def _clock_advance(force: bool = False) -> dict:
             # Se sì e il PP è pronto, servilo; altrimenti music normale.
             picked = await _power_play_maybe_pick()
             if not picked:
-                picked = await _clock_pick_track()
+                picked = await _clock_pick_track(exclude_ids=_queued_ids)
             # incrementa counter musicale solo quando aggiungiamo musica reale
             if picked:
                 clock["music_counter"] = counter + 1
@@ -7541,19 +7558,18 @@ async def _clock_advance(force: bool = False) -> dict:
             # dedup anti-ripetizione), il turno DJ sarebbe rimasto "dovuto"
             # per sempre riempiendo l'intera coda di sola voce, zero musica.
             clock["music_counter"] = 0
-        # Evita duplicati back-to-back col current e ultimi 2 in coda
-        recent_ids = {(clock.get("current") or {}).get("id")}
-        for t in (clock.get("queue") or [])[-2:]:
-            recent_ids.add(t.get("id"))
-        if picked["id"] in recent_ids:
+        # Evita duplicati: current + tutto ciò che è già in coda (v13.37: prima
+        # solo gli ultimi 2). Copre anche i picker non-musicali (PP, jingle).
+        if picked.get("id") in _queued_ids:
             found_alt = False
             for _ in range(3):
-                alt = await _clock_pick_track()
-                if alt and alt["id"] not in recent_ids:
+                alt = await _clock_pick_track(exclude_ids=_queued_ids)
+                if alt and alt["id"] not in _queued_ids:
                     picked = alt; found_alt = True; break
             if not found_alt:
                 break
         clock.setdefault("queue", []).append(picked)
+        _queued_ids.add(picked.get("id"))
         changed = True
 
     if changed:
