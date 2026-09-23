@@ -693,3 +693,11 @@ Vedi turni precedenti in questa sessione:
 - `POST /admin/timeline` (talk a tema con DJ): se OFF → **409** chiaro PRIMA di chiamare LLM; se il DJ non ha `voice_key` → 409; TTS con `strict_voice=True` (nessun fallback Bark/voce generica, nessun audio di altri speaker) → 502 esplicito se il provider fallisce.
 - `synth_speech(..., strict_voice)` + `AITalkDisabledError` nel wrapper server.py.
 - `_extract_spoken_text()`: isola SOLO il parlato (rimuove fence, markdown, [didascalie], *azioni*, (ride), etichette, righe che riecheggiano il prompt). Evento timeline salva `spoken_text` + `llm_prompt{system,user,raw_output}`; `Segment.spoken_text` nuovo campo; TTS (generate_segment, render_hd, timeline) riceve esclusivamente spoken_text.
+
+## v13.38 · AUDIT PIPELINE VOCE DJ (2026-09-23)
+- **Toggle persistono** (verificato: 7 PATCH manuali alle 20:15 del 22/09 li hanno messi OFF; sopravvissuti a 4 restart). `ai_voice_to_air` gate SOLO il mic ascoltatori (`/voice/transcribe`); la voce DJ dipende da `ai_openai_talk` (+ `ai_speaker_enabled`, `dj_talk_every_n_songs`). Label/descrizioni UI corrette; PATCH ritorna read-back Mongo; `ai_controls_updated_at`.
+- **Voice L&C**: `nse3woUFSMa13Q3ZFI3y` rifiutata (voice_not_fine_tuned, tutti i modelli); `WtpgJy6CcOKH2K50eVfg` = voice_not_found. Sostituita con `VR6AewLTigWG4xSOukaG` (HTTP 200). Migrazione startup idempotente + purge tts_cache male-4.
+- **Fail loud**: `VoiceRejectedError` (elevenlabs_service) → log ERROR + `station.state.tts_voice_error` + banner in AI Master Control; nessun fallback OpenAI/Bark.
+- **Testo DJ**: prompt intro/outro music riscritti (18-28 parole, frasi complete, titolo+artista), DJ_TONES sobri, anti-ripetizione soft, regola 5 system prompt "chiaro al primo ascolto". Test reale: "Centoventiquattro battiti al minuto... DJ VantaRay ci regala Neon Pulse Tonight...".
+- **Gate a monte**: `elevenlabs_service.synth_speech` e `generate_segment` controllano `ai_openai_talk` PRIMA di qualsiasi chiamata provider. In preview con switch OFF: 0 LLM / 0 TTS dal 22/09 20:16 (log).
+- **NOTA FM_MODE**: con `fm_mode=false` la TTS va SEMPRE su OpenAI TTS-1-HD: i Voice ID ElevenLabs non vengono usati. UI mostra la route attiva.

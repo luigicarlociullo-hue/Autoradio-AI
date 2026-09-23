@@ -13,6 +13,7 @@ export default function AIMasterControlPanel() {
   const [labels, setLabels] = useState({});
   const [descs, setDescs] = useState({});
   const [busyKey, setBusyKey] = useState(null);
+  const [meta, setMeta] = useState({ updated_at: null, tts_voice_error: null });
 
   const load = async () => {
     try {
@@ -20,6 +21,7 @@ export default function AIMasterControlPanel() {
       setControls(r.data.controls || {});
       setLabels(r.data.labels || {});
       setDescs(r.data.descriptions || {});
+      setMeta({ updated_at: r.data.updated_at || null, tts_voice_error: r.data.tts_voice_error || null, tts_route: r.data.tts_route || null, fm_mode: !!r.data.fm_mode });
     } catch (e) { toast.error("Errore caricamento AI controls"); }
   };
   useEffect(() => { load(); const iv = setInterval(load, 6000); return () => clearInterval(iv); }, []);
@@ -28,9 +30,12 @@ export default function AIMasterControlPanel() {
     const next = !controls[key];
     setBusyKey(key);
     try {
-      await api.patch("/admin/ai-controls", { [key]: next });
-      setControls((s) => ({ ...s, [key]: next }));
-      toast.success(`${labels[key] || key}: ${next ? "ON" : "OFF"}`);
+      // v13.38 · read-back: lo stato mostrato è quello RILETTO da Mongo, non quello ottimistico
+      const r = await api.patch("/admin/ai-controls", { [key]: next });
+      const persisted = r.data?.controls || {};
+      setControls(persisted);
+      if (!!persisted[key] !== next) toast.error(`${labels[key] || key}: NON persistito (DB dice ${persisted[key] ? "ON" : "OFF"})`);
+      else toast.success(`${labels[key] || key}: ${next ? "ON" : "OFF"} · salvato`);
     } catch (e) { toast.error("Errore"); }
     finally { setBusyKey(null); }
   };
@@ -68,8 +73,18 @@ export default function AIMasterControlPanel() {
             {activeCount === 0 ? "TUTTI OFF · Costi Zero" : `${activeCount}/7 ATTIVI`}
           </div>
           <div className="text-[11px] font-mono text-zinc-400 mt-0.5 max-w-2xl">
-            Interruttori indipendenti. Default OFF ad ogni restart backend. Ogni chiamata API/upload consulta questi stati.
+            Interruttori indipendenti, <b>persistiti su Mongo</b> (sopravvivono a restart/deploy). Ogni chiamata LLM/TTS/upload consulta questi stati.
+            {meta.updated_at && <span data-testid="ai-controls-updated-at"> · ultimo salvataggio {new Date(meta.updated_at).toLocaleString()}</span>}
+            {meta.tts_route && (
+              <span data-testid="ai-controls-tts-route"> · voce DJ via <b style={{ color: meta.fm_mode ? "#80FFB4" : "#FFB84D" }}>{meta.fm_mode ? "ElevenLabs (FM MODE ON)" : "OpenAI TTS (FM MODE OFF · i Voice ID ElevenLabs NON sono usati)"}</b></span>
+            )}
           </div>
+          {meta.tts_voice_error && (
+            <div className="mt-2 rounded p-2 text-[11px] font-mono" data-testid="tts-voice-error-banner"
+              style={{ background: "rgba(255,45,149,0.10)", border: "1px solid rgba(255,45,149,0.55)", color: "#FF6BAA" }}>
+              ❌ ElevenLabs ha RIFIUTATO la voce <b>{meta.tts_voice_error.voice_id}</b> ({meta.tts_voice_error.voice_key}) · {meta.tts_voice_error.code} · {new Date(meta.tts_voice_error.at).toLocaleString()}. Nessun audio generato con voce sostitutiva: correggi il Voice ID del DJ.
+            </div>
+          )}
         </div>
         <Zap className="w-6 h-6 shrink-0" style={{ color: activeCount > 0 ? "#FF8A3D" : "#00E5FF88" }} />
       </div>

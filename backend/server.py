@@ -92,7 +92,23 @@ async def synth_speech(text: str, voice_key: str = "female-1", kind: str = "", s
                 "Nessun fallback su voci pre-registrate di altri speaker."
             )
     if elevenlabs_service.is_enabled():
-        fn = await elevenlabs_service.synth_speech(text, voice_key, kind=kind, dj_id=dj_id)
+        try:
+            fn = await elevenlabs_service.synth_speech(text, voice_key, kind=kind, dj_id=dj_id)
+        except elevenlabs_service.VoiceRejectedError as e:
+            # v13.38 · FAIL LOUD: log ERROR + persistenza in station.state per la
+            # Regia. Nessun fallback su Bark/OpenAI con voce diversa.
+            logger.error(f"[TTS] ❌ {e}")
+            try:
+                await db.station.update_one(
+                    {"_id": "state"},
+                    {"$set": {"tts_voice_error": {
+                        "voice_id": e.voice_id, "voice_key": e.voice_key, "code": e.code,
+                        "message": str(e)[:300], "kind": kind, "at": now_iso()}}},
+                    upsert=True,
+                )
+            except Exception:
+                pass
+            raise
         if fn:
             return fn, "tts"
     if strict_voice:
@@ -600,16 +616,13 @@ async def push_recent_ad(product_name: str, max_size: int = 10) -> None:
 
 # ---------------- Speaker tone rotation ----------------
 DJ_TONES = [
-    "poetico, immagini sensoriali, come una haiku urbana",
-    "ironico e tagliente, un sorriso a denti stretti",
-    "cinematografico, come una voce fuori campo di un film di Sorrentino",
-    "minimalista, solo 4-5 parole, chirurgico",
-    "misterioso, come un enigma sussurrato",
-    "energico da rave, urlo controllato",
-    "documentaristico, come National Geographic della notte",
-    "sognante, come un pensiero a mezzo sonno",
-    "sarcastico verso la tecnologia stessa",
-    "affettuoso, complice con l'ascoltatore",
+    "caldo e complice, come parlare a un amico in macchina",
+    "energico e positivo, da apertura di serata",
+    "ironico ma chiaro, una battuta leggera che tutti capiscono",
+    "rilassato e notturno, voce bassa e tranquilla",
+    "entusiasta per il brano, da appassionato di musica",
+    "informativo e curioso, un dettaglio sul genere o sul ritmo",
+    "affettuoso e diretto, rivolto a chi sta ascoltando adesso",
 ]
 
 
@@ -2268,7 +2281,15 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
     """
     await ensure_seeded()
 
-    # Ad rotation: ~1 out of every 5 segments becomes an ad if there is any
+    # v13.38 · KILL-SWITCH difensivo dentro il generatore stesso: nessun LLM/TTS
+    # per la voce DJ se `ai_openai_talk` è OFF, qualunque sia il chiamante.
+    try:
+        _ai_gs = await _get_ai_controls()
+    except Exception:
+        _ai_gs = {}
+    if not _ai_gs.get("ai_openai_talk"):
+        logger.info(f"[generate_segment] BLOCCATO · ai_openai_talk=OFF (kind={kind}) · zero chiamate LLM/TTS")
+        return None
     # active campaign with plays remaining, unless caller explicitly forced a kind.
     if kind is None and random.random() < 0.22:
         ad = await db.ad_campaigns.find_one(
@@ -2612,8 +2633,9 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
         "3) NIENTE cliche' radiofonici: mai 'restate con noi', 'siamo in diretta', 'non spegnete', "
         "'cari amici ascoltatori'. Mai formule vuote.\n"
         "4) NIENTE frasi generiche tipo 'la musica non finisce mai' o 'la festa continua'.\n"
-        "5) Ogni volta DEVE essere SORPRENDENTE: un dettaglio inaspettato, una battuta, una immagine "
-        "concreta. L'ascoltatore deve pensare 'aspetta cosa ha detto?'.\n"
+        "5) Ogni intervento deve essere CHIARO al primo ascolto: frasi complete, una sola idea, "
+        "un dettaglio concreto o una battuta comprensibile. Niente metafore criptiche, niente "
+        "frammenti, niente parole inventate.\n"
         "6) Rispetta il numero di parole richiesto nel prompt specifico. Frasi corte e ritmate.\n"
         "7) Restituisci SOLO il testo che il DJ pronuncera'. Niente virgolette, didascalie, emoji, "
         "note esplicative."
@@ -2791,46 +2813,50 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
         recent = await get_recent_intros(20)
         recent_block = ""
         if recent:
-            joined = "\n".join(f"- \"{r}\"" for r in recent)
+            joined = "\n".join(f"- \"{r}\"" for r in recent[:10])
             recent_block = (
-                "\n\n=== ANTI-RIPETIZIONE (CRITICO) ===\n"
-                "Le frasi qui sotto sono i tuoi ultimi 20 interventi. NON puoi:\n"
-                "1. Iniziare con le stesse 3 parole di nessuna di esse.\n"
-                "2. Usare le stesse metafore o immagini.\n"
-                "3. Ricalcare la stessa struttura ritmica.\n"
-                "Ogni intervento deve essere RADICALMENTE diverso: cambia registro, ritmo, angolazione.\n"
-                f"ULTIME FRASI (NON riusare NULLA di simile):\n{joined}\n"
-                "=== FINE ANTI-RIPETIZIONE ==="
+                "\n\nANTI-RIPETIZIONE: questi sono i tuoi ultimi interventi. Non ripetere le stesse "
+                "battute, le stesse immagini o le stesse parole d'apertura. Cambia angolazione, ma "
+                f"resta sempre chiaro e comprensibile.\n{joined}"
             )
         tone_intro = random.choice(DJ_TONES)
+        # v13.38 · FIX testo DJ incoerente: il vecchio prompt (max 12 parole +
+        # toni surreali + "radicalmente diverso") produceva frammenti criptici
+        # tipo "Tensione tra i tendini. Nova.". Ora: frasi complete, titolo e
+        # artista nominati, italiano naturale, una sola idea chiara.
         prompt = (
-            f"Sei il DJ di R-A.I., radio elettronica italiana. "
-            f"Scrivi un intro CORTISSIMO (massimo 12 parole, ~6 secondi di lettura) "
-            f"per il brano \"{track.title}\" di {track.artist} ({track.genre}, {bpm} BPM). "
-            f"Tono di stanotte: {tone_intro}. "
-            f"Non usare mai il tono classico da annunciatore radio. Devi finire di parlare PRIMA "
-            f"che partano le voci del brano. Solo italiano."
+            f"Sei il DJ di R-A.I., radio dance/elettronica italiana. Presenta il brano che sta per "
+            f"partire: \"{track.title}\" di {track.artist} (genere: {track.genre}, {bpm} BPM).\n"
+            "REGOLE:\n"
+            "- 18-28 parole, 1-2 frasi COMPLETE e grammaticali, italiano naturale da radio.\n"
+            f"- Nomina SEMPRE il titolo e l'artista in modo esplicito.\n"
+            f"- Tono: {tone_intro}.\n"
+            "- Contenuto comprensibile al primo ascolto: un dettaglio concreto sul brano (ritmo, "
+            "atmosfera, momento della giornata) oppure una battuta leggera e chiara. Niente metafore "
+            "criptiche, niente frasi spezzate, niente parole inventate.\n"
+            "- Solo il testo parlato, niente didascalie."
             f"{recent_block}"
         )
         script = await llm_generate(provider, model, system_prompt, prompt)
         if not script.strip():
-            script = f"E si balla con {track.title}! Volume su!"
+            script = f"Su R-A.I. parte adesso {track.title} di {track.artist}: alzate il volume e lasciatevi portare dal ritmo."
         tone_outro = random.choice([t for t in DJ_TONES if t != tone_intro])
         outro_prompt = (
-            f"Sei il DJ di R-A.I.. Scrivi un outro di massimo 15 parole per il brano "
-            f"\"{track.title}\" appena finito. Tono: {tone_outro}. "
-            f"Commenta, anticipa il prossimo, fai una battuta o cita qualcosa di cool. "
-            f"Solo italiano. Mai uguale. Zero cliché radiofonici."
+            f"Sei il DJ di R-A.I.. Il brano \"{track.title}\" di {track.artist} è appena finito. "
+            "Scrivi un commento di chiusura di 14-22 parole, 1-2 frasi complete in italiano naturale: "
+            f"nomina il titolo o l'artista, aggiungi un'osservazione concreta o una battuta chiara. Tono: {tone_outro}. "
+            "Niente metafore criptiche, niente frasi spezzate. Solo il testo parlato."
             f"{recent_block}"
         )
         outro_script = await llm_generate(provider, model, system_prompt, outro_prompt)
         if not outro_script.strip():
-            outro_script = "Bomba! Non muovetevi, R-A.I. continua!"
+            outro_script = f"Questa era {track.title} di {track.artist}. Si continua su R-A.I. con il prossimo brano."
         # Save into the anti-repetition circular buffer
         await push_recent_intro(script.strip())
         await push_recent_intro(outro_script.strip())
         segment.title = f"♪ {track.title} — {track.artist}"
         segment.script = script.strip()
+        segment.spoken_text = _extract_spoken_text(segment.script) or segment.script
         segment.outro_script = outro_script.strip()
         segment.track_id = track.id
         segment.track_meta = track.model_dump()
@@ -4302,22 +4328,28 @@ def _invalidate_ai_controls_cache():
 async def get_ai_controls():
     """Stato dei 7 interruttori AI. Default OFF ad ogni avvio."""
     data = await _get_ai_controls()
+    st = await db.station.find_one({"_id": "state"}, {"ai_controls_updated_at": 1, "tts_voice_error": 1, "ai_speaker_enabled": 1, "fm_mode": 1}) or {}
     return {
         "controls": data,
+        "updated_at": st.get("ai_controls_updated_at"),
+        "tts_voice_error": st.get("tts_voice_error"),
+        "ai_speaker_enabled": bool(st.get("ai_speaker_enabled", True)),
+        "fm_mode": bool(st.get("fm_mode")),
+        "tts_route": "elevenlabs" if st.get("fm_mode") else "openai-tts-1-hd",
         "labels": {
             "ai_suno_engine":    "🎵 SUNO ENGINE",
-            "ai_openai_talk":    "🎙️ OPENAI TALK",
+            "ai_openai_talk":    "🎙️ VOCE DJ / TALK (LLM + TTS)",
             "ai_claude_brain":   "🧠 CLAUDE BRAIN",
-            "ai_voice_to_air":   "🎙️ VOICE-TO-AIR",
+            "ai_voice_to_air":   "🎤 VOICE-TO-AIR (mic ascoltatori)",
             "ai_atmospheric_fx": "🌀 ATMOSPHERIC FX",
             "ai_advertising":    "💰 ADVERTISING LOOP",
             "ai_human_priority": "⚖️ HUMAN PRIORITY",
         },
         "descriptions": {
             "ai_suno_engine":    "Generazione automatica di musica via Suno API",
-            "ai_openai_talk":    "Interventi parlate base (Economy Mode)",
-            "ai_claude_brain":   "Ragionamento d'élite per i DJ (FM Mode)",
-            "ai_voice_to_air":   "Microfono ascoltatori + Whisper + messa in onda",
+            "ai_openai_talk":    "KILL-SWITCH voce DJ: interventi parlati, pre-generazione, segnale orario, talk a tema (LLM + ElevenLabs/OpenAI TTS). OFF = zero chiamate",
+            "ai_claude_brain":   "Ragionamento d'élite per i DJ (FM Mode) + Pillole",
+            "ai_voice_to_air":   "Solo microfono ascoltatori: Whisper + messa in onda dei vocali. NON controlla la voce DJ",
             "ai_atmospheric_fx": "Transizioni e sottofondi sonori automatici",
             "ai_advertising":    "Programmazione degli spot pubblicitari",
             "ai_human_priority": "Precedenza immediata ai brani caricati dagli utenti",
@@ -4327,17 +4359,20 @@ async def get_ai_controls():
 
 @api_router.patch("/admin/ai-controls")
 async def set_ai_controls(payload: dict):
-    """Aggiorna uno o più toggle. Body: {ai_suno_engine: true, ...}."""
+    """Aggiorna uno o più toggle. Body: {ai_suno_engine: true, ...}.
+    Ritorna lo stato RILETTO da Mongo (read-back) per conferma."""
     updates = {}
     for k in _AI_CONTROLS_KEYS:
         if k in payload:
             updates[k] = bool(payload[k])
     if not updates:
         raise HTTPException(400, "Nessun toggle valido")
+    updates["ai_controls_updated_at"] = now_iso()
     await db.station.update_one({"_id": "state"}, {"$set": updates}, upsert=True)
     _invalidate_ai_controls_cache()
     logger.info(f"[ai-controls] updated: {updates}")
-    return {"ok": True, "updated": updates}
+    persisted = await _get_ai_controls()
+    return {"ok": True, "updated": updates, "controls": persisted}
 
 
 
@@ -9472,12 +9507,12 @@ async def on_startup():
     # Idempotente: allinea il record DJ (override prioritario sulla mappa) e
     # svuota la cache TTS della vecchia voce, così vale anche in produzione.
     try:
-        _LC_VOICE = "nse3woUFSMa13Q3ZFI3y"
+        _LC_VOICE = "VR6AewLTigWG4xSOukaG"  # v13.38 · nse3woUFSMa13Q3ZFI3y RIFIUTATA da ElevenLabs (voice_not_fine_tuned)
         await db.djs.update_many({"name": "L&C", "eleven_voice_id": {"$ne": _LC_VOICE}}, {"$set": {"eleven_voice_id": _LC_VOICE}})
         _st_mig = await db.station.find_one({"_id": "state"}, {"lc_voice_migrated": 1}) or {}
         if _st_mig.get("lc_voice_migrated") != _LC_VOICE:
             _purged = await db.tts_cache.delete_many({"voice_key": "male-4"})
-            await db.station.update_one({"_id": "state"}, {"$set": {"lc_voice_migrated": _LC_VOICE}}, upsert=True)
+            await db.station.update_one({"_id": "state"}, {"$set": {"lc_voice_migrated": _LC_VOICE}, "$unset": {"tts_voice_error": ""}}, upsert=True)
             logger.info(f"[startup] L&C voice → {_LC_VOICE} · tts_cache male-4 purged ({_purged.deleted_count})")
     except Exception as e:
         logger.warning(f"[startup] L&C voice migration skipped: {e}")

@@ -53,7 +53,7 @@ VOICE_KEY_TO_ELEVEN = {
     "male-1":   "ErXwobaYiN019PkySvjV",
     "male-2":   "pNInz6obpgDQGcFmaJgB",
     "male-3":   "TxGEqnHWrfWFTfGW9XjX",
-    "male-4":   "nse3woUFSMa13Q3ZFI3y",  # L&C · Direttore Pazzo (aggiornato 2026-09)
+    "male-4":   "VR6AewLTigWG4xSOukaG",  # L&C · Direttore Pazzo — premade, verificato HTTP 200 (2026-09-23)
     "male-5":   "yoZ06aMxZJJ28mfd3POQ",
 }
 DEFAULT_ELEVEN_ID = "pNInz6obpgDQGcFmaJgB"
@@ -64,23 +64,38 @@ def is_enabled() -> bool:
     return bool(OPENAI_API_KEY and OPENAI_BASE_URL) or bool(ELEVENLABS_API_KEY)
 
 
+class VoiceRejectedError(Exception):
+    """v13.38 · ElevenLabs ha rifiutato il voice_id (voice_not_fine_tuned /
+    voice_not_found). Deve fallire FORTE: nessun fallback silenzioso su
+    un'altra voce/provider."""
+    def __init__(self, voice_id: str, code: str, message: str, voice_key: str = ""):
+        self.voice_id = voice_id; self.code = code; self.voice_key = voice_key
+        super().__init__(f"ElevenLabs voice '{voice_id}' (voice_key={voice_key}) rifiutata [{code}]: {message}")
+
+
+async def _talk_switch_on() -> bool:
+    """Kill-switch AI Master Control `ai_openai_talk` letto da Mongo (una query)."""
+    try:
+        from motor.motor_asyncio import AsyncIOMotorClient
+        _murl = os.environ.get("MONGO_URL"); _dbn = os.environ.get("DB_NAME")
+        if not (_murl and _dbn):
+            return True
+        _c = AsyncIOMotorClient(_murl)
+        _s = await _c[_dbn].station.find_one({"_id": "state"}, {"ai_openai_talk": 1})
+        _c.close()
+        return bool(_s and _s.get("ai_openai_talk"))
+    except Exception:
+        return True
+
+
 async def _synth_openai(text: str, voice_key: str) -> bytes | None:
     """OpenAI TTS-1-HD via Emergent gateway (fallback). Ritorna bytes mp3 o None."""
     if not OPENAI_API_KEY or not OPENAI_BASE_URL:
         return None
     # v13.7 · Gate AI Master Control: OPENAI TALK OFF → non chiamare l'API
-    try:
-        from motor.motor_asyncio import AsyncIOMotorClient
-        _murl = os.environ.get("MONGO_URL"); _dbn = os.environ.get("DB_NAME")
-        if _murl and _dbn:
-            _c = AsyncIOMotorClient(_murl)
-            _s = await _c[_dbn].station.find_one({"_id": "state"}, {"ai_openai_talk": 1})
-            _c.close()
-            if not (_s and _s.get("ai_openai_talk")):
-                logger.info("[TTS] OpenAI TALK bloccato: AI OPENAI TALK OFF")
-                return None
-    except Exception:
-        pass
+    if not await _talk_switch_on():
+        logger.info("[TTS] OpenAI TALK bloccato: AI OPENAI TALK OFF")
+        return None
     voice = VOICE_KEY_TO_OPENAI.get(voice_key, "nova")
     url = f"{OPENAI_BASE_URL}/audio/speech"
     body = {"model": "tts-1-hd", "voice": voice, "input": text[:4000]}
@@ -194,9 +209,20 @@ async def _synth_elevenlabs(text: str, voice_key: str, kind: str = "", dj_id: st
         async with httpx.AsyncClient(timeout=45) as client:
             r = await client.post(url, headers=headers, json=body)
         if r.status_code != 200:
+            # v13.38 · Voice ID rifiutato → errore FORTE (niente fallback muto)
+            _code = ""
+            try:
+                _code = ((r.json().get("detail") or {}).get("code") or "")
+            except Exception:
+                pass
+            if r.status_code in (400, 404) and (_code in ("voice_not_fine_tuned", "voice_not_found") or "voice" in r.text.lower()[:200]):
+                logger.error(f"[TTS] ❌ VOICE REJECTED · voice_id={voice_id} voice_key={voice_key} model={model_id} HTTP {r.status_code} code={_code} · {r.text[:200]}")
+                raise VoiceRejectedError(voice_id, _code or str(r.status_code), r.text[:200], voice_key=voice_key)
             logger.warning(f"ElevenLabs {r.status_code}: {r.text[:200]}")
             return None
         return r.content
+    except VoiceRejectedError:
+        raise
     except Exception as e:
         logger.warning(f"ElevenLabs error: {e}")
         return None
@@ -221,6 +247,11 @@ async def synth_speech(text: str, voice_key: str = "female-1", kind: str = "", d
     if not text or not text.strip():
         return None
     text = text.strip()
+    # v13.38 · KILL-SWITCH a monte di QUALSIASI chiamata TTS esterna
+    # (ElevenLabs incluso: prima era gated solo il fallback OpenAI).
+    if not await _talk_switch_on():
+        logger.info(f"[TTS] BLOCCATO da AI Master Control (ai_openai_talk=OFF) · kind={kind} voice_key={voice_key} · zero chiamate provider")
+        return None
 
     # ---- Cache lookup ---------------------------------------------------
     content_hash = hashlib.sha256(
