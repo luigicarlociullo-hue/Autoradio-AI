@@ -30,6 +30,141 @@ const DJ_COLOR = {
   Luma: "#00E5FF",    // Ciano brillante
 };
 
+// v13.40 · Effetti visivi selezionabili. Ogni modalità disegna il frame
+// completo (sfondo incluso) usando `beat` (0..1, da BPM server o ampiezza).
+function drawEffect(ctx, W, H, dpr, mode, p) {
+  const { t, amp, beat, newBeat, bass, mid, high, freq, bins, nightMode, st } = p;
+  const cx = W / 2, cy = H / 2;
+  const hueBase = nightMode ? 300 : 190;
+  const accent = nightMode ? "255,61,138" : "0,229,255";
+
+  if (mode === "gradient") {
+    const a = t * 0.25;
+    const g = ctx.createLinearGradient(
+      cx + Math.cos(a) * W * 0.6, cy + Math.sin(a) * H * 0.6,
+      cx - Math.cos(a) * W * 0.6, cy - Math.sin(a) * H * 0.6);
+    const h1 = (hueBase + t * 12) % 360, h2 = (h1 + 70 + beat * 40) % 360, h3 = (h1 + 180) % 360;
+    g.addColorStop(0, `hsl(${h1},90%,${28 + beat * 22}%)`);
+    g.addColorStop(0.5, `hsl(${h2},85%,${22 + beat * 18}%)`);
+    g.addColorStop(1, `hsl(${h3},90%,${18 + beat * 14}%)`);
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    // blob luminoso che pulsa sul beat
+    const r = Math.min(W, H) * (0.18 + beat * 0.22);
+    const rg = ctx.createRadialGradient(cx + Math.sin(t * 0.7) * W * 0.2, cy + Math.cos(t * 0.5) * H * 0.2, 0,
+                                        cx + Math.sin(t * 0.7) * W * 0.2, cy + Math.cos(t * 0.5) * H * 0.2, r);
+    rg.addColorStop(0, `rgba(255,255,255,${0.35 + beat * 0.35})`); rg.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.fillStyle = rg; ctx.fillRect(0, 0, W, H);
+    return;
+  }
+
+  if (mode === "rings") {
+    ctx.fillStyle = "rgba(2,4,10,0.22)"; ctx.fillRect(0, 0, W, H);
+    if (newBeat || st.rings.length === 0) st.rings.push({ r: 4 * dpr, a: 1, w: (3 + amp * 6) * dpr, hue: (hueBase + Math.random() * 60) % 360 });
+    if (Math.random() < 0.15 + amp * 0.5) {
+      const ang = Math.random() * Math.PI * 2, sp = (0.8 + amp * 3) * dpr;
+      st.rings.push({ p: true, x: cx, y: cy, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp, a: 1, hue: (hueBase + Math.random() * 80) % 360 });
+    }
+    const maxR = Math.hypot(W, H) / 2;
+    st.rings = st.rings.filter((o) => o.a > 0.02);
+    for (const o of st.rings) {
+      if (o.p) {
+        o.x += o.vx; o.y += o.vy; o.a -= 0.012;
+        ctx.fillStyle = `hsla(${o.hue},95%,70%,${o.a})`;
+        ctx.beginPath(); ctx.arc(o.x, o.y, (1.5 + amp * 2) * dpr, 0, Math.PI * 2); ctx.fill();
+      } else {
+        o.r += (2.5 + beat * 6) * dpr; o.a = Math.max(0, 1 - o.r / maxR);
+        ctx.strokeStyle = `hsla(${o.hue},95%,65%,${o.a})`; ctx.lineWidth = o.w;
+        ctx.shadowColor = `hsla(${o.hue},95%,65%,${o.a})`; ctx.shadowBlur = 14 * dpr;
+        ctx.beginPath(); ctx.arc(cx, cy, o.r, 0, Math.PI * 2); ctx.stroke();
+      }
+    }
+    ctx.shadowBlur = 0;
+    if (st.rings.length > 140) st.rings.splice(0, st.rings.length - 140);
+    // nucleo
+    ctx.fillStyle = `rgba(${accent},${0.5 + beat * 0.5})`;
+    ctx.beginPath(); ctx.arc(cx, cy, (6 + beat * 18) * dpr, 0, Math.PI * 2); ctx.fill();
+    return;
+  }
+
+  if (mode === "eq") {
+    ctx.fillStyle = "rgba(2,4,10,0.35)"; ctx.fillRect(0, 0, W, H);
+    const N = 48, gap = 3 * dpr, bw = (W - gap * (N + 1)) / N;
+    if (st.eq.length !== N) st.eq = new Array(N).fill(0);
+    for (let i = 0; i < N; i++) {
+      const bi = Math.floor(Math.pow(i / N, 1.6) * Math.min(bins, 128));
+      let v = freq && freq.length ? freq[bi] / 255 : 0;
+      if (v < 0.02) v = amp * (0.5 + 0.5 * Math.sin(t * 3 + i * 0.4)) * (0.6 + 0.4 * beat); // fallback fake
+      st.eq[i] = Math.max(v, st.eq[i] * 0.86);
+      const h = st.eq[i] * H * 0.75 * (0.85 + beat * 0.25);
+      const x = gap + i * (bw + gap);
+      const g = ctx.createLinearGradient(0, H, 0, H - h);
+      g.addColorStop(0, `hsla(${hueBase},95%,55%,0.95)`); g.addColorStop(1, `hsla(${(hueBase + 90) % 360},95%,65%,0.95)`);
+      ctx.fillStyle = g; ctx.fillRect(x, H - h, bw, h);
+      ctx.fillStyle = "rgba(255,255,255,0.85)"; ctx.fillRect(x, H - h - 3 * dpr, bw, 2 * dpr);
+    }
+    // waveform sopra
+    ctx.strokeStyle = `rgba(${accent},0.9)`; ctx.lineWidth = 2 * dpr; ctx.shadowColor = `rgb(${accent})`; ctx.shadowBlur = 10 * dpr;
+    ctx.beginPath();
+    for (let x = 0; x <= W; x += 4 * dpr) {
+      const k = x / W;
+      const y = cy * 0.55 + Math.sin(k * Math.PI * 6 + t * 5) * H * (0.04 + bass * 0.12 + beat * 0.05)
+                        + Math.sin(k * Math.PI * 14 - t * 7) * H * (0.02 + high * 0.08);
+      x === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    }
+    ctx.stroke(); ctx.shadowBlur = 0;
+    return;
+  }
+
+  if (mode === "starfield") {
+    ctx.fillStyle = `rgba(2,4,10,${0.35 - beat * 0.15})`; ctx.fillRect(0, 0, W, H);
+    if (st.stars.length < 260) for (let i = st.stars.length; i < 260; i++) st.stars.push({ x: (Math.random() - 0.5) * 2, y: (Math.random() - 0.5) * 2, z: Math.random() });
+    const speed = 0.004 + beat * 0.03 + amp * 0.01;
+    const f = Math.min(W, H) * 0.9;
+    for (const s of st.stars) {
+      const pz = s.z; s.z -= speed;
+      if (s.z <= 0.02) { s.x = (Math.random() - 0.5) * 2; s.y = (Math.random() - 0.5) * 2; s.z = 1; continue; }
+      const sx = cx + (s.x / s.z) * f, sy = cy + (s.y / s.z) * f;
+      const px = cx + (s.x / pz) * f, py = cy + (s.y / pz) * f;
+      const b = 1 - s.z;
+      ctx.strokeStyle = `hsla(${(hueBase + b * 60) % 360},90%,${60 + b * 35}%,${0.35 + b * 0.65})`;
+      ctx.lineWidth = (0.6 + b * 2.4) * dpr;
+      ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(sx, sy); ctx.stroke();
+    }
+    const rg = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.min(W, H) * 0.25);
+    rg.addColorStop(0, `rgba(${accent},${0.10 + beat * 0.25})`); rg.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = rg; ctx.fillRect(0, 0, W, H);
+    return;
+  }
+
+  if (mode === "holo") {
+    ctx.fillStyle = "rgba(2,4,10,0.30)"; ctx.fillRect(0, 0, W, H);
+    const R = Math.min(W, H) * (0.26 + beat * 0.06 + bass * 0.04);
+    const rot = t * 0.6, tilt = 0.45 + Math.sin(t * 0.3) * 0.2;
+    ctx.lineWidth = 1.2 * dpr; ctx.shadowColor = `rgb(${accent})`; ctx.shadowBlur = 8 * dpr;
+    for (let i = 0; i < 12; i++) {           // meridiani
+      const a = rot + (i / 12) * Math.PI;
+      ctx.strokeStyle = `rgba(${accent},${0.25 + 0.5 * Math.abs(Math.cos(a)) * (0.6 + beat * 0.4)})`;
+      ctx.beginPath(); ctx.ellipse(cx, cy, Math.abs(Math.cos(a)) * R + 0.01, R, tilt, 0, Math.PI * 2); ctx.stroke();
+    }
+    for (let j = 1; j < 7; j++) {            // paralleli
+      const y = -R + (2 * R * j) / 7, rr = Math.sqrt(Math.max(0, R * R - y * y));
+      ctx.strokeStyle = `rgba(${accent},${0.35 + mid * 0.5})`;
+      ctx.beginPath(); ctx.ellipse(cx + Math.sin(tilt) * y * 0.3, cy + Math.cos(tilt) * y, rr, rr * 0.28, 0, 0, Math.PI * 2); ctx.stroke();
+    }
+    ctx.shadowBlur = 0;
+    const g = ctx.createRadialGradient(cx - R * 0.3, cy - R * 0.3, R * 0.1, cx, cy, R * 1.15);
+    g.addColorStop(0, `rgba(255,255,255,${0.12 + beat * 0.2})`); g.addColorStop(0.7, `rgba(${accent},0.08)`); g.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(cx, cy, R * 1.15, 0, Math.PI * 2); ctx.fill();
+    // scanline olografica + anello orbitale a tempo
+    const sy = cy - R + ((t * 60) % (2 * R));
+    ctx.fillStyle = `rgba(${accent},0.35)`; ctx.fillRect(cx - R, sy, 2 * R, 2 * dpr);
+    ctx.strokeStyle = `rgba(255,255,255,${0.3 + beat * 0.6})`; ctx.lineWidth = 2 * dpr;
+    ctx.beginPath(); ctx.ellipse(cx, cy, R * 1.35, R * 0.35, -0.5 + Math.sin(t * 0.4) * 0.2, 0, Math.PI * 2); ctx.stroke();
+    return;
+  }
+}
+
+
 function detectMode(current, isPlaying) {
   const kind = (current?.kind || "").toLowerCase();
   if (kind === "music") return "music";
@@ -44,6 +179,7 @@ export default function LedWall({
   trackOverlay = null,
   djs = [],
   fillHeight = false,   // v13.6 · quando true, occupa altezza 100% del parent (no aspect-ratio)
+  effect = "auto",      // v13.40 · auto | gradient | rings | eq | starfield | holo
 }) {
   const canvasRef = useRef(null);
   const bgRef = useRef(null);
@@ -51,6 +187,24 @@ export default function LedWall({
   const particlesRef = useRef([]);
   const strobeRef = useRef(0);
   const modeAlphaRef = useRef({ music: 0, talk: 0, clock: 0, standby: 1 });
+  // v13.40 · effetto scelto + BPM live (letti dal loop rAF senza riavviarlo)
+  const effectRef = useRef(effect);
+  useEffect(() => { effectRef.current = effect; }, [effect]);
+  const bpmRef = useRef(null);
+  const fxStateRef = useRef({ stars: [], rings: [], lastBeat: -1, eq: [] });
+  useEffect(() => {
+    let alive = true;
+    const poll = async () => {
+      try {
+        const r = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/stream/now`);
+        const d = await r.json();
+        if (alive) bpmRef.current = Number(d?.current?.bpm) > 0 ? Number(d.current.bpm) : null;
+      } catch {}
+    };
+    poll();
+    const iv = setInterval(poll, 10000);
+    return () => { alive = false; clearInterval(iv); };
+  }, []);
 
   // v13.8 · LedWall Video Overlay — legge /api/ledwall/state e mostra un
   // <video> reale sopra al canvas quando video_source ≠ 'effects'.
@@ -206,6 +360,34 @@ export default function LedWall({
         }
       }
 
+      // === v13.40 · EFFETTI VISIVI SELEZIONABILI (sostituiscono il canvas Auto) ===
+      const fxMode = effectRef.current;
+      if (fxMode && fxMode !== "auto") {
+        if (bgRef.current) bgRef.current.style.opacity = "0.10";
+        const t = performance.now() / 1000;
+        const amp = Math.min(1, bass * 0.6 + mid * 0.3 + high * 0.1);
+        // Beat: da BPM server se disponibile, altrimenti dall'ampiezza audio
+        const bpm = bpmRef.current;
+        let beat, beatIdx = -1;
+        if (bpm) {
+          const beatsF = t * bpm / 60;
+          beatIdx = Math.floor(beatsF);
+          const ph = beatsF - beatIdx;
+          beat = Math.pow(1 - ph, 2.2) * (0.55 + 0.45 * Math.min(1, amp * 1.6 + 0.2));
+        } else {
+          beat = amp;
+          const kick = bass - prevBass;
+          if (kick > 0.18 && bass > 0.45) beatIdx = Math.floor(t * 10);
+        }
+        const st = fxStateRef.current;
+        const newBeat = beatIdx !== -1 && beatIdx !== st.lastBeat;
+        if (newBeat) st.lastBeat = beatIdx;
+        drawEffect(ctx, W, H, dpr, fxMode, { t, amp, beat, newBeat, bass, mid, high, freq, bins, palette, nightMode, st });
+        prevBass = bass;
+        rafRef.current = requestAnimationFrame(draw);
+        return;
+      }
+
       // === STANDBY assoluto: canvas VUOTO e IMMOBILE ===
       // Evita qualsiasi lampeggio quando la radio è ferma: nessun trail, nessuna
       // grid, nessuna onda residua.
@@ -214,6 +396,8 @@ export default function LedWall({
         rafRef.current = requestAnimationFrame(draw);
         return;
       }
+
+
 
       // --- Trail overlay sul canvas (per stelle cadenti a scia) ---
       // Alpha basso su music/talk = coda; su clock/standby copre più forte

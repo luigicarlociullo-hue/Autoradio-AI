@@ -189,6 +189,8 @@ export default function PublicRadio() {
   const [questionText, setQuestionText] = useState("");
   const [tick, setTick] = useState(0);
   const [trackOverlay, setTrackOverlay] = useState({ visible: false, title: "", artist: "" });
+  // v13.40 · Effetto visivo LedWall (persistito in localStorage)
+  const [ledEffect, setLedEffect] = useState(() => { try { return localStorage.getItem("rai:ledwall:effect") || "auto"; } catch { return "auto"; } });
   const [showDonate, setShowDonate] = useState(false);
   const [broadcastMode, setBroadcastMode] = useState("auto");
   const [manualStreamUrl, setManualStreamUrl] = useState("");
@@ -713,12 +715,31 @@ export default function PublicRadio() {
             <div className="absolute -top-2 right-3 z-20">
               <VuMeter />
             </div>
+            {/* v13.40 · Effetto visivo LedWall selezionabile */}
+            <div className="absolute top-2 left-3 z-20 flex items-center gap-1.5" data-testid="ledwall-effect-control">
+              <label className="text-[9px] font-mono uppercase tracking-widest text-cyan-300/80" htmlFor="ledwall-effect-select">Effetto visivo</label>
+              <select
+                id="ledwall-effect-select"
+                value={ledEffect}
+                onChange={(e) => { setLedEffect(e.target.value); try { localStorage.setItem("rai:ledwall:effect", e.target.value); } catch {} }}
+                data-testid="ledwall-effect-select"
+                className="bg-black/70 border border-cyan-400/30 rounded px-1.5 py-0.5 text-[10px] font-mono text-cyan-100"
+              >
+                <option value="auto">Auto</option>
+                <option value="gradient">Gradiente animato</option>
+                <option value="rings">Anelli/particelle a ritmo</option>
+                <option value="eq">Barre EQ/waveform</option>
+                <option value="starfield">Starfield/warp</option>
+                <option value="holo">Sfera olografica</option>
+              </select>
+            </div>
             <LedWall
               isPlaying={isPlaying || broadcastMode === "live_external"}
               current={effectiveCurrent}
               trackOverlay={trackOverlay}
               djs={djs}
               fillHeight
+              effect={ledEffect}
             />
             </div>
 

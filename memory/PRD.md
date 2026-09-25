@@ -706,3 +706,8 @@ Vedi turni precedenti in questa sessione:
 - Magazzino Universale (`CommandCenter2Panels.js`): checkbox su righe MP3 e Video, "Seleziona tutti", "⬇ SCARICA SELEZIONATI (n)", link ZIP one-shot. testid: `bulk-asset-toolbar`, `bulk-select-all`, `bulk-download-btn`, `bulk-check-audio-{id}`, `bulk-check-video-{id}`, `bulk-zip-link`.
 - Backend: `POST /admin/assets/zip` {items:[{url,title}]} (max 80, legge via URL interna → riusa serving + objstore fallback) → `/tmp/rai_zip/<token>.zip`; `GET /admin/assets/zip/{token}` FileResponse + BackgroundTask unlink (cancellato dopo il download, 404 al secondo tentativo); janitor 30 min. Protetto dal middleware admin.
 - Verificato via curl: 2 MP3 → ZIP 6.7 MB valido, residuo server 0 file, one-shot 404, senza login 401.
+
+## v13.40 · LEDWALL EFFETTI VISIVI SELEZIONABILI (2026-09-25)
+- PublicRadio.js: tendina "Effetto visivo" (`ledwall-effect-select`) in alto a sx sul LedWall: Auto | Gradiente animato | Anelli/particelle | Barre EQ/waveform | Starfield/warp | Sfera olografica; persistita in localStorage `rai:ledwall:effect`; prop `effect` → LedWall.
+- LedWall.js: `drawEffect()` con 5 modalità nel loop rAF; `effectRef` (no restart loop), `bpmRef` da GET /api/stream/now (poll 10s, current.bpm). Beat = decadimento sul BPM server se presente, altrimenti ampiezza bass/mid/high (fallback getFakeAmplitude già esistente). Effetti attivi anche in standby (Auto resta identico: canvas vuoto prima del PLAY).
+- Verifica preview (Playwright): 5 effetti disegnano (canvas lit), 0 errori JS, Auto invariato.
