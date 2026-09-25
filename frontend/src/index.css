@@ -522,11 +522,51 @@ body {
 .corner-accent.br { bottom: 6px; right: 6px; border-left: none; border-top: none; }
 
 /* =====================================================================
-   R-A.I. Logo — floating breath animation
+   R-A.I. Logo v13.41 — sfera 3D rotante + anello testo "R-AI"
    ===================================================================== */
-@keyframes raiLogoFloat {
-  0%, 100% { transform: translateY(0) scale(1); filter: brightness(1); }
-  50%      { transform: translateY(-2px) scale(1.02); filter: brightness(1.15); }
+.rai-orb { position: relative; perspective: 160px; }
+.rai-orb-scene {
+  position: absolute; inset: 0;
+  transform-style: preserve-3d;
+  transform: rotateX(18deg);
+}
+.rai-orb-sphere {
+  position: absolute; inset: 22%;
+  transform-style: preserve-3d;
+  animation: raiOrbSpin 9s linear infinite;
+}
+.rai-orb-ring {
+  position: absolute; inset: 0; border-radius: 50%;
+  border: 1.2px solid rgba(0, 229, 255, 0.85);
+  box-shadow: 0 0 6px rgba(0, 229, 255, 0.55), inset 0 0 6px rgba(0, 229, 255, 0.25);
+  backface-visibility: visible;
+}
+.rai-orb-parallel { border-color: rgba(120, 190, 255, 0.55); box-shadow: 0 0 4px rgba(90, 160, 255, 0.5); }
+.rai-orb-core {
+  position: absolute; inset: 28%; border-radius: 50%;
+  background: radial-gradient(circle at 38% 35%, #ffffff 0%, #7ff5ff 28%, #00e5ff 55%, rgba(0, 120, 255, 0.35) 100%);
+  box-shadow: 0 0 12px rgba(0, 229, 255, 0.95), 0 0 24px rgba(0, 140, 255, 0.6);
+  animation: raiOrbPulse 2.4s ease-in-out infinite;
+}
+.rai-orb-text {
+  position: absolute; inset: 0;
+  animation: raiOrbTextSpin 14s linear infinite reverse;
+  transform-style: preserve-3d;
+}
+.rai-orb-text span {
+  position: absolute; left: 50%; top: 50%;
+  width: 8px; height: 10px; margin: -5px 0 0 -4px;
+  font-family: "Space Grotesk", "Orbitron", ui-monospace, monospace;
+  font-size: 7.5px; font-weight: 800; line-height: 10px; text-align: center;
+  color: #bff7ff; letter-spacing: 0;
+  text-shadow: 0 0 4px #00e5ff, 0 0 9px rgba(0, 160, 255, 0.9);
+  transform-origin: 50% 50%;
+}
+@keyframes raiOrbSpin      { from { transform: rotateY(0deg); }   to { transform: rotateY(360deg); } }
+@keyframes raiOrbTextSpin  { from { transform: rotateZ(0deg); }   to { transform: rotateZ(360deg); } }
+@keyframes raiOrbPulse     { 0%, 100% { transform: scale(1); filter: brightness(1); } 50% { transform: scale(1.12); filter: brightness(1.25); } }
+@media (prefers-reduced-motion: reduce) {
+  .rai-orb-sphere, .rai-orb-text, .rai-orb-core { animation-duration: 60s; }
 }
 
 /* =====================================================================

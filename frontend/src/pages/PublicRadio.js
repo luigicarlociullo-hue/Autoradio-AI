@@ -11,6 +11,7 @@ import radioEngine from "@/lib/radioEngine";
 import { toast } from "sonner";
 import PulsingBrand from "@/components/PulsingBrand";
 import LedWall from "@/components/LedWall";
+import { RaiOrbLogo } from "@/components/RaiOrbLogo";
 import RadioErrorBoundary from "@/components/RadioErrorBoundary";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogTrigger } from "@/components/ui/dialog";
 import BrandName from "@/components/BrandName";
@@ -643,12 +644,7 @@ export default function PublicRadio() {
               data-testid="rai-logo"
               style={{ filter: "drop-shadow(0 0 10px rgba(0,229,255,0.55))" }}
             >
-              <img
-                src="/rai-face.png"
-                alt="R-A.I. symbol"
-                className="w-full h-full object-contain"
-                style={{ animation: "raiLogoFloat 6s ease-in-out infinite" }}
-              />
+              <RaiOrbLogo size={56} />
               {/* Firma autografo — appena sopra-destra del cerchio, in diagonale */}
               <a
                 href="https://www.facebook.com/profile.php?id=61592908061493"

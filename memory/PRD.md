@@ -711,3 +711,9 @@ Vedi turni precedenti in questa sessione:
 - PublicRadio.js: tendina "Effetto visivo" (`ledwall-effect-select`) in alto a sx sul LedWall: Auto | Gradiente animato | Anelli/particelle | Barre EQ/waveform | Starfield/warp | Sfera olografica; persistita in localStorage `rai:ledwall:effect`; prop `effect` → LedWall.
 - LedWall.js: `drawEffect()` con 5 modalità nel loop rAF; `effectRef` (no restart loop), `bpmRef` da GET /api/stream/now (poll 10s, current.bpm). Beat = decadimento sul BPM server se presente, altrimenti ampiezza bass/mid/high (fallback getFakeAmplitude già esistente). Effetti attivi anche in standby (Auto resta identico: canvas vuoto prima del PLAY).
 - Verifica preview (Playwright): 5 effetti disegnano (canvas lit), 0 errori JS, Auto invariato.
+
+## v13.41 · LOGO ANIMATO SFERA 3D (2026-09-25)
+- Nuovo `components/RaiOrbLogo.js` (CSS 3D puro): sfera wireframe (6 meridiani + 3 paralleli, preserve-3d) rotazione Y continua 9s + nucleo pulsante + anello testo "R-AI · R-AI ·" (14 span) che orbita in senso inverso 14s. Colori brand ciano/blu, glow. testid `rai-orb-logo`.
+- PublicRadio.js header: `<img rai-face.png>` sostituito da `<RaiOrbLogo size={56}/>` dentro `rai-logo` (w-14 h-14 e drop-shadow invariati). Keyframes `raiLogoFloat` rimossi da index.css (nessun altro uso).
+- HoloBrand.js NON toccato: lì `rai-face.png` è il volto robot audio-reattivo (warm ring/bocca), feature distinta.
+- Verifica preview: box 56x56, sfera e testo in movimento (transform cambia), 14 lettere, nessun errore.
