@@ -1303,6 +1303,97 @@ async def admin_export_manifest():
     }
 
 
+# ----------------------- Admin: Bulk Asset ZIP (v13.39) -----------------------
+# Impacchetta N asset (MP3/MP4/immagini) in uno ZIP temporaneo sul server,
+# ritorna un link di download one-shot; il file viene cancellato subito dopo
+# l'invio (BackgroundTask) e comunque dopo 30 min (janitor).
+_ZIP_DIR = Path("/tmp/rai_zip")
+_ZIP_DIR.mkdir(parents=True, exist_ok=True)
+_ZIP_MAX_ITEMS = 80
+
+
+def _zip_janitor(max_age_sec: int = 1800):
+    import time as _t
+    now = _t.time()
+    for p in _ZIP_DIR.glob("*.zip"):
+        try:
+            if now - p.stat().st_mtime > max_age_sec:
+                p.unlink()
+        except Exception:
+            pass
+
+
+def _zip_safe_name(title: str, url: str, idx: int) -> str:
+    import re as _re
+    ext = (url.rsplit(".", 1)[-1].lower() if "." in url.rsplit("/", 1)[-1] else "bin")[:5]
+    base = _re.sub(r"[^\w\-. ]+", "_", (title or "").strip())[:80].strip("._ ") or f"asset_{idx:02d}"
+    return f"{idx:02d}_{base}.{ext}"
+
+
+@api_router.post("/admin/assets/zip")
+async def admin_assets_zip(payload: dict, request: Request):
+    """Body: {items: [{url: '/api/suno_audio/x.mp3', title: '...'}, ...]}.
+    Ogni asset viene letto tramite la sua URL interna (riusa il serving
+    esistente con fallback Object Storage). Ritorna {download_url, count, bytes}."""
+    import zipfile, secrets
+    items = [i for i in (payload.get("items") or []) if isinstance(i, dict) and str(i.get("url") or "").startswith("/api/")]
+    if not items:
+        raise HTTPException(400, "Nessun asset selezionato (url deve iniziare con /api/)")
+    if len(items) > _ZIP_MAX_ITEMS:
+        raise HTTPException(400, f"Massimo {_ZIP_MAX_ITEMS} asset per ZIP")
+    _zip_janitor()
+    token = secrets.token_urlsafe(16)
+    zpath = _ZIP_DIR / f"{token}.zip"
+    base = "http://127.0.0.1:8001"
+    cookie = request.headers.get("cookie", "")
+    auth = request.headers.get("authorization", "")
+    hdrs = {k: v for k, v in (("cookie", cookie), ("authorization", auth)) if v}
+    added, skipped = 0, []
+    async with httpx.AsyncClient(timeout=180, follow_redirects=True) as client:
+        with zipfile.ZipFile(zpath, "w", compression=zipfile.ZIP_STORED) as zf:
+            for idx, it in enumerate(items, 1):
+                url = it["url"]
+                try:
+                    r = await client.get(base + url, headers=hdrs)
+                    if r.status_code != 200 or not r.content:
+                        skipped.append({"url": url, "status": r.status_code}); continue
+                    zf.writestr(_zip_safe_name(it.get("title") or "", url, idx), r.content)
+                    added += 1
+                except Exception as e:
+                    skipped.append({"url": url, "error": str(e)[:80]})
+    if added == 0:
+        try: zpath.unlink()
+        except Exception: pass
+        raise HTTPException(404, f"Nessun file recuperabile ({len(skipped)} saltati)")
+    size = zpath.stat().st_size
+    logger.info(f"[assets-zip] {token} · {added} file · {size} bytes · skipped={len(skipped)}")
+    return {"ok": True, "download_url": f"/api/admin/assets/zip/{token}", "count": added,
+            "skipped": skipped, "bytes": size, "expires_in_sec": 1800}
+
+
+@api_router.get("/admin/assets/zip/{token}")
+async def admin_assets_zip_download(token: str):
+    """Download one-shot: il file viene cancellato dal server appena inviato."""
+    from starlette.background import BackgroundTask
+    import re as _re
+    if not _re.fullmatch(r"[A-Za-z0-9_\-]{10,64}", token):
+        raise HTTPException(400, "token non valido")
+    zpath = _ZIP_DIR / f"{token}.zip"
+    if not zpath.exists():
+        raise HTTPException(404, "ZIP non trovato o già scaricato (link one-shot)")
+
+    def _cleanup(p: Path = zpath):
+        try:
+            p.unlink()
+            logger.info(f"[assets-zip] {p.name} cancellato dopo il download")
+        except Exception:
+            pass
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M")
+    return FileResponse(str(zpath), media_type="application/zip",
+                        filename=f"rai-assets-{stamp}.zip", background=BackgroundTask(_cleanup))
+
+
+
 # ----------------------- Admin: Upload MP3 (Master Plan #1) -----------------------
 @api_router.get("/admin/tracks/searchable")
 async def admin_tracks_searchable():

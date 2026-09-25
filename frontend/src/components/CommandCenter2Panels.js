@@ -206,6 +206,40 @@ export function MagazzinoUniversale() {
   const [voice, setVoice] = useState([]);
   const [busy, setBusy] = useState(false);
   const fileRef = useRef(null);
+  // v13.39 · BULK ASSET MANAGER · selezione multipla + ZIP one-shot
+  const [selected, setSelected] = useState({}); // key "audio:<id>" | "video:<id>" → {url,title}
+  const [zipBusy, setZipBusy] = useState(false);
+  const [zipLink, setZipLink] = useState(null);
+  const selCount = Object.keys(selected).length;
+  const toggleSel = (key, url, title) => setSelected((m) => {
+    const n = { ...m };
+    if (n[key]) delete n[key]; else n[key] = { url, title };
+    return n;
+  });
+  const selectAllVisible = () => {
+    const list = tab === "audio"
+      ? tracks.slice(0, 60).filter((t) => t.audio_url).map((t) => [`audio:${t.id}`, t.audio_url, `${t.artist || ""} - ${t.title || t.id}`])
+      : videos.filter((v) => v.url).map((v) => [`video:${v.id}`, v.url, v.display_name || v.filename || v.id]);
+    setSelected((m) => {
+      const n = { ...m };
+      const allOn = list.length > 0 && list.every(([k]) => n[k]);
+      list.forEach(([k, url, title]) => { if (allOn) delete n[k]; else n[k] = { url, title }; });
+      return n;
+    });
+  };
+  const downloadSelected = async () => {
+    const items = Object.values(selected);
+    if (!items.length) return toast.error("Seleziona almeno un file");
+    setZipBusy(true); setZipLink(null);
+    try {
+      const r = await api.post("/admin/assets/zip", { items });
+      const d = r.data || {};
+      const href = `${process.env.REACT_APP_BACKEND_URL}${d.download_url}`;
+      setZipLink({ href, count: d.count, mb: (d.bytes / 1024 / 1024).toFixed(1), skipped: (d.skipped || []).length });
+      toast.success(`ZIP pronto · ${d.count} file · ${(d.bytes / 1024 / 1024).toFixed(1)} MB`);
+    } catch (e) { toast.error(e?.response?.data?.detail || "Errore creazione ZIP"); }
+    finally { setZipBusy(false); }
+  };
   const [uploadForm, setUploadForm] = useState({
     name: "", sponsor_note: "", start_date: "", end_date: "", is_stinger: false,
   });
@@ -309,10 +343,40 @@ export function MagazzinoUniversale() {
         </div>
       </div>
 
+      {(tab === "audio" || tab === "video") && (
+        <div className="flex items-center gap-2 flex-wrap mb-2 p-2 rounded" data-testid="bulk-asset-toolbar"
+          style={{ background: "rgba(128,255,180,0.05)", border: "1px dashed rgba(128,255,180,0.35)" }}>
+          <button type="button" onClick={selectAllVisible} data-testid="bulk-select-all"
+            className="px-2 py-1 rounded text-[11px] font-mono font-bold"
+            style={{ background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.15)", color: "#ddd" }}>
+            ☑ Seleziona tutti ({tab === "audio" ? "MP3" : "Video"})
+          </button>
+          <button type="button" onClick={downloadSelected} disabled={zipBusy || selCount === 0} data-testid="bulk-download-btn"
+            className="px-3 py-1 rounded text-[11px] font-mono font-bold text-black"
+            style={{ background: selCount ? "#80FFB4" : "rgba(128,255,180,0.25)", opacity: zipBusy ? 0.6 : 1 }}>
+            {zipBusy ? "⏳ Impacchetto…" : `⬇ SCARICA SELEZIONATI (${selCount})`}
+          </button>
+          {selCount > 0 && (
+            <button type="button" onClick={() => { setSelected({}); setZipLink(null); }} data-testid="bulk-clear"
+              className="px-2 py-1 rounded text-[11px] font-mono" style={{ color: "#FF6BAA", border: "1px solid rgba(255,45,149,0.4)" }}>✕ svuota</button>
+          )}
+          {zipLink && (
+            <a href={zipLink.href} data-testid="bulk-zip-link" onClick={() => setTimeout(() => setZipLink(null), 4000)}
+              className="text-[11px] font-mono font-bold underline" style={{ color: "#00E5FF" }}>
+              📦 Scarica ZIP · {zipLink.count} file · {zipLink.mb} MB{zipLink.skipped ? ` · ${zipLink.skipped} saltati` : ""} (link one-shot: il file viene cancellato dal server dopo il download)
+            </a>
+          )}
+        </div>
+      )}
+
       {tab === "audio" && (
         <div className="max-h-[420px] overflow-y-auto space-y-1" data-testid="magazzino-list-audio">
           {tracks.slice(0, 60).map((t) => (
-            <div key={t.id} className="flex items-center gap-2 p-2 rounded bg-white/5 border border-white/8 text-sm">
+            <div key={t.id} className="flex items-center gap-2 p-2 rounded bg-white/5 border border-white/8 text-sm"
+              style={selected[`audio:${t.id}`] ? { borderColor: "rgba(128,255,180,0.6)", background: "rgba(128,255,180,0.06)" } : undefined}>
+              <input type="checkbox" className="accent-emerald-400 shrink-0" data-testid={`bulk-check-audio-${t.id}`}
+                checked={!!selected[`audio:${t.id}`]} disabled={!t.audio_url}
+                onChange={() => toggleSel(`audio:${t.id}`, t.audio_url, `${t.artist || ""} - ${t.title || t.id}`)} />
               <Music className="w-3 h-3 text-cyan-400 shrink-0" />
               <div className="flex-1 min-w-0">
                 <div className="text-white truncate">{t.artist || "?"} — {t.title || "Senza titolo"}</div>
@@ -387,7 +451,11 @@ export function MagazzinoUniversale() {
           </div>
           <div className="max-h-[320px] overflow-y-auto space-y-1" data-testid="magazzino-list-video">
             {videos.map((v) => (
-              <div key={v.id} className="flex items-center gap-2 p-2 rounded bg-white/5 border border-white/8 text-sm">
+              <div key={v.id} className="flex items-center gap-2 p-2 rounded bg-white/5 border border-white/8 text-sm"
+                style={selected[`video:${v.id}`] ? { borderColor: "rgba(128,255,180,0.6)", background: "rgba(128,255,180,0.06)" } : undefined}>
+                <input type="checkbox" className="accent-emerald-400 shrink-0" data-testid={`bulk-check-video-${v.id}`}
+                  checked={!!selected[`video:${v.id}`]} disabled={!v.url}
+                  onChange={() => toggleSel(`video:${v.id}`, v.url, v.display_name || v.filename || v.id)} />
                 <Film className="w-3 h-3 text-orange-400 shrink-0" />
                 <div className="flex-1 min-w-0">
                   <div className="text-white truncate">{v.display_name || v.filename}</div>

@@ -701,3 +701,8 @@ Vedi turni precedenti in questa sessione:
 - **Testo DJ**: prompt intro/outro music riscritti (18-28 parole, frasi complete, titolo+artista), DJ_TONES sobri, anti-ripetizione soft, regola 5 system prompt "chiaro al primo ascolto". Test reale: "Centoventiquattro battiti al minuto... DJ VantaRay ci regala Neon Pulse Tonight...".
 - **Gate a monte**: `elevenlabs_service.synth_speech` e `generate_segment` controllano `ai_openai_talk` PRIMA di qualsiasi chiamata provider. In preview con switch OFF: 0 LLM / 0 TTS dal 22/09 20:16 (log).
 - **NOTA FM_MODE**: con `fm_mode=false` la TTS va SEMPRE su OpenAI TTS-1-HD: i Voice ID ElevenLabs non vengono usati. UI mostra la route attiva.
+
+## v13.39 · BULK ASSET MANAGER + ZIP ONE-SHOT (2026-09-23)
+- Magazzino Universale (`CommandCenter2Panels.js`): checkbox su righe MP3 e Video, "Seleziona tutti", "⬇ SCARICA SELEZIONATI (n)", link ZIP one-shot. testid: `bulk-asset-toolbar`, `bulk-select-all`, `bulk-download-btn`, `bulk-check-audio-{id}`, `bulk-check-video-{id}`, `bulk-zip-link`.
+- Backend: `POST /admin/assets/zip` {items:[{url,title}]} (max 80, legge via URL interna → riusa serving + objstore fallback) → `/tmp/rai_zip/<token>.zip`; `GET /admin/assets/zip/{token}` FileResponse + BackgroundTask unlink (cancellato dopo il download, 404 al secondo tentativo); janitor 30 min. Protetto dal middleware admin.
+- Verificato via curl: 2 MP3 → ZIP 6.7 MB valido, residuo server 0 file, one-shot 404, senza login 401.
