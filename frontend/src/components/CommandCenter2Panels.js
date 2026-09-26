@@ -247,7 +247,7 @@ export function MagazzinoUniversale() {
   const load = async () => {
     try {
       const t = await api.get("/tracks?limit=200");
-      setTracks((t.data.tracks || []).filter((x) => !x.deleted_at));
+      setTracks((Array.isArray(t.data) ? t.data : (t.data?.tracks || [])).filter((x) => !x.deleted_at));
     } catch {}
     try {
       const v = await api.get("/admin/ledwall/videos");
