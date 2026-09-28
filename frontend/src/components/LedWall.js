@@ -19,6 +19,7 @@
 // ============================================================================
 import React, { useEffect, useRef, useState } from "react";
 import radioEngine from "@/lib/radioEngine";
+import { RaiOrbLogo } from "@/components/RaiOrbLogo";
 
 // Palette per DJ (override rispetto a accent_color dal DB)
 const DJ_COLOR = {
@@ -29,15 +30,6 @@ const DJ_COLOR = {
   Hex: "#8A2BE2",     // Viola scuro
   Luma: "#00E5FF",    // Ciano brillante
 };
-
-// v13.41 · Fix ticket #247410: logo rotante a ritmo per la scena di default
-// del LedWall (richiesta cliente: sostituire le onde sinusoidali in home).
-// Immagine caricata una sola volta a livello di modulo e riusata su ogni frame.
-let _logoImg = null;
-function _getLogoImg() {
-  if (!_logoImg) { _logoImg = new Image(); _logoImg.src = "/rai-logo.png"; }
-  return _logoImg;
-}
 
 // v13.40 · Effetti visivi selezionabili. Ogni modalità disegna il frame
 // completo (sfondo incluso) usando `beat` (0..1, da BPM server o ampiezza).
@@ -184,8 +176,6 @@ function drawEffect(ctx, W, H, dpr, mode, p) {
     ctx.fillStyle = bgGlow; ctx.fillRect(0, 0, W, H);
 
     if (!st.notes) st.notes = [];
-    if (!st.logoRot) st.logoRot = 0;
-    st.logoRot += 0.006 + beat * 0.012;
 
     // Anelli pulsanti a ritmo (stesso pattern del mode "rings")
     if (newBeat || st.rings.length === 0) st.rings.push({ r: 4 * dpr, a: 1, w: (3 + amp * 5) * dpr, hue: (hue + 40) % 360 });
@@ -237,25 +227,9 @@ function drawEffect(ctx, W, H, dpr, mode, p) {
     ctx.shadowBlur = 0;
     if (st.notes.length > 40) st.notes.splice(0, st.notes.length - 40);
 
-    // Logo rotante al centro, colore in fade continuo
-    const logoImg = _getLogoImg();
-    const logoR = Math.min(W, H) * (0.20 + beat * 0.03);
-    ctx.save();
-    ctx.translate(cx, cy);
-    ctx.rotate(st.logoRot);
-    if (logoImg.complete && logoImg.naturalWidth > 0) {
-      try { ctx.filter = `hue-rotate(${hue}deg) saturate(1.5) brightness(${1 + beat * 0.3})`; } catch {}
-      ctx.globalAlpha = 0.92;
-      ctx.drawImage(logoImg, -logoR, -logoR, logoR * 2, logoR * 2);
-      ctx.filter = "none"; ctx.globalAlpha = 1;
-    } else {
-      // Fallback procedurale finché l'immagine non è pronta: emblema circolare
-      ctx.strokeStyle = `hsla(${hue},95%,65%,0.9)`; ctx.lineWidth = 3 * dpr;
-      ctx.shadowColor = `hsla(${hue},95%,65%,0.8)`; ctx.shadowBlur = 14 * dpr;
-      ctx.beginPath(); ctx.arc(0, 0, logoR, 0, Math.PI * 2); ctx.stroke();
-      ctx.shadowBlur = 0;
-    }
-    ctx.restore();
+    // v13.42 · Il logo stesso NON viene più disegnato sul canvas: su richiesta
+    // del cliente, riusiamo il componente RaiOrbLogo (lo stesso già in alto in
+    // home) come overlay DOM centrato, vedi il JSX del componente più sotto.
     return;
   }
 }
@@ -278,6 +252,24 @@ export default function LedWall({
   effect = "auto",      // v13.41 · auto | gradient | rings | eq | starfield | holo | logo
 }) {
   const canvasRef = useRef(null);
+  const orbWrapRef = useRef(null);
+  // v13.42 · Fix ticket #247410: dimensione responsive per l'overlay RaiOrbLogo
+  // al centro del LedWall (riusa lo stesso logo già in alto in home, su richiesta
+  // esplicita del cliente — non un'immagine/emblema disegnato ad hoc).
+  const [orbSize, setOrbSize] = useState(160);
+  useEffect(() => {
+    if (!orbWrapRef.current) return;
+    const measure = () => {
+      const el = orbWrapRef.current;
+      if (!el) return;
+      const { width, height } = el.getBoundingClientRect();
+      setOrbSize(Math.max(90, Math.min(260, Math.min(width, height) * 0.34)));
+    };
+    measure();
+    const ro2 = new ResizeObserver(measure);
+    ro2.observe(orbWrapRef.current);
+    return () => ro2.disconnect();
+  }, []);
   const bgRef = useRef(null);
   const rafRef = useRef(null);
   const particlesRef = useRef([]);
@@ -757,6 +749,7 @@ export default function LedWall({
   return (
     <div
       data-testid="ledwall"
+      ref={orbWrapRef}
       className={`relative w-full rounded-2xl overflow-hidden focusable${fillHeight ? " h-full" : ""}`}
       style={{
         ...(fillHeight ? {} : { aspectRatio: "16 / 6.75" }),
@@ -840,6 +833,15 @@ export default function LedWall({
       />
       {/* L1 · canvas grafica generata */}
       <canvas ref={canvasRef} className="relative block w-full h-full" />
+      {effect === "logo" && (
+        <div
+          aria-hidden
+          data-testid="ledwall-orb-overlay"
+          className="absolute inset-0 flex items-center justify-center pointer-events-none z-20"
+        >
+          <RaiOrbLogo size={orbSize} />
+        </div>
+      )}
       {/* L2 · scanlines CSS overlay */}
       <div
         aria-hidden
