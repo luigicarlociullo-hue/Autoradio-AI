@@ -174,56 +174,80 @@ export default function Dashboard() {
         </div>
       </header>
 
-      <main className="max-w-[1400px] mx-auto px-6 py-6 space-y-8">
+      <main className="max-w-[1500px] mx-auto px-4 lg:px-6 py-6" data-testid="regia-main">
+        {/* v13.42 · RE-LAYOUT "PILOTA PROFESSIONALE" — solo UI. Colonna principale +
+            sidebar destra sticky (Scheduling). Ordine: LIVE COMMAND → WAREHOUSE →
+            SCHEDULING EDITOR → NIGHT/LIVE → COMMUNITY → SECONDARY UTILITIES. */}
+        <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-start">
 
-        {/* ══════════════════════════════════════════════════════════════════
-            FASCIA ALTA · POTERE AI — tutti i toggle neon raggruppati
-            ══════════════════════════════════════════════════════════════════ */}
-        <BandHeader icon="⚡" title="POTERE AI" subtitle="Interruttori di consumo · default OFF ad ogni startup" color="#FF8A3D" />
-        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-          <FmModePanel />
-          <AIMasterControlPanel />
-        </div>
+          {/* ═══════════════ COLONNA PRINCIPALE ═══════════════ */}
+          <div className="xl:col-span-9 min-w-0 space-y-8 regia-col">
 
-        {/* ══════════════════════════════════════════════════════════════════
-            FASCIA CENTRALE · TEMPI & PENSIERO — Master Clock + Live Brain
-            ══════════════════════════════════════════════════════════════════ */}
-        <BandHeader icon="🕰️" title="TEMPI & PENSIERO" subtitle="Timeline elastica soft-sync + monitor pensiero server-side" color="#00E5FF" />
-        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-          <SmartFlowTimelinePanel />
-          <BroadcasterPanel />
-          <StellePanel />
-          <GoLivePanel />
-          <LedWallMiniPreview />
-          <PowerPlayMonitor />
-          <ElasticQueuePreview />
-        </div>
+            {/* 1 · LIVE COMMAND — controllo totale della diretta senza scorrere */}
+            <section data-testid="band-live-command" className="space-y-4">
+              <BandHeader icon="🔴" title="LIVE COMMAND" subtitle="Player live · stato On-Air · 7 interruttori DJ · Soggetto globale · FLASH AD" color="#FF8A3D" />
+              <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+                <BroadcastControlBar />
+                <AIMasterControlPanel />
+                <div className="lg:col-span-2 flex min-w-0 regia-flat"><LiveQuickBar /></div>
+                <div className="lg:col-span-2 flex min-w-0 regia-flat"><FmModePanel /></div>
+              </div>
+            </section>
 
-        <BandHeader icon="🌙" title="NIGHT CONTROL" subtitle="AI Speaker · Beatmatch · Jingle Library · Virtual Club" color="#C89AFF" />
-        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-          <NightControlCenter />
-        </div>
+            {/* 2 · WAREHOUSE & ASSETS — magazzino a larghezza piena + cassetti upload */}
+            <section data-testid="band-warehouse" className="space-y-4">
+              <BandHeader icon="📚" title="WAREHOUSE & ASSETS" subtitle="Unified Asset Center · cassetti Ora Esatta / Spot / Basi / FX · Bulk ZIP" color="#D080FF" />
+              <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+                <MagazzinoUniversale />
+                <AdManagerPanel />
+                <RegiaAudioPanel />
+                <TrackManagerPanel />
+                <TrashPanel />
+              </div>
+            </section>
 
-        <BandHeader icon="📢" title="AD MANAGER" subtitle="Cluster Intro → Spot Random → Outro con LedWall sync" color="#FF8A3D" />
-        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-          <AdManagerPanel />
-        </div>
+            {/* 3 · SCHEDULING EDITOR — editor completo (lo specchietto è nella sidebar) */}
+            <section id="scheduling-editor" data-testid="band-scheduling" className="space-y-4">
+              <BandHeader icon="🕰️" title="SCHEDULING" subtitle="Smart Flow Timeline · Smart Recurrence · Power Play · regole di rotazione" color="#00E5FF" />
+              <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+                <SmartFlowTimelinePanel />
+                <PowerPlayMonitor />
+                <RotationRulesPanel />
+              </div>
+            </section>
 
-        {/* ══════════════════════════════════════════════════════════════════
-            FASCIA BASSA · RISORSE — magazzino, cestino, vocali, comandi
-            ══════════════════════════════════════════════════════════════════ */}
-        <BandHeader icon="📚" title="RISORSE" subtitle="Magazzino universale, comandi broadcast, coda vocali" color="#D080FF" />
-        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-          <MagazzinoUniversale />
+            {/* 4 · NIGHT & LIVE SOURCES */}
+            <section data-testid="band-night" className="space-y-4">
+              <BandHeader icon="🌙" title="NIGHT & LIVE SOURCES" subtitle="AI Speaker · Beatmatch · Jingle Library · Go Live · Line-In · Live External" color="#C89AFF" />
+              <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+                <NightControlCenter />
+                <BroadcasterPanel />
+                <NightDJsPanel />
+                <GoLivePanel />
+                <LedWallMiniPreview />
+                <LiveExternalPanel />
+                <ManualModePanel />
+              </div>
+            </section>
 
-        {/* NEW: Broadcast control bar — Play/Pause/Skip/Jingle propagated
-            to every public listener via /api/admin/command */}
-        <BroadcastControlBar />
+            {/* 5 · COMMUNITY & PARTNERS */}
+            <section data-testid="band-community" className="space-y-4">
+              <BandHeader icon="🤝" title="COMMUNITY & PARTNERS" subtitle="Approvazioni · vocali · A.I. vs Umani · sponsor" color="#80FFB4" />
+              <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+                <ApprovalQueuePanel />
+                <VoiceQueuePanel />
+                <CommunityPanel />
+                <CommunityWallPanel />
+                <PartnersPanel />
+              </div>
+            </section>
 
-        {/* NEW: Live External — switch listeners to an Icecast/Shoutcast URL */}
-        <LiveExternalPanel />
+            {/* 6 · SECONDARY UTILITIES — fondo pagina: generatori, oroscopo, manutenzione */}
+            <section data-testid="band-secondary" className="space-y-4">
+              <BandHeader icon="🧰" title="SECONDARY UTILITIES" subtitle="Generatori manuali · Oroscopo · News · Meteo · Manutenzione tecnica · KPI" color="#8A8F98" />
+              <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
 
-        {/* Control room */}
+        {/* Control room — generatori manuali (Talk/News/Oroscopo/Meteo…) */}
         <section className="lg:col-span-4 rounded-xl overflow-hidden relative border border-white/10">
           <div className="absolute inset-0 -z-10" style={{ backgroundImage: `linear-gradient(180deg, rgba(5,5,10,0.7) 0%, rgba(5,5,10,0.92) 100%), url(${STUDIO_BG})`, backgroundSize: "cover", backgroundPosition: "center" }} />
           <div className="p-6 md:p-8 flex flex-col md:flex-row md:items-end justify-between gap-4">
@@ -249,39 +273,12 @@ export default function Dashboard() {
           </div>
         </section>
 
-        {/* Kill Switch — automation OFF / ON con conferma */}
+        {/* Oroscopo / Stelle */}
+        <StellePanel />
+
+        {/* Manutenzione tecnica */}
         <KillSwitchPanel />
-
-        {/* Club Night — assegnazione night_slot ai DJ */}
-        <NightDJsPanel />
-
-        {/* DB Sync — export/import tracks between preview and production */}
         <DbSyncPanel />
-
-        {/* NEW: Rotation rules (jingle every X, DJ talk every Y) */}
-        <RotationRulesPanel />
-
-        {/* Unified track manager — clean table with search, upload, replace */}
-        <TrackManagerPanel />
-
-        {/* Cestino — soft-deleted tracks (spostato SOTTO la lista MP3) */}
-        <TrashPanel />
-
-        {/* Coda di Approvazione — richieste esterne partner in attesa OK admin */}
-        <ApprovalQueuePanel />
-        <VoiceQueuePanel />
-
-        {/* Regia Audio: mixer real-time + crossfade + sottofondi */}
-        <RegiaAudioPanel />
-
-        {/* Community "A.I. Vs Umani" — brani caricati dagli utenti */}
-        <CommunityPanel />
-        {/* Wall Community pubblico — vetrina brani approvati con contatori */}
-        <CommunityWallPanel />
-        {/* Main Partner / Sponsor slot */}
-        <PartnersPanel />
-        {/* Manual Mode & Line-In Mixer */}
-        <ManualModePanel />
 
         {/* KPI */}
         <KPI label="Segmenti" value={analytics.total_segments || 0} icon={Zap} />
@@ -606,7 +603,27 @@ export default function Dashboard() {
             ))}
           </div>
         </section>
-        </div> {/* fine FASCIA BASSA · RISORSE */}
+              </div>
+            </section>
+          </div>
+
+          {/* ═══════════════ SIDEBAR DESTRA · SCHEDULING (sticky) ═══════════════ */}
+          <aside className="xl:col-span-3 min-w-0 xl:sticky xl:top-20 space-y-4 regia-col" data-testid="regia-sidebar">
+            <BandHeader icon="📅" title="PALINSESTO" subtitle="Full-screen + prossimi eventi" color="#00E5FF" />
+            <a
+              href="/admin/calendar"
+              target="_blank"
+              rel="noopener noreferrer"
+              data-testid="sidebar-open-master-calendar"
+              className="block text-center text-sm font-bold px-3 py-2.5 rounded-lg text-black"
+              style={{ background: "linear-gradient(135deg, #00E5FF, #3AE0FF)", boxShadow: "0 0 14px rgba(0,229,255,0.45)" }}
+            >
+              📅 APRI PALINSESTO FULL-SCREEN
+            </a>
+            <TimelineMiniPanel />
+            <ElasticQueuePreview />
+          </aside>
+        </div>
       </main>
     </div>
   );
@@ -616,6 +633,128 @@ export default function Dashboard() {
  * BandHeader — v13.8
  * Intestazione visiva glassmorphism per raggruppare i pannelli in 3 fasce.
  */
+/**
+ * LiveQuickBar — v13.42 (solo UI). Soggetto globale + FLASH AD accanto agli
+ * interruttori, riusando gli endpoint già esistenti:
+ *   GET/PATCH /admin/regia/config (default_subject) · POST /admin/ad-manager/flash
+ */
+function LiveQuickBar() {
+  const [subject, setSubject] = useState("");
+  const [saved, setSaved] = useState("");
+  const [count, setCount] = useState(2);
+  const [busy, setBusy] = useState(null);
+  useEffect(() => {
+    api.get("/admin/regia/config").then((r) => { const s = r.data?.default_subject || ""; setSubject(s); setSaved(s); }).catch(() => {});
+  }, []);
+  const saveSubject = async () => {
+    setBusy("subject");
+    try { await api.patch("/admin/regia/config", { default_subject: subject }); setSaved(subject); toast.success("Soggetto globale salvato"); }
+    catch { toast.error("Errore salvataggio soggetto"); }
+    finally { setBusy(null); }
+  };
+  const flash = async () => {
+    setBusy("flash");
+    try {
+      const { data } = await api.post("/admin/ad-manager/flash", { count });
+      toast.success(`⚡ FLASH AD · ${data?.cluster?.length || data?.count || count} elementi in coda dopo il brano corrente`);
+    } catch (e) { toast.error(e?.response?.data?.detail || "FLASH AD fallito (spot mancanti?)"); }
+    finally { setBusy(null); }
+  };
+  return (
+    <section className="lg:col-span-4 card-surface p-4 flex flex-col md:flex-row gap-4 md:items-end" data-testid="live-quick-bar">
+      <div className="flex-1 min-w-0">
+        <div className="label-mono mb-1" style={{ color: "#FF8A3D" }}>🎯 Soggetto globale (brief DJ di default)</div>
+        <div className="flex gap-2">
+          <input
+            value={subject}
+            onChange={(e) => setSubject(e.target.value)}
+            maxLength={400}
+            placeholder="Es. musica elettronica anni '90 e cultura club"
+            data-testid="live-subject-input"
+            className="flex-1 min-w-0 bg-black/60 border border-white/10 rounded px-3 py-2 text-sm text-white"
+          />
+          <button onClick={saveSubject} disabled={busy === "subject" || subject === saved} data-testid="live-subject-save"
+            className="px-3 py-2 rounded text-xs font-bold text-black disabled:opacity-40" style={{ background: "#FF8A3D" }}>
+            Salva
+          </button>
+        </div>
+      </div>
+      <div className="shrink-0">
+        <div className="label-mono mb-1" style={{ color: "#FF8A3D" }}>📢 FLASH AD</div>
+        <div className="flex gap-2 items-center">
+          <select value={count} onChange={(e) => setCount(Number(e.target.value))} data-testid="live-flash-count"
+            className="bg-black/60 border border-white/10 rounded px-2 py-2 text-sm text-white">
+            {[1, 2, 3, 4].map((n) => <option key={n} value={n}>{`${n} spot`}</option>)}
+          </select>
+          <button onClick={flash} disabled={busy === "flash"} data-testid="live-flash-ad-btn"
+            className="px-4 py-2 rounded text-sm font-black text-black"
+            style={{ background: "linear-gradient(135deg,#FF8A3D,#FF2D95)", boxShadow: "0 0 14px rgba(255,138,61,0.45)" }}>
+            {busy === "flash" ? "⏳" : "⚡ FLASH AD ORA"}
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/**
+ * TimelineMiniPanel — v13.42 (solo UI, read-only). Specchietto dei prossimi
+ * eventi Timeline in sidebar; riusa GET /admin/timeline?status=pending.
+ */
+function TimelineMiniPanel() {
+  const [events, setEvents] = useState([]);
+  useEffect(() => {
+    let alive = true;
+    const load = () => Promise.all([
+      api.get("/admin/timeline?status=pending&limit=40"),
+      api.get("/admin/timeline?status=template&limit=100"),
+    ]).then(([p, t]) => {
+      if (!alive) return;
+      const arr = (x) => (Array.isArray(x.data) ? x.data : (x.data?.events || []));
+      setEvents([...arr(p), ...arr(t)]);
+    }).catch(() => {});
+    load();
+    const iv = setInterval(load, 15000);
+    return () => { alive = false; clearInterval(iv); };
+  }, []);
+  const next = events
+    .filter((e) => !e.rrule && e.scheduled_at)
+    .sort((a, b) => (a.scheduled_at || "").localeCompare(b.scheduled_at || ""))
+    .slice(0, 8);
+  const templates = events.filter((e) => e.rrule).length;
+  return (
+    <section className="card-surface p-4" data-testid="timeline-mini-panel">
+      <div className="flex items-center justify-between mb-2">
+        <div className="label-mono" style={{ color: "#00E5FF" }}>🕰️ Prossimi eventi</div>
+        <span className="text-[10px] font-mono text-zinc-500">{templates} template rrule</span>
+      </div>
+      {next.length === 0 ? (
+        <div className="text-xs text-zinc-500 font-mono">Nessun evento in attesa.</div>
+      ) : (
+        <ul className="space-y-1.5">
+          {next.map((e) => {
+            const d = new Date(e.scheduled_at);
+            const when = `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+            return (
+              <li key={e.id} className="flex items-start gap-2 text-xs" data-testid={`timeline-mini-row-${e.id}`}>
+                <span className="font-mono text-cyan-300 shrink-0">{when}</span>
+                <span className="text-zinc-200 truncate">
+                  <span className="text-zinc-500">[{e.kind}]</span> {e.title || e.dj_name || e.audio_url?.split("/").pop() || e.id}
+                  {e.follow_ups?.length ? <span className="text-emerald-300"> +{e.follow_ups.length}</span> : null}
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      <a href="#scheduling-editor" className="block mt-3 text-[11px] font-mono text-cyan-400 hover:underline" data-testid="timeline-mini-goto-editor">
+        ▸ apri editor Smart Flow Timeline ↓
+      </a>
+    </section>
+  );
+}
+
+
 function BandHeader({ icon, title, subtitle, color = "#00E5FF" }) {
   return (
     <div

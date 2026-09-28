@@ -272,6 +272,13 @@ body {
 }
 
 /* card-surface: dritto sui pannelli console (retro-compat con altre pagine) */
+/* v13.42 · Regia re-layout: isolamento layout per colonna → i re-layout
+   interni (canvas LedWall mini, liste che cambiano altezza) non propagano
+   fuori dal contenitore → niente cascata ResizeObserver. */
+.regia-col { contain: layout style; overflow-anchor: none; }
+.regia-col > section > .grid > * { min-width: 0; }
+.regia-flat > section { flex: 1 1 auto; width: 100%; }
+
 .card-surface {
   position: relative;
   background: linear-gradient(180deg, rgba(10,14,26,0.85) 0%, rgba(5,7,15,0.92) 100%);

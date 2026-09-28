@@ -717,3 +717,11 @@ Vedi turni precedenti in questa sessione:
 - PublicRadio.js header: `<img rai-face.png>` sostituito da `<RaiOrbLogo size={56}/>` dentro `rai-logo` (w-14 h-14 e drop-shadow invariati). Keyframes `raiLogoFloat` rimossi da index.css (nessun altro uso).
 - HoloBrand.js NON toccato: lì `rai-face.png` è il volto robot audio-reattivo (warm ring/bocca), feature distinta.
 - Verifica preview: box 56x56, sfera e testo in movimento (transform cambia), 14 lettere, nessun errore.
+
+## v13.42 · RE-LAYOUT REGIA "PILOTA PROFESSIONALE" (2026-09-28) — solo UI
+- Dashboard.js: griglia xl:12 → colonna principale (9) + sidebar sticky (3). Bande: LIVE COMMAND (BroadcastControlBar, AIMasterControlPanel 7 switch, LiveQuickBar [Soggetto globale + FLASH AD], FmModePanel) → WAREHOUSE & ASSETS (Magazzino full-width, AdManager, RegiaAudio/bed, TrackManager, Cestino) → SCHEDULING (SmartFlowTimeline, PowerPlay, RotationRules) → NIGHT & LIVE SOURCES (NightControl, Broadcaster HLS/Icecast, NightDJs, GoLive, LedWall mini, LiveExternal, ManualMode) → COMMUNITY & PARTNERS → SECONDARY UTILITIES (Control room generatori Talk/News/Oroscopo/Meteo, Stelle, KillSwitch, DbSync, KPI, Ads, Telegram, LLM, DJ mgmt, Questions, Tracks, Recent).
+- Sidebar: bottone Palinsesto full-screen + `TimelineMiniPanel` (read-only, GET /admin/timeline pending+template) + ElasticQueuePreview.
+- Nuovi componenti UI in Dashboard.js: `LiveQuickBar` (GET/PATCH /admin/regia/config, POST /admin/ad-manager/flash), `TimelineMiniPanel`. Nessuna logica backend toccata.
+- CSS: `.regia-col { contain: layout style }` per isolare i re-layout (ResizeObserver), `.regia-flat`.
+- Fix warning React `<option>` multi-child (SmartFlowTimelinePanel riga 496, LiveQuickBar).
+- Verifica Playwright: ordine bande corretto, LIVE COMMAND 99→1044px (player+7 switch+Soggetto+FLASH AD visibili con uno scroll minimo), 0 sovrapposizioni, Magazzino carica 195 MP3.

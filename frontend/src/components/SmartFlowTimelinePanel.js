@@ -493,7 +493,7 @@ export default function SmartFlowTimelinePanel() {
                 <optgroup label="🎬 Video caricati">
                   {videos.map((v) => (
                     <option key={v.id} value={v.url}>
-                      {v.display_name} ({Math.round((v.size || 0) / 1024 / 1024)}MB)
+                      {`${v.display_name} (${Math.round((v.size || 0) / 1024 / 1024)}MB)`}
                     </option>
                   ))}
                 </optgroup>
