@@ -30,6 +30,15 @@ const DJ_COLOR = {
   Luma: "#00E5FF",    // Ciano brillante
 };
 
+// v13.41 · Fix ticket #247410: logo rotante a ritmo per la scena di default
+// del LedWall (richiesta cliente: sostituire le onde sinusoidali in home).
+// Immagine caricata una sola volta a livello di modulo e riusata su ogni frame.
+let _logoImg = null;
+function _getLogoImg() {
+  if (!_logoImg) { _logoImg = new Image(); _logoImg.src = "/rai-logo.png"; }
+  return _logoImg;
+}
+
 // v13.40 · Effetti visivi selezionabili. Ogni modalità disegna il frame
 // completo (sfondo incluso) usando `beat` (0..1, da BPM server o ampiezza).
 function drawEffect(ctx, W, H, dpr, mode, p) {
@@ -162,6 +171,93 @@ function drawEffect(ctx, W, H, dpr, mode, p) {
     ctx.beginPath(); ctx.ellipse(cx, cy, R * 1.35, R * 0.35, -0.5 + Math.sin(t * 0.4) * 0.2, 0, Math.PI * 2); ctx.stroke();
     return;
   }
+
+  if (mode === "logo") {
+    // v13.41 · Fix ticket #247410: logo rotante al centro, fade colore
+    // continuo, anelli/particelle/note a ritmo. Scena di default in home
+    // al posto delle vecchie onde sinusoidali.
+    ctx.fillStyle = "rgba(2,4,10,0.20)"; ctx.fillRect(0, 0, W, H);
+    const hue = (hueBase + t * 22) % 360;
+    const bgGlow = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(W, H) * 0.7);
+    bgGlow.addColorStop(0, `hsla(${hue},80%,${14 + beat * 10}%,0.55)`);
+    bgGlow.addColorStop(1, "rgba(2,4,10,0)");
+    ctx.fillStyle = bgGlow; ctx.fillRect(0, 0, W, H);
+
+    if (!st.notes) st.notes = [];
+    if (!st.logoRot) st.logoRot = 0;
+    st.logoRot += 0.006 + beat * 0.012;
+
+    // Anelli pulsanti a ritmo (stesso pattern del mode "rings")
+    if (newBeat || st.rings.length === 0) st.rings.push({ r: 4 * dpr, a: 1, w: (3 + amp * 5) * dpr, hue: (hue + 40) % 360 });
+    const maxR = Math.hypot(W, H) / 2;
+    st.rings = st.rings.filter((o) => o.a > 0.02);
+    for (const o of st.rings) {
+      o.r += (2.2 + beat * 5) * dpr; o.a = Math.max(0, 1 - o.r / (maxR * 0.85));
+      ctx.strokeStyle = `hsla(${o.hue},95%,65%,${o.a * 0.8})`; ctx.lineWidth = o.w;
+      ctx.shadowColor = `hsla(${o.hue},95%,65%,${o.a})`; ctx.shadowBlur = 12 * dpr;
+      ctx.beginPath(); ctx.arc(cx, cy, o.r, 0, Math.PI * 2); ctx.stroke();
+    }
+    ctx.shadowBlur = 0;
+    if (st.rings.length > 60) st.rings.splice(0, st.rings.length - 60);
+
+    // Particelle che schizzano dal centro sul beat
+    if (newBeat) {
+      for (let i = 0; i < 6; i++) {
+        const ang = Math.random() * Math.PI * 2, sp = (1.2 + amp * 4) * dpr;
+        st.rings.push({ p: true, x: cx, y: cy, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp, a: 1, hue: (hue + Math.random() * 90) % 360 });
+      }
+      // Nota musicale occasionale a ritmo
+      if (Math.random() < 0.7) {
+        const ang = Math.random() * Math.PI * 2;
+        st.notes.push({
+          x: cx + Math.cos(ang) * (Math.min(W, H) * 0.16), y: cy + Math.sin(ang) * (Math.min(W, H) * 0.16),
+          vx: Math.cos(ang) * 0.6 * dpr, vy: (Math.sin(ang) * 0.6 - 0.9) * dpr,
+          a: 1, hue: (hue + 150) % 360, glyph: Math.random() < 0.5 ? "\u266A" : "\u266B",
+          size: (14 + Math.random() * 10) * dpr,
+        });
+      }
+    }
+    for (const o of st.rings) {
+      if (!o.p) continue;
+      o.x += o.vx; o.y += o.vy; o.a -= 0.015;
+      ctx.fillStyle = `hsla(${o.hue},95%,70%,${Math.max(0, o.a)})`;
+      ctx.beginPath(); ctx.arc(o.x, o.y, (1.5 + amp * 2) * dpr, 0, Math.PI * 2); ctx.fill();
+    }
+
+    // Note musicali: fluttuano verso l'alto e svaniscono
+    st.notes = st.notes.filter((n) => n.a > 0.02);
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    for (const n of st.notes) {
+      n.x += n.vx; n.y += n.vy; n.a -= 0.008;
+      ctx.font = `${n.size}px sans-serif`;
+      ctx.fillStyle = `hsla(${n.hue},90%,75%,${Math.max(0, n.a)})`;
+      ctx.shadowColor = `hsla(${n.hue},90%,65%,${Math.max(0, n.a)})`; ctx.shadowBlur = 8 * dpr;
+      ctx.fillText(n.glyph, n.x, n.y);
+    }
+    ctx.shadowBlur = 0;
+    if (st.notes.length > 40) st.notes.splice(0, st.notes.length - 40);
+
+    // Logo rotante al centro, colore in fade continuo
+    const logoImg = _getLogoImg();
+    const logoR = Math.min(W, H) * (0.20 + beat * 0.03);
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(st.logoRot);
+    if (logoImg.complete && logoImg.naturalWidth > 0) {
+      try { ctx.filter = `hue-rotate(${hue}deg) saturate(1.5) brightness(${1 + beat * 0.3})`; } catch {}
+      ctx.globalAlpha = 0.92;
+      ctx.drawImage(logoImg, -logoR, -logoR, logoR * 2, logoR * 2);
+      ctx.filter = "none"; ctx.globalAlpha = 1;
+    } else {
+      // Fallback procedurale finché l'immagine non è pronta: emblema circolare
+      ctx.strokeStyle = `hsla(${hue},95%,65%,0.9)`; ctx.lineWidth = 3 * dpr;
+      ctx.shadowColor = `hsla(${hue},95%,65%,0.8)`; ctx.shadowBlur = 14 * dpr;
+      ctx.beginPath(); ctx.arc(0, 0, logoR, 0, Math.PI * 2); ctx.stroke();
+      ctx.shadowBlur = 0;
+    }
+    ctx.restore();
+    return;
+  }
 }
 
 
@@ -179,7 +275,7 @@ export default function LedWall({
   trackOverlay = null,
   djs = [],
   fillHeight = false,   // v13.6 · quando true, occupa altezza 100% del parent (no aspect-ratio)
-  effect = "auto",      // v13.40 · auto | gradient | rings | eq | starfield | holo
+  effect = "auto",      // v13.41 · auto | gradient | rings | eq | starfield | holo | logo
 }) {
   const canvasRef = useRef(null);
   const bgRef = useRef(null);

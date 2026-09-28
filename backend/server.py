@@ -232,7 +232,18 @@ async def download_and_save_suno_audio(audio_url: str, track_id: str) -> Optiona
         logger.info(f"Suno track {track_id} → objstore {stored_path} ({len(audio_bytes)} bytes)")
         if real_duration and real_duration > 0:
             try:
-                await db.tracks.update_one({"id": track_id}, {"$set": {"duration_sec": round(real_duration)}})
+                # v13.41 · Fix ticket #247410: il path Suno non applicava alcun
+                # margine di sicurezza (a differenza dell'admin-upload, che usa
+                # +0.4s) — con MP3 VBR il round() poteva arrotondare sotto la
+                # durata reale, causando il taglio in coda al brano ("disco
+                # incantato"). Allineato al margine già in uso altrove.
+                await db.tracks.update_one(
+                    {"id": track_id},
+                    {"$set": {
+                        "duration_sec": round(real_duration + 0.4, 3),
+                        "real_duration_sec": round(real_duration, 3),
+                    }},
+                )
             except Exception as e:
                 logger.debug(f"[suno] duration_sec update skip {track_id}: {e}")
         # BPM detection (v13.2) — best-effort, non blocca la restituzione URL.
@@ -290,6 +301,7 @@ class Track(BaseModel):
     mood: str
     lyrics_excerpt: str
     duration_sec: int
+    real_duration_sec: Optional[float] = None  # v13.41 · durata reale non-paddata, per EXTINF
     llm_provider: str
     cover_seed: str
     audio_url: Optional[str] = None       # local /api/suno_audio/<id>.mp3 once downloaded
@@ -1309,7 +1321,7 @@ async def admin_export_manifest():
 # l'invio (BackgroundTask) e comunque dopo 30 min (janitor).
 _ZIP_DIR = Path("/tmp/rai_zip")
 _ZIP_DIR.mkdir(parents=True, exist_ok=True)
-_ZIP_MAX_ITEMS = 80
+_ZIP_MAX_ITEMS = 300
 
 
 def _zip_janitor(max_age_sec: int = 1800):
@@ -1326,8 +1338,8 @@ def _zip_janitor(max_age_sec: int = 1800):
 def _zip_safe_name(title: str, url: str, idx: int) -> str:
     import re as _re
     ext = (url.rsplit(".", 1)[-1].lower() if "." in url.rsplit("/", 1)[-1] else "bin")[:5]
-    base = _re.sub(r"[^\w\-. ]+", "_", (title or "").strip())[:80].strip("._ ") or f"asset_{idx:02d}"
-    return f"{idx:02d}_{base}.{ext}"
+    base = _re.sub(r"[^\w\-. ]+", "_", (title or "").strip())[:80].strip("._ ") or f"asset_{idx:03d}"
+    return f"{idx:03d}_{base}.{ext}"
 
 
 @api_router.post("/admin/assets/zip")
@@ -1535,7 +1547,8 @@ async def admin_tracks_upload(
             norm = await _normalize_audio_file(_raw_tmp_path)
             if norm and norm.get("normalized_bytes"):
                 data = norm["normalized_bytes"]
-                probed_duration_sec = float(norm.get("duration_sec") or 0.0) + 0.4  # safety margin
+                probed_duration_sec_raw = float(norm.get("duration_sec") or 0.0)
+                probed_duration_sec = probed_duration_sec_raw + 0.4  # safety margin
         finally:
             try:
                 Path(_raw_tmp_path).unlink()
@@ -1602,6 +1615,7 @@ async def admin_tracks_upload(
             mood="uploaded",
             lyrics_excerpt="(uploaded via admin panel)",
             duration_sec=round(probed_duration_sec, 3) if probed_duration_sec > 0 else 0,
+            real_duration_sec=round(probed_duration_sec_raw, 3) if probed_duration_sec_raw > 0 else None,
             llm_provider="admin_upload",
             cover_seed=track_id[:8],
             audio_url=audio_url,
@@ -1795,6 +1809,7 @@ async def admin_get_rotation_rules():
     return {
         "jingle_every_n_songs": int(doc.get("jingle_every_n_songs") or 2),
         "dj_talk_every_n_songs": int(doc.get("dj_talk_every_n_songs") or 4),
+        "fx_every_n_songs": int(doc.get("fx_every_n_songs") or 0),  # v13.41 · 0 = FX rotation disattivata
     }
 
 
@@ -1802,21 +1817,24 @@ async def admin_get_rotation_rules():
 async def admin_set_rotation_rules(
     jingle_every_n_songs: int = Form(...),
     dj_talk_every_n_songs: int = Form(...),
+    fx_every_n_songs: int = Form(0),
 ):
     """Set the rotation cadence.
       jingle_every_n_songs  → interspersa un jingle brandizzato ogni N brani
       dj_talk_every_n_songs → interspersa una rubrica DJ ogni Y brani
-    Valori validi: 1..20.
+      fx_every_n_songs      → v13.41 · interspersa un FX ogni N brani (0 = off)
+    Valori validi: 1..20 (o 0 per fx_every_n_songs = disattivato).
     """
     j = max(1, min(20, int(jingle_every_n_songs)))
     d = max(1, min(20, int(dj_talk_every_n_songs)))
+    f = 0 if int(fx_every_n_songs) <= 0 else max(1, min(20, int(fx_every_n_songs)))
     await db.station.update_one(
         {"_id": "state"},
-        {"$set": {"jingle_every_n_songs": j, "dj_talk_every_n_songs": d}},
+        {"$set": {"jingle_every_n_songs": j, "dj_talk_every_n_songs": d, "fx_every_n_songs": f}},
         upsert=True,
     )
-    logger.info(f"Rotation rules updated: jingle every {j}, dj_talk every {d}")
-    return {"ok": True, "jingle_every_n_songs": j, "dj_talk_every_n_songs": d}
+    logger.info(f"Rotation rules updated: jingle every {j}, dj_talk every {d}, fx every {f or 'off'}")
+    return {"ok": True, "jingle_every_n_songs": j, "dj_talk_every_n_songs": d, "fx_every_n_songs": f}
 
 
 # ----------------------- Admin: one-click sync to production -----------------------
@@ -5826,7 +5844,7 @@ def _build_hls_playlist(tracks: list, base_url: str) -> str:
         f"#EXT-X-PROGRAM-DATE-TIME:{datetime.now(timezone.utc).isoformat()}",
     ]
     for t in tracks:
-        dur = float(t.get("duration_sec") or 150)
+        dur = float(t.get("real_duration_sec") or t.get("duration_sec") or 150)
         title = (t.get("title") or "R-A.I.").replace(",", " ")
         artist = (t.get("artist") or "R-A.I.").replace(",", " ")
         url = t.get("audio_url") or ""
@@ -5872,12 +5890,19 @@ async def hls_live_playlist(request: Request):
                         headers={"Cache-Control": "no-store", "Access-Control-Allow-Origin": "*"})
 
     entries = [cur] + [t for t in (clock.get("queue") or [])[:4]]
+    # v13.40 · Finestra scorrevole live: MEDIA-SEQUENCE = numero progressivo
+    # del current (prima fisso a 0 mentre il primo segmento cambiava → hls.js
+    # riconosceva come "segmento 0" un file diverso). Ogni segmento dopo il
+    # primo ha un DISCONTINUITY, quindi ogni segmento uscito dalla testa ne
+    # porta via uno: DISCONTINUITY-SEQUENCE avanza di pari passo. Niente più
+    # PLAYLIST-TYPE:EVENT: una playlist EVENT non può rimuovere segmenti in testa.
+    seq = int(clock.get("seq") or 0)
     lines = [
         "#EXTM3U",
         "#EXT-X-VERSION:3",
         "#EXT-X-TARGETDURATION:300",
-        "#EXT-X-MEDIA-SEQUENCE:0",
-        "#EXT-X-PLAYLIST-TYPE:EVENT",
+        f"#EXT-X-MEDIA-SEQUENCE:{seq}",
+        f"#EXT-X-DISCONTINUITY-SEQUENCE:{seq}",
         f"#EXT-X-START:TIME-OFFSET={offset:.3f},PRECISE=YES",
     ]
     # Iniziale program-date-time = quando il current è iniziato per davvero
@@ -5897,7 +5922,7 @@ async def hls_live_playlist(request: Request):
                 f"[hls_live_playlist] fallback duration_sec=180 su track id={t.get('id')} "
                 f"title={t.get('title')!r} (duration_sec={_raw_dur!r}) — filtro pick fallito?"
             )
-        dur = float(_raw_dur or 180)
+        dur = float(t.get("real_duration_sec") or _raw_dur or 180)  # v13.41 · EXTINF usa la durata reale, non paddata
         title = (t.get("title") or "R-A.I.").replace(",", " ")
         artist = (t.get("artist") or "R-A.I.").replace(",", " ")
         url = t.get("audio_url") or ""
@@ -6111,6 +6136,15 @@ async def chat_generate_avatar(payload: dict):
 # v13.17 · SMART FLOW TIMELINE — Coda a inserimento libero, soft-sync
 # ============================================================================
 _CLOCK_QUEUE_LOOKAHEAD = 8   # numero di brani in coda dopo il current
+_SHORT_AUDIO_SEC = 45        # v13.40 · sotto questa durata = jingle/spot/evento breve
+_SHORT_AUDIO_PAD_SEC = 1.5   # v13.40 · coda di sicurezza anti-troncamento sui file brevi
+
+
+def _pad_short(dur: float) -> float:
+    """v13.40 · +1.5s ai file brevi (jingle, spot, eventi Timeline) contro il
+    troncamento dell'ultima parola. Applicato al momento del pick, MAI sul DB,
+    così ri-probe/normalize ripetuti non accumulano padding."""
+    return round(dur + _SHORT_AUDIO_PAD_SEC, 3) if 0 < dur < _SHORT_AUDIO_SEC else dur
 # Sostituisce (o affianca) il Master Clock rigido 24h con una timeline
 # minuto-per-minuto. L'admin inserisce eventi con un timestamp preciso.
 # L'advance loop pesca eventi dovuti (scheduled_at <= now) SOLO quando il
@@ -6227,7 +6261,7 @@ async def _timeline_pick_due() -> Optional[dict]:
             if doc.get("kind") == "time_signal":
                 _rd = await _probe_tts_duration(_live_au)
                 if _rd:
-                    doc["duration_sec"] = int(round(_rd)) + 1
+                    doc["duration_sec"] = round(_rd, 3)  # v13.40 · padding via _pad_short (era int(round)+1)
         elif (doc.get("audio_url") or "").startswith("time_signal:"):
             doc["audio_url"] = None
         else:
@@ -6238,7 +6272,7 @@ async def _timeline_pick_due() -> Optional[dict]:
         "title": doc.get("title") or "Timeline event",
         "artist": doc.get("artist") or doc.get("dj_name") or "R-A.I. Timeline",
         "audio_url": doc.get("audio_url"),
-        "duration_sec": int(doc.get("duration_sec") or 30),
+        "duration_sec": _pad_short(float(doc.get("duration_sec") or 30)),  # v13.40 · era int()
         "is_timeline": True,
         "timeline_kind": doc.get("kind"),
         # v13.27 · Espone anche `kind` così LedWall.detectMode() può
@@ -7164,7 +7198,8 @@ async def admin_audio_reprobe_durations(limit: int = 500):
                 logger.warning(f"[reprobe] track {tid} unreadable · ffprobe non ha ritornato durata (source={source})")
                 unreadable += 1
                 continue
-            real = float(d) + 2.0  # v13.36 · safety margin (was 0.4s, too thin for VBR MP3)
+            real_raw = float(d)
+            real = real_raw + 2.0  # v13.36 · safety margin (was 0.4s, too thin for VBR MP3)
             if source == "local":
                 probed_local += 1
             else:
@@ -7174,7 +7209,8 @@ async def admin_audio_reprobe_durations(limit: int = 500):
                 continue
             await db.tracks.update_one(
                 {"id": tid},
-                {"$set": {"duration_sec": round(real), "duration_probed_at": now_iso()}},
+                {"$set": {"duration_sec": round(real), "real_duration_sec": round(real_raw, 3),
+                          "duration_probed_at": now_iso()}},
             )
             updated += 1
         except Exception as e:
@@ -7217,10 +7253,11 @@ async def admin_audio_normalize_one(track_id: str):
             f.write(result["normalized_bytes"])
     except Exception as e:
         raise HTTPException(500, f"Scrittura file fallita: {e}")
-    real = float(result["duration_sec"]) + 2.0  # v13.36 · aligned with reprobe margin (was 0.4s)
+    real_raw = float(result["duration_sec"])
+    real = real_raw + 2.0  # v13.36 · aligned with reprobe margin (was 0.4s)
     await db.tracks.update_one(
         {"id": track_id},
-        {"$set": {"duration_sec": round(real, 3),
+        {"$set": {"duration_sec": round(real, 3), "real_duration_sec": round(real_raw, 3),
                   "normalized_at": now_iso(),
                   "duration_probed_at": now_iso()}},
     )
@@ -7428,12 +7465,36 @@ async def _clock_pick_dj_jingle() -> Optional[dict]:
         "$and": [{"$or": [{"end_date": {"$exists": False}}, {"end_date": None}, {"end_date": {"$gte": _now_iso_s}}]}],
     }
     tr = await db.tracks.find_one(q, {"_id": 0, "id": 1, "title": 1, "artist": 1,
-                                       "audio_url": 1, "duration_sec": 1},
+                                       "audio_url": 1, "duration_sec": 1, "real_duration_sec": 1},
                                    sort=[("last_played_at", 1)])
     if not tr:
         return None
-    tr["duration_sec"] = int(tr.get("duration_sec") or 20)
+    # v13.40 · float (int() troncava fino a ~1s di coda) + padding file brevi
+    tr["duration_sec"] = _pad_short(float(tr.get("duration_sec") or 20))
     tr["is_dj_jingle"] = True
+    return tr
+
+
+async def _clock_pick_fx() -> Optional[dict]:
+    """v13.41 · Fix ticket #247410: pesca un FX dalla libreria (`tracks.is_fx=true`)
+    per la rotazione automatica. Finora gli FX erano riproducibili SOLO via il
+    pulsante manuale "play live" in Regia — mai dal clock live. Stesso pattern
+    di _clock_pick_dj_jingle. Se non ci sono FX caricati, ritorna None (no-op
+    sicuro finché l'utente non carica file FX in libreria)."""
+    q = {
+        "is_fx": True, "status": "ready", "audio_url": {"$ne": None},
+        "on_air": {"$ne": False}, "deleted_at": None,
+        "duration_sec": {"$gt": 0},
+    }
+    tr = await db.tracks.find_one(
+        q, {"_id": 0, "id": 1, "title": 1, "artist": 1, "audio_url": 1,
+            "duration_sec": 1, "real_duration_sec": 1},
+        sort=[("last_played_at", 1)],
+    )
+    if not tr:
+        return None
+    tr["duration_sec"] = _pad_short(float(tr.get("duration_sec") or 10))
+    tr["is_fx"] = True
     return tr
 
 
@@ -7481,11 +7542,11 @@ async def _clock_pick_track(exclude_ids: Optional[set] = None) -> Optional[dict]
         tr_com = await db.tracks.find_one(
             {"source": "community", "status": "ready", "audio_url": {"$ne": None},
              "on_air": {"$ne": False}, "deleted_at": None, **dp, **_not_queued},
-            {"_id": 0, "id": 1, "title": 1, "artist": 1, "audio_url": 1, "duration_sec": 1, "bpm": 1},
+            {"_id": 0, "id": 1, "title": 1, "artist": 1, "audio_url": 1, "duration_sec": 1, "real_duration_sec": 1, "bpm": 1},
             sort=[("last_played_at", 1)],
         )
         if tr_com:
-            tr_com["duration_sec"] = int(tr_com.get("duration_sec") or 180)
+            tr_com["duration_sec"] = float(tr_com.get("duration_sec") or 180)  # v13.40 · era int(): troncava
             return tr_com
     q = {
         "source": {"$in": _sources},
@@ -7508,29 +7569,77 @@ async def _clock_pick_track(exclude_ids: Optional[set] = None) -> Optional[dict]
     # prevedibile — poi aggiorniamo last_played_at come prima.
     _pool_size = 15
     tr_pool = await db.tracks.find(q, {"_id": 0, "id": 1, "title": 1, "artist": 1,
-                                        "audio_url": 1, "duration_sec": 1, "bpm": 1}) \
+                                        "audio_url": 1, "duration_sec": 1, "real_duration_sec": 1, "bpm": 1}) \
                               .sort([("last_played_at", 1)]).limit(_pool_size).to_list(length=_pool_size)
     tr = random.choice(tr_pool) if tr_pool else None
     if not tr:
         tr_pool = await db.tracks.find(
             {"status": "ready", "audio_url": {"$ne": None}, "on_air": {"$ne": False}, "deleted_at": None, **_not_queued},
-            {"_id": 0, "id": 1, "title": 1, "artist": 1, "audio_url": 1, "duration_sec": 1, "bpm": 1},
+            {"_id": 0, "id": 1, "title": 1, "artist": 1, "audio_url": 1, "duration_sec": 1, "real_duration_sec": 1, "bpm": 1},
         ).sort([("last_played_at", 1)]).limit(_pool_size).to_list(length=_pool_size)
         tr = random.choice(tr_pool) if tr_pool else None
     if not tr:
         return None
-    tr["duration_sec"] = int(tr.get("duration_sec") or 180)
+    tr["duration_sec"] = float(tr.get("duration_sec") or 180)  # v13.40 · era int(): troncava
     return tr
+
+
+# v13.40 · GAPLESS CLOCK — la promozione del prossimo elemento (veloce, solo
+# pop dalla queue) è separata dal riempimento della queue (lento: query,
+# ffprobe dei segmenti DJ, Power Play), che ora gira in background. Prima il
+# refill girava inline dentro ogni /api/stream/now e live.m3u8, ritardando la
+# scrittura del nuovo `current` e facendo partire refill concorrenti.
+_clock_lock = asyncio.Lock()   # serializza le scritture del clock (uvicorn --workers 1)
+_clock_refill_task: Optional[asyncio.Task] = None   # un solo refill in volo alla volta
+# Se il brano precedente è finito da meno di così, il successivo parte
+# ESATTAMENTE alla sua fine teorica (niente buco da granularità del ticker);
+# oltre (pod addormentato) si riparte da "adesso".
+_CLOCK_CHAIN_MAX_LAG_SEC = 15.0
+
+
+def _clock_entry_end(cur: Optional[dict]) -> Optional[datetime]:
+    """Fine teorica (started_at + duration_sec) di un elemento del clock, o None."""
+    if not cur or not cur.get("started_at"):
+        return None
+    try:
+        started = datetime.fromisoformat(cur["started_at"].replace("Z", "+00:00"))
+        dur = float(cur.get("duration_sec") or 0)
+    except Exception:
+        return None
+    if dur <= 0:
+        return None
+    return started + timedelta(seconds=dur)
 
 
 async def _clock_advance(force: bool = False) -> dict:
     """Fa avanzare il clock se il brano corrente è scaduto (o se `force`).
     Ripopola `queue` fino a `_CLOCK_QUEUE_LOOKAHEAD`. Restituisce il clock aggiornato.
-    NB: safe in caso di race — l'update Mongo è atomico sul singolo doc.
 
     v13.16 · DJ INJECTION: ogni `_DJ_EVERY_N_TRACKS` brani musicali viene
     inserito un jingle DJ (dalla libreria `tracks.is_jingle=true`) nella
-    queue → il flusso HLS unico contiene voce+musica sincronizzata per tutti."""
+    queue → il flusso HLS unico contiene voce+musica sincronizzata per tutti.
+
+    v13.40 · La promozione avviene sotto `_clock_lock` e viene scritta
+    subito; il riempimento della queue parte in background
+    (`_clock_refill_queue`). Solo a queue completamente vuota (cold start)
+    si attende il refill, così la prima risposta ha già i prossimi brani."""
+    async with _clock_lock:
+        clock = await _clock_promote(force)
+    if len(clock.get("queue") or []) < _CLOCK_QUEUE_LOOKAHEAD:
+        task = _schedule_clock_refill()
+        if not clock.get("queue"):
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=10)
+                clock = await db.station_clock.find_one({"_id": "clock"}) or clock
+            except Exception:
+                pass
+    return clock
+
+
+async def _clock_promote(force: bool = False) -> dict:
+    """v13.40 · Parte veloce di `_clock_advance`: promuove il prossimo
+    elemento (Timeline dovuta → queue → pick diretto se la queue è vuota)
+    e scrive subito `current`/`queue`. Da chiamare sotto `_clock_lock`."""
     now = datetime.now(timezone.utc)
     clock = await db.station_clock.find_one({"_id": "clock"})
     changed = False
@@ -7582,7 +7691,13 @@ async def _clock_advance(force: bool = False) -> dict:
         if not promo:
             break
         promo = dict(promo)
-        promo["started_at"] = now.isoformat()
+        # v13.40 · Start concatenato: il nuovo elemento parte alla fine teorica
+        # del precedente, non all'istante del tick (fino a 2s di buco prima).
+        prev_end = _clock_entry_end(clock.get("current"))
+        if prev_end and prev_end <= now and (now - prev_end).total_seconds() <= _CLOCK_CHAIN_MAX_LAG_SEC:
+            promo["started_at"] = prev_end.isoformat()
+        else:
+            promo["started_at"] = now.isoformat()
         # v13.24 · Follow-up injection · se l'entry appena promossa (Timeline
         # event, es. "Ora Esatta") ha un `follow_up`, spingi lo Spot in TESTA
         # alla queue. La transizione Ora Esatta → Spot diventa "zero gap":
@@ -7603,7 +7718,7 @@ async def _clock_advance(force: bool = False) -> dict:
                 "title": _fu.get("title") or "Spot",
                 "artist": _fu.get("artist") or "R-A.I. Advertising",
                 "audio_url": _fu["audio_url"],
-                "duration_sec": float(_fu.get("duration_sec") or 20),
+                "duration_sec": _pad_short(float(_fu.get("duration_sec") or 20)),
                 "is_follow_up": True,
                 "parent_id": promo.get("id"),
                 "video_url": _fu.get("video_url"),
@@ -7612,6 +7727,9 @@ async def _clock_advance(force: bool = False) -> dict:
             q = fu_entries + (q or [])
         clock["current"] = promo
         clock["queue"] = q
+        # v13.40 · Numero progressivo del `current`: diventa
+        # #EXT-X-MEDIA-SEQUENCE della playlist HLS (prima fisso a 0).
+        clock["seq"] = int(clock.get("seq") or 0) + 1
         changed = True
         # Segna last_played_at sulla track (rotazione FIFO)
         try:
@@ -7621,96 +7739,180 @@ async def _clock_advance(force: bool = False) -> dict:
         # Se il current sarebbe ancora scaduto (advance grande dopo sleep pod),
         # il loop while continuerà a girare a costo trascurabile.
 
-    # v13.18 · Cadenza DJ configurabile dall'utente (Regia → "voce ogni N
-    # brani", campo station.state.dj_talk_every_n_songs). Prima di questa
-    # fix il live clock ignorava del tutto questa impostazione e usava
-    # sempre il valore fisso _DJ_EVERY_N_TRACKS=3 — la Regia non aveva
-    # alcun effetto sulla diretta.
-    try:
-        _station_state = await db.station.find_one({"_id": "state"}, {"dj_talk_every_n_songs": 1}) or {}
-        _dj_every_n = max(1, min(20, int(_station_state.get("dj_talk_every_n_songs") or _DJ_EVERY_N_TRACKS)))
-    except Exception:
-        _dj_every_n = _DJ_EVERY_N_TRACKS
-
-    # v13.31 · BROADCAST MASTER — Toggle "AI SPEAKER" persistente. Quando
-    # OFF, il clock NON pesca segmenti DJ (né live, né pre-generati, né
-    # jingle di voce): la radio va con sola musica + jingle instrumentali.
-    # Costo zero LLM/TTS anche se le altre AI sono ON.
-    try:
-        _st_speaker = await db.station.find_one({"_id": "state"}, {"ai_speaker_enabled": 1}) or {}
-        _speaker_on = bool(_st_speaker.get("ai_speaker_enabled", True))
-    except Exception:
-        _speaker_on = True
-
-    # Riempi la queue fino al lookahead con injection DJ ogni N brani
-    # v13.37 · `_queued_ids`: current + TUTTI gli ID già in coda. Aggiornato
-    # ad ogni append e passato a _clock_pick_track come esclusione, così lo
-    # stesso brano non può finire in più slot nello stesso passaggio.
-    _queued_ids = {(clock.get("current") or {}).get("id")}
-    _queued_ids |= {t.get("id") for t in (clock.get("queue") or [])}
-    _queued_ids.discard(None)
-    while len(clock.get("queue") or []) < _CLOCK_QUEUE_LOOKAHEAD:
-        # Decidi se inserire un jingle DJ o un brano musicale
-        counter = int(clock.get("music_counter") or 0)
-        need_dj = (counter > 0 and counter % _dj_every_n == 0) and _speaker_on
-        picked = None
-        dj_slot_filled = False
-        if need_dj:
-            # v13.18 · prova prima un vero segmento parlato pronto, poi ne
-            # genera uno al volo se la coda è vuota, e solo come ultima
-            # risorsa ripiega sul jingle preregistrato dalla libreria tracce.
-            picked = await _clock_pick_dj_voice_segment()
-            if not picked:
-                picked = await _clock_pick_dj_jingle()
-            if picked:
-                dj_slot_filled = True
-        if not picked:
-            # v13.30 · POWER PLAY (Disco del Giorno): prima di pescare un brano
-            # dalla libreria, controlla se il rotation counter dice "tocca al PP".
-            # Se sì e il PP è pronto, servilo; altrimenti music normale.
-            picked = await _power_play_maybe_pick()
-            if not picked:
-                picked = await _clock_pick_track(exclude_ids=_queued_ids)
-            # incrementa counter musicale solo quando aggiungiamo musica reale
-            if picked:
-                clock["music_counter"] = counter + 1
-        if not picked:
-            break
-        if dj_slot_filled:
-            # v13.18 · azzera il contatore dopo un turno DJ riuscito. Prima di
-            # questa fix il contatore non veniva mai azzerato qui: con una
-            # cadenza di 1 ("voce dopo ogni brano") e una generazione DJ che
-            # ora riesce quasi sempre (ID sempre nuovo, mai scartato dal
-            # dedup anti-ripetizione), il turno DJ sarebbe rimasto "dovuto"
-            # per sempre riempiendo l'intera coda di sola voce, zero musica.
-            clock["music_counter"] = 0
-        # Evita duplicati: current + tutto ciò che è già in coda (v13.37: prima
-        # solo gli ultimi 2). Copre anche i picker non-musicali (PP, jingle).
-        if picked.get("id") in _queued_ids:
-            found_alt = False
-            for _ in range(3):
-                alt = await _clock_pick_track(exclude_ids=_queued_ids)
-                if alt and alt["id"] not in _queued_ids:
-                    picked = alt; found_alt = True; break
-            if not found_alt:
-                break
-        clock.setdefault("queue", []).append(picked)
-        _queued_ids.add(picked.get("id"))
-        changed = True
-
     if changed:
         clock["updated_at"] = now.isoformat()
-        await db.station_clock.update_one({"_id": "clock"}, {"$set": clock}, upsert=True)
+        # `music_counter` è di proprietà del refill: qui solo all'inserimento.
+        await db.station_clock.update_one(
+            {"_id": "clock"},
+            {"$set": {"current": clock.get("current"), "queue": clock.get("queue") or [],
+                      "seq": int(clock.get("seq") or 0), "updated_at": clock["updated_at"]},
+             "$setOnInsert": {"music_counter": 0}},
+            upsert=True,
+        )
     return clock
+
+
+def _schedule_clock_refill() -> asyncio.Task:
+    """v13.40 · Avvia `_clock_refill_queue` in background se non ce n'è già uno in volo."""
+    global _clock_refill_task
+    if _clock_refill_task is None or _clock_refill_task.done():
+        _clock_refill_task = asyncio.create_task(_clock_refill_queue())
+    return _clock_refill_task
+
+
+async def _clock_refill_queue():
+    """v13.40 · Parte lenta di `_clock_advance`, in background: riempie la
+    queue fino al lookahead con injection DJ ogni N brani. Le scelte sono
+    calcolate FUORI dal lock; sotto lock si rilegge il clock e si accodano
+    alla queue attuale (una promozione o un FLASH spot arrivati nel
+    frattempo non vengono sovrascritti)."""
+    try:
+        clock = await db.station_clock.find_one({"_id": "clock"}) or {}
+        queue_len = len(clock.get("queue") or [])
+        if queue_len >= _CLOCK_QUEUE_LOOKAHEAD:
+            return
+        # v13.18 · Cadenza DJ configurabile dall'utente (Regia → "voce ogni N
+        # brani", campo station.state.dj_talk_every_n_songs). Prima di questa
+        # fix il live clock ignorava del tutto questa impostazione e usava
+        # sempre il valore fisso _DJ_EVERY_N_TRACKS=3 — la Regia non aveva
+        # alcun effetto sulla diretta.
+        try:
+            _station_state = await db.station.find_one({"_id": "state"}, {"dj_talk_every_n_songs": 1}) or {}
+            _dj_every_n = max(1, min(20, int(_station_state.get("dj_talk_every_n_songs") or _DJ_EVERY_N_TRACKS)))
+        except Exception:
+            _dj_every_n = _DJ_EVERY_N_TRACKS
+
+        # v13.41 · Fix ticket #247410: "cadenze automatiche" (jingle_every_n_songs)
+        # veniva salvato da /admin/rotation-rules ma il clock live non lo leggeva
+        # mai qui — era una dead setting letta solo dal path legacy inutilizzato
+        # generate_segment(). I jingle sono pre-registrati (non TTS): la cadenza
+        # NON dipende da ai_speaker_enabled.
+        try:
+            _station_state_j = await db.station.find_one({"_id": "state"}, {"jingle_every_n_songs": 1}) or {}
+            _jingle_every_n = max(1, min(20, int(_station_state_j.get("jingle_every_n_songs") or 2)))
+        except Exception:
+            _jingle_every_n = 2
+
+        # v13.41 · Fix ticket #247410: FX rotation automatica (fx_every_n_songs,
+        # 0 = disattivata — default finché l'utente non carica FX in libreria).
+        try:
+            _station_state_fx = await db.station.find_one({"_id": "state"}, {"fx_every_n_songs": 1}) or {}
+            _fx_every_n = int(_station_state_fx.get("fx_every_n_songs") or 0)
+        except Exception:
+            _fx_every_n = 0
+
+        # v13.31 · BROADCAST MASTER — Toggle "AI SPEAKER" persistente. Quando
+        # OFF, il clock NON pesca segmenti DJ (né live, né pre-generati, né
+        # jingle di voce): la radio va con sola musica + jingle instrumentali.
+        # Costo zero LLM/TTS anche se le altre AI sono ON.
+        try:
+            _st_speaker = await db.station.find_one({"_id": "state"}, {"ai_speaker_enabled": 1}) or {}
+            _speaker_on = bool(_st_speaker.get("ai_speaker_enabled", True))
+        except Exception:
+            _speaker_on = True
+
+        # v13.37 · `_queued_ids`: current + TUTTI gli ID già in coda. Aggiornato
+        # ad ogni append e passato a _clock_pick_track come esclusione, così lo
+        # stesso brano non può finire in più slot nello stesso passaggio.
+        _queued_ids = {(clock.get("current") or {}).get("id")}
+        _queued_ids |= {t.get("id") for t in (clock.get("queue") or [])}
+        _queued_ids.discard(None)
+        counter = int(clock.get("music_counter") or 0)
+        jingle_counter = int(clock.get("jingle_counter") or 0)
+        fx_counter = int(clock.get("fx_counter") or 0)
+        picks = []
+        while queue_len + len(picks) < _CLOCK_QUEUE_LOOKAHEAD:
+            # Decidi se inserire un jingle DJ o un brano musicale
+            need_dj = (counter > 0 and counter % _dj_every_n == 0) and _speaker_on
+            need_jingle = (jingle_counter > 0 and jingle_counter % _jingle_every_n == 0) and not need_dj
+            need_fx = (_fx_every_n > 0 and fx_counter > 0 and fx_counter % _fx_every_n == 0) and not need_dj and not need_jingle
+            picked = None
+            dj_slot_filled = False
+            jingle_slot_filled = False
+            fx_slot_filled = False
+            if need_dj:
+                # v13.18 · prova prima un vero segmento parlato pronto, poi ne
+                # genera uno al volo se la coda è vuota, e solo come ultima
+                # risorsa ripiega sul jingle preregistrato dalla libreria tracce.
+                picked = await _clock_pick_dj_voice_segment()
+                if not picked:
+                    picked = await _clock_pick_dj_jingle()
+                if picked:
+                    dj_slot_filled = True
+            if not picked and need_jingle:
+                picked = await _clock_pick_dj_jingle()
+                if picked:
+                    jingle_slot_filled = True
+            if not picked and need_fx:
+                picked = await _clock_pick_fx()
+                if picked:
+                    fx_slot_filled = True
+            if not picked:
+                # v13.30 · POWER PLAY (Disco del Giorno): prima di pescare un brano
+                # dalla libreria, controlla se il rotation counter dice "tocca al PP".
+                # Se sì e il PP è pronto, servilo; altrimenti music normale.
+                picked = await _power_play_maybe_pick()
+                if not picked:
+                    picked = await _clock_pick_track(exclude_ids=_queued_ids)
+                # incrementa counter musicale solo quando aggiungiamo musica reale
+                if picked:
+                    counter += 1
+                    jingle_counter += 1
+                    fx_counter += 1
+            if not picked:
+                break
+            if dj_slot_filled:
+                # v13.18 · azzera il contatore dopo un turno DJ riuscito. Prima di
+                # questa fix il contatore non veniva mai azzerato qui: con una
+                # cadenza di 1 ("voce dopo ogni brano") e una generazione DJ che
+                # ora riesce quasi sempre (ID sempre nuovo, mai scartato dal
+                # dedup anti-ripetizione), il turno DJ sarebbe rimasto "dovuto"
+                # per sempre riempiendo l'intera coda di sola voce, zero musica.
+                counter = 0
+            if jingle_slot_filled:
+                jingle_counter = 0
+            if fx_slot_filled:
+                fx_counter = 0
+            # Evita duplicati: current + tutto ciò che è già in coda (v13.37: prima
+            # solo gli ultimi 2). Copre anche i picker non-musicali (PP, jingle).
+            if picked.get("id") in _queued_ids:
+                found_alt = False
+                for _ in range(3):
+                    alt = await _clock_pick_track(exclude_ids=_queued_ids)
+                    if alt and alt["id"] not in _queued_ids:
+                        picked = alt; found_alt = True; break
+                if not found_alt:
+                    break
+            picks.append(picked)
+            _queued_ids.add(picked.get("id"))
+
+        if not picks:
+            return
+        async with _clock_lock:
+            fresh = await db.station_clock.find_one({"_id": "clock"}) or {}
+            fq = list(fresh.get("queue") or [])
+            taken = {(fresh.get("current") or {}).get("id")} | {t.get("id") for t in fq}
+            fq += [p for p in picks if p.get("id") not in taken]
+            await db.station_clock.update_one(
+                {"_id": "clock"},
+                {"$set": {"queue": fq, "music_counter": counter, "jingle_counter": jingle_counter,
+                          "fx_counter": fx_counter,
+                          "updated_at": datetime.now(timezone.utc).isoformat()}},
+                upsert=True,
+            )
+    except Exception as e:
+        logger.warning(f"[clock] refill error: {e}")
 
 
 async def _clock_ticker():
     """Loop di manutenzione del clock — avanza appena scade la traccia.
     Su Tier 0 questo loop muore quando il pod dorme; alla prima richiesta il
-    clock viene "risanato" chiamando `_clock_advance()` on-demand."""
+    clock viene "risanato" chiamando `_clock_advance()` on-demand.
+    v13.40 · tick 0.5s (era 2s): con lo start concatenato la precisione
+    del clock non dipende più dal tick, ma `current` si aggiorna prima."""
     while True:
         try:
-            await asyncio.sleep(2)
+            await asyncio.sleep(0.5)
             await _clock_advance()
         except asyncio.CancelledError:
             break
@@ -8040,7 +8242,9 @@ async def admin_media_upload(
             "daypart_night": _bool(daypart_night if daypart_night is not None else "true"),
             "bpm": detected_bpm,
             "bpm_source": ("server" if detected_bpm else None),
-            "duration_sec": round(real_duration) if real_duration and real_duration > 0 else 30,
+            # v13.41 · Fix ticket #247410: stesso margine anti-troncamento del path Suno/admin-single
+            "duration_sec": round(real_duration + 0.4, 3) if real_duration and real_duration > 0 else 30,
+            "real_duration_sec": round(real_duration, 3) if real_duration and real_duration > 0 else None,
             "genre": "Custom",
             "mood": "Neutral",
             "lyrics_excerpt": "",
@@ -9252,14 +9456,15 @@ async def admin_ad_manager_flash(payload: Optional[dict] = None):
     cluster = await _ad_build_cluster(count=count)
     if not cluster:
         raise HTTPException(404, "Nessuno spot disponibile per costruire il cluster")
-    clock = await db.station_clock.find_one({"_id": "clock"}) or {}
-    q = clock.get("queue") or []
-    # Metti il cluster in TESTA alla queue (dopo il current)
-    new_q = cluster + q
-    await db.station_clock.update_one(
-        {"_id": "clock"}, {"$set": {"queue": new_q, "updated_at": datetime.now(timezone.utc).isoformat()}},
-        upsert=True,
-    )
+    async with _clock_lock:   # v13.40 · niente sovrascritture con promozione/refill concorrenti
+        clock = await db.station_clock.find_one({"_id": "clock"}) or {}
+        q = clock.get("queue") or []
+        # Metti il cluster in TESTA alla queue (dopo il current)
+        new_q = cluster + q
+        await db.station_clock.update_one(
+            {"_id": "clock"}, {"$set": {"queue": new_q, "updated_at": datetime.now(timezone.utc).isoformat()}},
+            upsert=True,
+        )
     logger.info(f"[ad-manager] FLASH cluster ({len(cluster)} elementi) inserito in coda")
     return {"ok": True, "cluster_len": len(cluster), "cluster": cluster}
 

@@ -191,7 +191,7 @@ export default function PublicRadio() {
   const [tick, setTick] = useState(0);
   const [trackOverlay, setTrackOverlay] = useState({ visible: false, title: "", artist: "" });
   // v13.40 · Effetto visivo LedWall (persistito in localStorage)
-  const [ledEffect, setLedEffect] = useState(() => { try { return localStorage.getItem("rai:ledwall:effect") || "auto"; } catch { return "auto"; } });
+  const [ledEffect, setLedEffect] = useState(() => { try { return localStorage.getItem("rai:ledwall:effect") || "logo"; } catch { return "logo"; } });  // v13.41 · default: logo rotante a ritmo (ticket #247410), non piu' le onde sinusoidali
   const [showDonate, setShowDonate] = useState(false);
   const [broadcastMode, setBroadcastMode] = useState("auto");
   const [manualStreamUrl, setManualStreamUrl] = useState("");
@@ -721,7 +721,8 @@ export default function PublicRadio() {
                 data-testid="ledwall-effect-select"
                 className="bg-black/70 border border-cyan-400/30 rounded px-1.5 py-0.5 text-[10px] font-mono text-cyan-100"
               >
-                <option value="auto">Auto</option>
+                <option value="logo">Logo rotante a ritmo</option>
+                <option value="auto">Auto (onde sinusoidali)</option>
                 <option value="gradient">Gradiente animato</option>
                 <option value="rings">Anelli/particelle a ritmo</option>
                 <option value="eq">Barre EQ/waveform</option>

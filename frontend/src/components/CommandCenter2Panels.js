@@ -218,7 +218,7 @@ export function MagazzinoUniversale() {
   });
   const selectAllVisible = () => {
     const list = tab === "audio"
-      ? tracks.slice(0, 60).filter((t) => t.audio_url).map((t) => [`audio:${t.id}`, t.audio_url, `${t.artist || ""} - ${t.title || t.id}`])
+      ? tracks.filter((t) => t.audio_url).map((t) => [`audio:${t.id}`, t.audio_url, `${t.artist || ""} - ${t.title || t.id}`])
       : videos.filter((v) => v.url).map((v) => [`video:${v.id}`, v.url, v.display_name || v.filename || v.id]);
     setSelected((m) => {
       const n = { ...m };
@@ -246,7 +246,7 @@ export function MagazzinoUniversale() {
 
   const load = async () => {
     try {
-      const t = await api.get("/tracks?limit=200");
+      const t = await api.get("/tracks?limit=500");
       setTracks((Array.isArray(t.data) ? t.data : (t.data?.tracks || [])).filter((x) => !x.deleted_at));
     } catch {}
     try {
@@ -371,7 +371,7 @@ export function MagazzinoUniversale() {
 
       {tab === "audio" && (
         <div className="max-h-[420px] overflow-y-auto space-y-1" data-testid="magazzino-list-audio">
-          {tracks.slice(0, 60).map((t) => (
+          {tracks.map((t) => (
             <div key={t.id} className="flex items-center gap-2 p-2 rounded bg-white/5 border border-white/8 text-sm"
               style={selected[`audio:${t.id}`] ? { borderColor: "rgba(128,255,180,0.6)", background: "rgba(128,255,180,0.06)" } : undefined}>
               <input type="checkbox" className="accent-emerald-400 shrink-0" data-testid={`bulk-check-audio-${t.id}`}
