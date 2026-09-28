@@ -725,3 +725,9 @@ Vedi turni precedenti in questa sessione:
 - CSS: `.regia-col { contain: layout style }` per isolare i re-layout (ResizeObserver), `.regia-flat`.
 - Fix warning React `<option>` multi-child (SmartFlowTimelinePanel riga 496, LiveQuickBar).
 - Verifica Playwright: ordine bande corretto, LIVE COMMAND 99→1044px (player+7 switch+Soggetto+FLASH AD visibili con uno scroll minimo), 0 sovrapposizioni, Magazzino carica 195 MP3.
+
+## v13.43 · RIORDINO UI REGIA (2026-09-28) — solo Dashboard.js
+- LIVE COMMAND: BroadcastControlBar, AIMasterControlPanel, LiveQuickBar, FmModePanel + riga GoLivePanel|LedWallMiniPreview affiancati + BroadcasterPanel. Poi SCHEDULING (SmartFlowTimeline, PowerPlay, RotationRules), poi WAREHOUSE, Night (senza GoLive/LedWall/Broadcaster), Community, Secondary (Control Room generatori e StellePanel affiancati 2+2, funzioni distinte).
+- Rimosso codice mai renderizzato: LibraryDownloader (+FilterChip usato solo da esso), UploadMp3Panel, CategorizedExportPanel; import lucide `Archive`, `Package` rimossi. Dashboard.js 4266 → ~3720 righe.
+- Dedup: unico "APRI PALINSESTO FULL-SCREEN" (sidebar, `sidebar-open-master-calendar`); rimosso quello nell'header.
+- Verifica Playwright: ordine bande, GoLive+LedWall mini affiancati in alto, 1 solo bottone palinsesto, Stelle accanto a Control Room; home con effetto "Logo rotante a ritmo" (aggiunto dal supporto, ticket #247410): orb 174px centrato e in rotazione. Compilazione: solo warning pre-esistente loadDevices.
