@@ -65,6 +65,24 @@ export default function SmartFlowTimelinePanel() {
   const [videos, setVideos] = useState([]);  // /admin/ledwall/videos
   const [tab, setTab] = useState("pending"); // pending | consumed
   const [busy, setBusy] = useState(false);
+  const [permTsBusy, setPermTsBusy] = useState(false);
+  // v13.42 · Fix ticket #247410: genera/rigenera i 24 segnali orari permanenti
+  // (una tantum, testo fisso) così l'ora esatta non consuma più Universal Key
+  // ogni giorno.
+  const generatePermanentTimeSignals = async (force) => {
+    if (!window.confirm(force
+      ? "Rigenerare TUTTI e 24 i segnali orari? (consuma Universal Key una tantum)"
+      : "Generare i segnali orari mancanti (una tantum)? Le ore già generate non verranno toccate.")) return;
+    setPermTsBusy(true);
+    try {
+      const params = { force: !!force };
+      if (form.dj_id) params.dj_id = form.dj_id;
+      const r = await api.post("/admin/time-signal/generate-permanent", null, { params });
+      const { generated = [], skipped_existing = [], failed = [] } = r.data || {};
+      toast.success(`Segnali orari: ${generated.length} generati, ${skipped_existing.length} già pronti${failed.length ? `, ${failed.length} falliti` : ""}`);
+    } catch { toast.error("Errore generazione segnali orari"); }
+    finally { setPermTsBusy(false); }
+  };
   // v13.22 · Config globale di Regia (soggetto default + video default)
   const [regiaCfg, setRegiaCfg] = useState({ default_subject: "", ledwall_default_video_url: "" });
   const [regiaBusy, setRegiaBusy] = useState(false);
@@ -597,6 +615,38 @@ export default function SmartFlowTimelinePanel() {
               data-testid="timeline-input-duration"
             />
           </div>
+
+          {form.kind === "time_signal" && (
+            <div className="md:col-span-2">
+              <label className="label-mono block mb-1" title="Genera una volta i 24 annunci orari (testo fisso) e riusali ogni giorno: zero consumi ricorrenti">
+                🕐 Segnali orari permanenti
+              </label>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => generatePermanentTimeSignals(false)}
+                  disabled={permTsBusy}
+                  data-testid="timeline-generate-permanent-ts"
+                  className="px-3 py-1.5 rounded text-xs font-bold"
+                  style={{ background: "rgba(0,229,255,0.2)", border: "1px solid rgba(0,229,255,0.5)", color: "#fff" }}
+                  title="Genera i 24 segnali orari mancanti, una tantum"
+                >
+                  {permTsBusy ? "Genero…" : "🕐 Genera 24 Segnali Orari"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => generatePermanentTimeSignals(true)}
+                  disabled={permTsBusy}
+                  data-testid="timeline-regenerate-permanent-ts"
+                  className="px-3 py-1.5 rounded text-xs font-bold"
+                  style={{ background: "rgba(255,45,149,0.2)", border: "1px solid rgba(255,45,149,0.5)", color: "#fff" }}
+                  title="Rigenera tutte e 24 le ore (es. dopo un cambio voce)"
+                >
+                  🔁 Rigenera (cambio voce/testo)
+                </button>
+              </div>
+            </div>
+          )}
 
           {form.kind === "ad_break" && (
             <div className="md:col-span-1">

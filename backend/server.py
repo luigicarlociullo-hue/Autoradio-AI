@@ -6178,18 +6178,89 @@ def _sanitize_follow_ups(raw) -> list:
 
 
 async def _resolve_current_hour_time_signal() -> Optional[str]:
-    """Audio del segnale orario dell'ora REALE corrente (Europe/Rome) dalla cache."""
+    """Audio del segnale orario dell'ora REALE corrente (Europe/Rome).
+
+    v13.42 · Fix ticket #247410: prima controlla `time_signal_permanent`
+    (indicizzata per ORA DEL GIORNO 0-23, generata UNA TANTUM con testo fisso
+    — vedi /admin/time-signal/generate-permanent) e, se presente, la usa e
+    NON rigenera mai — zero consumi ricorrenti di Universal Key. Solo se
+    assente ripiega sulla vecchia cache per data+ora (compatibilità finché
+    l'utente non genera i 24 permanenti)."""
     try:
         from zoneinfo import ZoneInfo
         _it_now = datetime.now(ZoneInfo("Europe/Rome"))
     except Exception:
         _it_now = datetime.now(timezone.utc)
+    _permanent_ts = await db.time_signal_permanent.find_one({"_id": _it_now.hour})
+    if _permanent_ts and _permanent_ts.get("speech_audio_url"):
+        return _permanent_ts["speech_audio_url"]
     _hour_key = _it_now.strftime("%Y-%m-%d %H")
     _fresh_ts = await db.time_signal_cache.find_one({"_id": _hour_key})
     if _fresh_ts and _fresh_ts.get("speech_audio_url"):
         return _fresh_ts["speech_audio_url"]
     logger.warning(f"[time-signal] cache miss per hour_key={_hour_key}")
     return None
+
+
+@api_router.post("/admin/time-signal/generate-permanent")
+async def admin_generate_permanent_time_signals(
+    force: bool = False,
+    voice_key: str = "nova",
+    dj_id: Optional[str] = None,
+):
+    """v13.42 · Fix ticket #247410: genera UNA TANTUM i 24 segnali orari (uno
+    per ogni ora del giorno, testo FISSO e deterministico — niente LLM,
+    niente battuta casuale) e li salva in modo permanente in
+    `time_signal_permanent` (chiave = ora 0-23). Da qui in avanti
+    `_resolve_current_hour_time_signal` li riusa ogni giorno senza più
+    generare nulla: zero consumi ricorrenti di Universal Key, e non serve
+    più tenere acceso l'interruttore "task in background" per questo scopo.
+
+    `force=True` rigenera tutte e 24 le ore (es. dopo un cambio voce/testo);
+    altrimenti salta le ore che hanno già un annuncio permanente.
+    """
+    dj_name = None
+    if dj_id:
+        dj_doc = await db.djs.find_one({"id": dj_id}, {"_id": 0, "voice_key": 1, "name": 1})
+        if dj_doc:
+            voice_key = dj_doc.get("voice_key") or voice_key
+            dj_name = dj_doc.get("name")
+    generated, skipped, failed = [], [], []
+    for h in range(24):
+        if not force:
+            existing = await db.time_signal_permanent.find_one({"_id": h}, {"_id": 1})
+            if existing:
+                skipped.append(h)
+                continue
+        text = f"Sono le {h:02d}:00 su R-A.I. Radio!"
+        try:
+            fn, subpath = await synth_speech(text, voice_key, kind="time_signal", dj_id=dj_id)
+        except Exception as e:
+            logger.warning(f"[time-signal-permanent] hour={h} synth failed: {e}")
+            fn = None
+        if not fn:
+            failed.append(h)
+            continue
+        await db.time_signal_permanent.update_one(
+            {"_id": h},
+            {"$set": {
+                "hour": h,
+                "script": text,
+                "speech_audio_url": f"/api/{subpath}/{fn}",
+                "voice_key": voice_key,
+                "dj_id": dj_id,
+                "dj_name": dj_name,
+                "created_at": now_iso(),
+            }},
+            upsert=True,
+        )
+        generated.append(h)
+    return {
+        "ok": True,
+        "generated": generated,
+        "skipped_existing": skipped,
+        "failed": failed,
+    }
 
 
 async def _timeline_pick_due() -> Optional[dict]:
@@ -10008,7 +10079,10 @@ async def _time_signal_pregenerator():
             if seconds_left <= 90:
                 upcoming = it_now + timedelta(seconds=seconds_left)
                 hour_key = upcoming.strftime("%Y-%m-%d %H")
-                exists = await db.time_signal_cache.find_one({"_id": hour_key})
+                # v13.42 · Fix ticket #247410: se esiste già un annuncio PERMANENTE
+                # per questa ora del giorno, salta del tutto — zero LLM/TTS.
+                permanent_exists = await db.time_signal_permanent.find_one({"_id": upcoming.hour}, {"_id": 1})
+                exists = permanent_exists or await db.time_signal_cache.find_one({"_id": hour_key})
                 if not exists:
                     djs = await db.djs.find({}, {"_id": 0}).to_list(20)
                     dj = random.choice(djs) if djs else {}
