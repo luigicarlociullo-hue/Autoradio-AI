@@ -331,6 +331,9 @@ class Track(BaseModel):
     #   Se entrambi False vale "both" (retro-compat). Default: entrambi True.
     daypart_day: bool = True              # eleggibile per rotazione diurna
     daypart_night: bool = True            # eleggibile per rotazione notturna
+    # v13.44 · MATRICE TEMPORALE UNIVERSALE: always (24h) | day (06-22) | night (22-06)
+    broadcast_slot: Literal["always", "day", "night"] = "always"
+    is_billboard: bool = False            # v13.44 · spot "billboard" (upload libero, senza contratto)
     # v12.14 · Archivio Pro + Beat Detection
     # NOTE: this is intentionally a SEPARATE field from `genre` above — `genre`
     # holds the free-text descriptive genre (often with BPM, e.g. 'tech house
@@ -1407,6 +1410,19 @@ async def admin_assets_zip_download(token: str):
 
 
 # ----------------------- Admin: Upload MP3 (Master Plan #1) -----------------------
+@api_router.patch("/admin/tracks/{track_id}/broadcast-slot")
+async def admin_track_broadcast_slot(track_id: str, payload: dict):
+    """v13.44 · MATRICE TEMPORALE: slot in always (24h) | day (06-22) | night (22-06)."""
+    slot = (payload.get("slot") or "").strip().lower()
+    if slot not in ("always", "day", "night"):
+        raise HTTPException(400, "slot deve essere always|day|night")
+    r = await db.tracks.update_one({"id": track_id}, {"$set": {"broadcast_slot": slot, "updated_at": now_iso()}})
+    if r.matched_count == 0:
+        raise HTTPException(404, "traccia non trovata")
+    return {"ok": True, "id": track_id, "broadcast_slot": slot}
+
+
+
 @api_router.get("/admin/tracks/searchable")
 async def admin_tracks_searchable():
     """Elenco compatto di tutte le tracce non-retired per il dropdown di
@@ -1421,7 +1437,7 @@ async def admin_tracks_searchable():
          "loop_bind_speaker": 1, "submitted_by": 1,
          "spot_start_date": 1, "spot_end_date": 1, "spot_frequency_per_hour": 1,
          "duration_sec": 1, "on_air": 1, "genre_category": 1, "bpm": 1, "bpm_source": 1,
-         "daypart_day": 1, "daypart_night": 1, "is_night_jingle": 1,
+         "daypart_day": 1, "daypart_night": 1, "is_night_jingle": 1, "broadcast_slot": 1, "is_billboard": 1,
          "audio_url": 1, "created_at": 1},
     ).sort("created_at", -1)
     docs = await cursor.to_list(length=2000)
@@ -1451,6 +1467,8 @@ async def admin_tracks_searchable():
             "spot_end_date": t.get("spot_end_date"),
             "spot_frequency_per_hour": t.get("spot_frequency_per_hour"),
             "daypart_day": t.get("daypart_day") if t.get("daypart_day") is not None else True,
+            "broadcast_slot": t.get("broadcast_slot") or "always",
+            "is_billboard": bool(t.get("is_billboard")),
             "daypart_night": t.get("daypart_night") if t.get("daypart_night") is not None else True,
             "is_night_jingle": bool(t.get("is_night_jingle")),
         })
@@ -1485,8 +1503,12 @@ async def admin_tracks_upload(
         raise HTTPException(400, "Solo file .mp3 sono accettati")
     if mode not in ("new", "replace"):
         raise HTTPException(400, "mode deve essere 'new' o 'replace'")
+    # v13.44 · "billboard" = spot libero (nessun contratto/date richiesti)
+    is_billboard = kind == "billboard"
+    if is_billboard:
+        kind = "spot"
     if kind not in ("song", "jingle", "anthem", "loop", "spot", "fx"):
-        raise HTTPException(400, "kind deve essere song|jingle|anthem|loop|spot|fx")
+        raise HTTPException(400, "kind deve essere song|jingle|anthem|loop|spot|fx|billboard")
 
     data = await file.read()
     if not data or len(data) < 5_000:
@@ -1587,6 +1609,7 @@ async def admin_tracks_upload(
                 "is_anthem": kind == "anthem",
                 "is_loop": kind == "loop",
                 "is_spot": kind == "spot",
+                "is_billboard": is_billboard,
                 "is_fx": kind == "fx",
                 "tags": merged_tags,
                 "updated_at": now,
@@ -1610,6 +1633,7 @@ async def admin_tracks_upload(
         track = Track(
             id=track_id,
             title=title,
+            is_billboard=is_billboard,
             artist=artist,
             genre="admin_upload" if kind != "spot" else "sponsor_spot",
             mood="uploaded",
@@ -4422,7 +4446,7 @@ async def _get_ai_controls() -> dict:
         return _ai_controls_cache["data"]
     proj = {k: 1 for k in _AI_CONTROLS_KEYS}
     st = await db.station.find_one({"_id": "state"}, proj) or {}
-    data = {k: bool(st.get(k)) for k in _AI_CONTROLS_KEYS}
+    data = {k: bool(st.get(k, True)) for k in _AI_CONTROLS_KEYS}  # v13.44 · DUAL-MODE: AI 360 = default (chiave assente → ON); OFF solo per esclusione manuale esplicita
     _ai_controls_cache["ts"] = now
     _ai_controls_cache["data"] = data
     return data
@@ -7622,6 +7646,9 @@ async def _clock_pick_track(exclude_ids: Optional[set] = None) -> Optional[dict]
     except Exception:
         now_local = datetime.now(timezone.utc)
     is_night = (now_local.hour >= 22 or now_local.hour < 4)
+    # v13.44 · MATRICE TEMPORALE UNIVERSALE (broadcast_slot): GIORNO 06-22 / NOTTE 22-06 / SEMPRE
+    _slot_now = "night" if (now_local.hour >= 22 or now_local.hour < 6) else "day"
+    _slot_q = {"$or": [{"broadcast_slot": {"$exists": False}}, {"broadcast_slot": "always"}, {"broadcast_slot": _slot_now}]}
     dp = ({"$or": [{"daypart_night": {"$ne": False}}, {"daypart_night": {"$exists": False}}]}
           if is_night else
           {"$or": [{"daypart_day": {"$ne": False}}, {"daypart_day": {"$exists": False}}]})
@@ -7640,7 +7667,7 @@ async def _clock_pick_track(exclude_ids: Optional[set] = None) -> Optional[dict]
     if _ai.get("ai_human_priority"):
         tr_com = await db.tracks.find_one(
             {"source": "community", "status": "ready", "audio_url": {"$ne": None},
-             "on_air": {"$ne": False}, "deleted_at": None, **dp, **_not_queued},
+             "on_air": {"$ne": False}, "deleted_at": None, **dp, **_not_queued, "$and": [_slot_q]},
             {"_id": 0, "id": 1, "title": 1, "artist": 1, "audio_url": 1, "duration_sec": 1, "real_duration_sec": 1, "bpm": 1},
             sort=[("last_played_at", 1)],
         )
@@ -7659,7 +7686,7 @@ async def _clock_pick_track(exclude_ids: Optional[set] = None) -> Optional[dict]
         "$and": [
             {"$or": [{"is_anthem": {"$exists": False}}, {"is_anthem": False}]},
             {"$or": [{"is_jingle": {"$exists": False}}, {"is_jingle": False}]},
-            dp, _window, _window_end,
+            dp, _window, _window_end, _slot_q,
         ],
         **_not_queued,
     }
@@ -7673,7 +7700,7 @@ async def _clock_pick_track(exclude_ids: Optional[set] = None) -> Optional[dict]
     tr = random.choice(tr_pool) if tr_pool else None
     if not tr:
         tr_pool = await db.tracks.find(
-            {"status": "ready", "audio_url": {"$ne": None}, "on_air": {"$ne": False}, "deleted_at": None, **_not_queued},
+            {"status": "ready", "audio_url": {"$ne": None}, "on_air": {"$ne": False}, "deleted_at": None, **_not_queued, "$and": [_slot_q]},
             {"_id": 0, "id": 1, "title": 1, "artist": 1, "audio_url": 1, "duration_sec": 1, "real_duration_sec": 1, "bpm": 1},
         ).sort([("last_played_at", 1)]).limit(_pool_size).to_list(length=_pool_size)
         tr = random.choice(tr_pool) if tr_pool else None
@@ -9903,6 +9930,13 @@ async def on_startup():
     _persisted = {k: bool(_st_ai.get(k)) for k in _AI_CONTROLS_KEYS}
     _active = [k for k, v in _persisted.items() if v]
     _invalidate_ai_controls_cache()
+    # v13.44 · MATRICE TEMPORALE: migrazione retroattiva broadcast_slot → "always" (24h)
+    try:
+        _mig = await db.tracks.update_many({"broadcast_slot": {"$exists": False}}, {"$set": {"broadcast_slot": "always"}})
+        if _mig.modified_count:
+            logger.info(f"[startup] broadcast_slot migrato su {_mig.modified_count} tracce → ALWAYS (24h)")
+    except Exception as e:
+        logger.warning(f"[startup] broadcast_slot migration skipped: {e}")
     # v13.37 · Migrazione one-shot Voice ID L&C (Direttore Pazzo) → nse3woUFSMa13Q3ZFI3y.
     # Idempotente: allinea il record DJ (override prioritario sulla mappa) e
     # svuota la cache TTS della vecchia voce, così vale anche in produzione.

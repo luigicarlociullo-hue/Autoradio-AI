@@ -198,8 +198,43 @@ export function LedWallMiniPreview() {
 /* ══════════════════════════════════════════════════════════════════════════
    MAGAZZINO UNIVERSALE — filtri MP3/MP4 + Cestino + Coda Vocali
    ══════════════════════════════════════════════════════════════════════════ */
+// v13.44 · Cassetti magazzino: categoria derivata dai flag traccia
+export const assetCategory = (t) => {
+  if (!t) return "music";
+  if (t.is_fx || t.kind === "fx") return "fx";
+  if (t.is_loop || t.kind === "loop") return "loop";
+  if (t.is_spot || t.is_billboard || t.kind === "spot" || t.kind === "billboard") return "spot";
+  if (t.is_jingle || t.is_anthem || t.kind === "jingle" || t.kind === "anthem") return "jingle";
+  if (t.kind === "voice" || t.kind === "tts" || t.source === "tts" || t.is_voice) return "voice";
+  return "music";
+};
+export const ASSET_CATEGORIES = [
+  { k: "all", label: "TUTTI" },
+  { k: "music", label: "MUSICA" },
+  { k: "jingle", label: "JINGLE" },
+  { k: "spot", label: "SPOT" },
+  { k: "voice", label: "VOCALI" },
+  { k: "loop", label: "BASI (LOOP)" },
+  { k: "fx", label: "FX" },
+];
+export const assetLabel = (t) => `${t.artist || ""} — ${t.title || t.id}`.replace(/^ — /, "");
+export const sortAssets = (arr) => [...arr].sort((a, b) => assetLabel(a).localeCompare(assetLabel(b), "it", { sensitivity: "base" }));
+
 export function MagazzinoUniversale() {
   const [tab, setTab] = useState("audio"); // audio | video | trash | voice
+  // v13.44 · Cassetti + Search & Filter + slot temporale
+  const [cat, setCat] = useState("all");
+  const [q, setQ] = useState("");
+  const [slotBusy, setSlotBusy] = useState(null);
+  const setSlot = async (t, slot) => {
+    setSlotBusy(t.id + slot);
+    try {
+      await api.patch(`/admin/tracks/${t.id}/broadcast-slot`, { slot });
+      setTracks((arr) => arr.map((x) => (x.id === t.id ? { ...x, broadcast_slot: slot } : x)));
+      toast.success(`${t.title}: ${slot === "day" ? "GIORNO 06-22" : slot === "night" ? "NOTTE 22-06" : "SEMPRE 24h"}`);
+    } catch { toast.error("Errore slot"); }
+    finally { setSlotBusy(null); }
+  };
   const [tracks, setTracks] = useState([]);
   const [videos, setVideos] = useState([]);
   const [trash, setTrash] = useState([]);
@@ -370,8 +405,26 @@ export function MagazzinoUniversale() {
       )}
 
       {tab === "audio" && (
+        <div className="flex flex-wrap items-center gap-1.5 mb-2" data-testid="magazzino-drawers">
+          {ASSET_CATEGORIES.map((c) => {
+            const n = c.k === "all" ? tracks.length : tracks.filter((t) => assetCategory(t) === c.k).length;
+            return (
+              <button key={c.k} type="button" onClick={() => setCat(c.k)} data-testid={`magazzino-drawer-${c.k}`}
+                className="px-2.5 py-1 rounded-full text-[10px] font-mono font-bold tracking-wider"
+                style={cat === c.k
+                  ? { background: "rgba(0,229,255,0.18)", border: "1px solid #00E5FF", color: "#BFF7FF" }
+                  : { background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.12)", color: "#9aa" }}>
+                {c.label} <span className="opacity-60">({n})</span>
+              </button>
+            );
+          })}
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="🔍 cerca per nome / artista…" data-testid="magazzino-search"
+            className="ml-auto bg-black/60 border border-white/10 rounded px-2 py-1 text-xs text-white w-56" />
+        </div>
+      )}
+      {tab === "audio" && (
         <div className="max-h-[420px] overflow-y-auto space-y-1" data-testid="magazzino-list-audio">
-          {tracks.map((t) => (
+          {sortAssets(tracks.filter((t) => (cat === "all" || assetCategory(t) === cat) && (!q.trim() || assetLabel(t).toLowerCase().includes(q.trim().toLowerCase())))).map((t) => (
             <div key={t.id} className="flex items-center gap-2 p-2 rounded bg-white/5 border border-white/8 text-sm"
               style={selected[`audio:${t.id}`] ? { borderColor: "rgba(128,255,180,0.6)", background: "rgba(128,255,180,0.06)" } : undefined}>
               <input type="checkbox" className="accent-emerald-400 shrink-0" data-testid={`bulk-check-audio-${t.id}`}
@@ -381,13 +434,28 @@ export function MagazzinoUniversale() {
               <div className="flex-1 min-w-0">
                 <div className="text-white truncate">{t.artist || "?"} — {t.title || "Senza titolo"}</div>
                 <div className="text-[10px] text-zinc-500 font-mono">
-                  {t.source} · {t.duration_sec ? Math.floor(t.duration_sec) + "s" : "?"}
+                  <span className="text-cyan-300/80">{(ASSET_CATEGORIES.find((c) => c.k === assetCategory(t)) || {}).label}</span> · {t.source} · {t.duration_sec ? Math.floor(t.duration_sec) + "s" : "?"}
                   {t.bpm && <> · {t.bpm} BPM</>}
                 </div>
+              </div>
+              <div className="flex gap-1 shrink-0" data-testid={`slot-group-${t.id}`} title="Matrice temporale: quando questo file può andare in onda">
+                {[["day", "☀ GIORNO", "#FFB84D"], ["night", "☾ NOTTE", "#C89AFF"], ["always", "∞ SEMPRE", "#80FFB4"]].map(([k, label, col]) => {
+                  const on = (t.broadcast_slot || "always") === k;
+                  return (
+                    <button key={k} type="button" onClick={() => setSlot(t, k)} disabled={slotBusy === t.id + k} data-testid={`slot-${k}-${t.id}`}
+                      className="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold"
+                      style={on ? { background: col, color: "#000" } : { border: `1px solid ${col}55`, color: col, opacity: 0.75 }}>
+                      {label}
+                    </button>
+                  );
+                })}
               </div>
             </div>
           ))}
           {tracks.length === 0 && <div className="text-zinc-500 text-sm py-8 text-center">Nessuna traccia</div>}
+          {tracks.length > 0 && tracks.filter((t) => (cat === "all" || assetCategory(t) === cat) && (!q.trim() || assetLabel(t).toLowerCase().includes(q.trim().toLowerCase()))).length === 0 && (
+            <div className="text-zinc-500 text-sm py-8 text-center" data-testid="magazzino-empty-filter">Nessun file in questo cassetto / ricerca</div>
+          )}
         </div>
       )}
 

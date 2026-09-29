@@ -731,3 +731,12 @@ Vedi turni precedenti in questa sessione:
 - Rimosso codice mai renderizzato: LibraryDownloader (+FilterChip usato solo da esso), UploadMp3Panel, CategorizedExportPanel; import lucide `Archive`, `Package` rimossi. Dashboard.js 4266 → ~3720 righe.
 - Dedup: unico "APRI PALINSESTO FULL-SCREEN" (sidebar, `sidebar-open-master-calendar`); rimosso quello nell'header.
 - Verifica Playwright: ordine bande, GoLive+LedWall mini affiancati in alto, 1 solo bottone palinsesto, Stelle accanto a Control Room; home con effetto "Logo rotante a ritmo" (aggiunto dal supporto, ticket #247410): orb 174px centrato e in rotazione. Compilazione: solo warning pre-esistente loadDevices.
+
+## v13.44 · REGIA BROADCAST AUTONOMA (2026-09-29)
+- **Matrice temporale**: `Track.broadcast_slot` (always|day 06-22|night 22-06). Migrazione startup idempotente → 197 tracce ALWAYS. `PATCH /admin/tracks/{id}/broadcast-slot`. `_clock_pick_track` filtra in tempo reale (ora Roma) su community/main/fallback. Pulsanti ☀GIORNO/☾NOTTE/∞SEMPRE per riga nel Magazzino (`slot-{day|night|always}-{id}`).
+- **Cassetti Magazzino**: chip TUTTI/MUSICA/JINGLE/SPOT/VOCALI/BASI(LOOP)/FX (`magazzino-drawer-*`), ricerca (`magazzino-search`), ordine alfabetico. Helper esportati `assetCategory/ASSET_CATEGORIES/assetLabel/sortAssets` (CommandCenter2Panels).
+- **AssetPicker** (SmartFlowTimelinePanel): ricerca + categoria + select alfabetico per sorgente (`timeline-input-source[-search|-cat]`), MP3 concatenati (`rr-followup-add`), modifica evento.
+- **Coda di Successione** per OGNI evento: pannello follow_ups sempre visibile, `follow_ups` nel POST /admin/timeline singolo (prima solo rrule).
+- **Upload libero**: kind `billboard` (→ is_spot + is_billboard, senza date); pulsante "📣 Billboard (libero)" nel modal Track Manager. Spot già senza obbligo date.
+- **Dual-mode**: `_get_ai_controls` default ON per chiave assente (AI 360 = stato di default); OFF esplicito = esclusione manuale (prod resta OFF finché non si riaccende).
+- Layout: WAREHOUSE al centro (2ª banda), SCHEDULING 3ª. Verifica Playwright: ordine, cassetto JINGLE 26, ricerca, slot click, picker 196→7 con ricerca, follow-ups senza Smart Recurrence, 0 errori.

@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/api";
+import { assetCategory, ASSET_CATEGORIES, assetLabel, sortAssets } from "./CommandCenter2Panels";
 import { toast } from "sonner";
 
 /**
@@ -55,6 +56,42 @@ const fmtDate = (iso) => {
     return `${p(d.getDate())}/${p(d.getMonth() + 1)}`;
   } catch { return ""; }
 };
+
+// v13.44 · Search & Filter per ogni tendina del Magazzino: ricerca per nome,
+// filtro per categoria (cassetti), lista SEMPRE in ordine alfabetico.
+function AssetPicker({ sources, value, onChange, placeholder = "- seleziona dal Magazzino -", testid, multiple = false, className = "" }) {
+  const [q, setQ] = useState("");
+  const [cat, setCat] = useState("all");
+  const list = useMemo(
+    () => sortAssets(sources.filter((s) => (cat === "all" || assetCategory(s) === cat) && (!q.trim() || assetLabel(s).toLowerCase().includes(q.trim().toLowerCase())))),
+    [sources, q, cat]
+  );
+  const optLabel = (s) => `[${(ASSET_CATEGORIES.find((c) => c.k === assetCategory(s)) || {}).label || s.kind}] ${assetLabel(s)}${s.duration_sec ? ` (${Math.round(s.duration_sec)}s)` : ""}`;
+  return (
+    <div className={className} data-testid={testid ? `${testid}-picker` : undefined}>
+      <div className="flex gap-1 mb-1">
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="cerca per nome / artista..." data-testid={testid ? `${testid}-search` : undefined}
+          className="flex-1 min-w-0 bg-black border border-white/10 rounded px-2 py-1 text-xs text-white" />
+        <select value={cat} onChange={(e) => setCat(e.target.value)} data-testid={testid ? `${testid}-cat` : undefined}
+          className="bg-black border border-white/10 rounded px-1 py-1 text-[10px] font-mono text-cyan-200">
+          {ASSET_CATEGORIES.map((c) => <option key={c.k} value={c.k}>{c.label}</option>)}
+        </select>
+      </div>
+      <select
+        value={value}
+        multiple={multiple}
+        onChange={(e) => onChange(multiple ? Array.from(e.target.selectedOptions).map((o) => o.value) : e.target.value)}
+        className="w-full bg-black border border-white/10 rounded px-2 py-1.5 text-sm text-white"
+        style={multiple ? { minHeight: "64px" } : undefined}
+        data-testid={testid}
+      >
+        {!multiple && <option value="">{placeholder}</option>}
+        {list.slice(0, 600).map((s) => <option key={s.id} value={s.id}>{optLabel(s)}</option>)}
+      </select>
+      <div className="text-[9px] font-mono text-zinc-500 mt-0.5">{`${list.length} file - ordine alfabetico`}</div>
+    </div>
+  );
+}
 
 export default function SmartFlowTimelinePanel() {
   const [now, setNow] = useState(null); // /api/stream/now
@@ -280,6 +317,11 @@ export default function SmartFlowTimelinePanel() {
         brief: form.brief || undefined,
         video_url: form.video_url || undefined,
         recurrence: form.recurrence || "none",
+        // v13.44 · Coda di Successione: catena di file senza gap anche per eventi singoli
+        follow_ups: followUps.map((s) => ({
+          audio_url: s.audio_url, title: s.title, artist: s.artist,
+          duration_sec: Math.max(1, Math.round(s.duration_sec || 20)),
+        })),
         // v13.32 · Numero di spot random per Break Pubblicitario
         ad_break_count: form.kind === "ad_break" ? Number(form.ad_break_count || 2) : undefined,
       };
@@ -558,20 +600,7 @@ export default function SmartFlowTimelinePanel() {
             <label className="label-mono block mb-1" title="Scegli file dal Magazzino Universale">
               Sorgente audio (Magazzino)
             </label>
-            <select
-              value={form.source_id}
-              onChange={(e) => onPickSource(e.target.value)}
-              className="w-full bg-black border border-white/10 rounded px-2 py-1.5 text-sm text-white"
-              data-testid="timeline-input-source"
-            >
-              <option value="">— seleziona traccia/jingle —</option>
-              {sources.slice(0, 400).map((s) => (
-                <option key={s.id} value={s.id}>
-                  [{s.kind}] {s.title} — {s.artist}
-                  {s.duration_sec ? ` (${Math.round(s.duration_sec)}s)` : ""}
-                </option>
-              ))}
-            </select>
+            <AssetPicker sources={sources} value={form.source_id} onChange={onPickSource} placeholder="— seleziona traccia/jingle —" testid="timeline-input-source" />
           </div>
 
           <div className="md:col-span-1">
@@ -755,6 +784,25 @@ export default function SmartFlowTimelinePanel() {
           </div>
         </div>
 
+        {/* v13.44 · CODA DI SUCCESSIONE — per OGNI evento (rubrica, ora esatta, Smart Recurrence) */}
+        {/* v13.33 · Sequenza concatenata multipla (qualsiasi kind, con o senza DJ) */}
+        <div className="mt-3 rounded p-2" style={{ background: "rgba(128,255,180,0.04)", border: "1px dashed rgba(128,255,180,0.3)" }} data-testid="rr-followups-panel">
+        <div className="flex items-center justify-between mb-1">
+        <span className="label-mono" style={{ color: "#80FFB4" }}>🔗 Coda di Successione: MP3 concatenati dopo l'evento (zero-gap, in ordine). Vale per ogni rubrica, ora esatta e Smart Recurrence</span>
+        <span className="text-[10px] font-mono text-zinc-500">{followUps.length} elementi · {followUps.reduce((a, s) => a + Math.round(s.duration_sec || 0), 0)}s</span>
+        </div>
+        {followUps.map((s, i) => (
+        <div key={`${s.id}-${i}`} className="flex items-center gap-2 text-xs font-mono py-0.5" data-testid={`rr-followup-row-${i}`}>
+        <span className="text-zinc-500 w-5">{i + 1}.</span>
+        <span className="flex-1 truncate text-zinc-200">[{s.kind}] {s.title} — {s.artist} ({Math.round(s.duration_sec || 0)}s)</span>
+        <button type="button" onClick={() => setFollowUpIds((l) => l.filter((_, j) => j !== i))}
+        data-testid={`rr-followup-remove-${i}`}
+        className="px-1.5 rounded text-[10px]" style={{ color: "#FF6BAA", border: "1px solid rgba(255,45,149,0.4)" }}>✕</button>
+        </div>
+        ))}
+        <AssetPicker sources={sources} value="" onChange={(v) => { if (v) setFollowUpIds((l) => [...l, v]); }} placeholder="+ aggiungi MP3 concatenato..." testid="rr-followup-add" className="mt-1" />
+        </div>
+
         {/* v13.29 · SMART RECURRENCE · toggle avanzato con fascia + freq + giorni */}
         <div className="mt-3 rounded p-3" style={{ background: "rgba(0,229,255,0.05)", border: "1px solid rgba(0,229,255,0.25)" }}>
           <label className="flex items-center gap-2 cursor-pointer">
@@ -826,33 +874,6 @@ export default function SmartFlowTimelinePanel() {
                     );
                   })}
                 </div>
-              </div>
-              {/* v13.33 · Sequenza concatenata multipla (qualsiasi kind, con o senza DJ) */}
-              <div className="md:col-span-4 rounded p-2" style={{ background: "rgba(128,255,180,0.04)", border: "1px dashed rgba(128,255,180,0.3)" }} data-testid="rr-followups-panel">
-                <div className="flex items-center justify-between mb-1">
-                  <span className="label-mono" style={{ color: "#80FFB4" }}>🔗 MP3 concatenati a seguire (zero-gap, in ordine)</span>
-                  <span className="text-[10px] font-mono text-zinc-500">{followUps.length} elementi · {followUps.reduce((a, s) => a + Math.round(s.duration_sec || 0), 0)}s</span>
-                </div>
-                {followUps.map((s, i) => (
-                  <div key={`${s.id}-${i}`} className="flex items-center gap-2 text-xs font-mono py-0.5" data-testid={`rr-followup-row-${i}`}>
-                    <span className="text-zinc-500 w-5">{i + 1}.</span>
-                    <span className="flex-1 truncate text-zinc-200">[{s.kind}] {s.title} — {s.artist} ({Math.round(s.duration_sec || 0)}s)</span>
-                    <button type="button" onClick={() => setFollowUpIds((l) => l.filter((_, j) => j !== i))}
-                      data-testid={`rr-followup-remove-${i}`}
-                      className="px-1.5 rounded text-[10px]" style={{ color: "#FF6BAA", border: "1px solid rgba(255,45,149,0.4)" }}>✕</button>
-                  </div>
-                ))}
-                <select
-                  value=""
-                  onChange={(e) => { if (e.target.value) setFollowUpIds((l) => [...l, e.target.value]); }}
-                  data-testid="rr-followup-add"
-                  className="w-full mt-1 bg-black border border-white/10 rounded px-2 py-1.5 text-sm text-white"
-                >
-                  <option value="">＋ aggiungi MP3 concatenato…</option>
-                  {sources.slice(0, 300).map((s) => (
-                    <option key={s.id} value={s.id}>[{s.kind}] {s.title} — {s.artist} ({Math.round(s.duration_sec || 0)}s)</option>
-                  ))}
-                </select>
               </div>
               <div className="md:col-span-4 text-[10px] font-mono text-zinc-400">
                 💡 Anteprima:  {form.rr_days.length}/7 giorni · dalle {String(form.rr_start_hour).padStart(2,"0")}:00 alle {String(form.rr_end_hour).padStart(2,"0")}:00 · ogni {form.rr_frequency_minutes}min
@@ -1038,21 +1059,7 @@ export default function SmartFlowTimelinePanel() {
                   Aggiungi spot concatenati dopo l'evento (opzionale)
                   {ev.follow_ups?.length ? ` · già presenti: ${ev.follow_ups.length}` : ""}
                 </label>
-                <select
-                  multiple
-                  value={editDraft.followUpIds}
-                  onChange={(e) => setEditDraft((d) => ({
-                    ...d,
-                    followUpIds: Array.from(e.target.selectedOptions).map((o) => o.value),
-                  }))}
-                  className="w-full bg-zinc-900 border border-white/10 rounded px-2 py-1 text-white text-xs"
-                  style={{ minHeight: "64px" }}
-                  data-testid={`timeline-edit-followups-${ev.id}`}
-                >
-                  {sources.map((s) => (
-                    <option key={s.id} value={s.id}>{s.title}{s.artist ? ` — ${s.artist}` : ""}</option>
-                  ))}
-                </select>
+                <AssetPicker sources={sources} multiple value={editDraft.followUpIds} onChange={(ids) => setEditDraft((d) => ({ ...d, followUpIds: ids }))} testid={`timeline-edit-followups-${ev.id}`} />
               </div>
               <div className="flex gap-2">
                 <button

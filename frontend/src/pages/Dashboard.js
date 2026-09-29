@@ -185,17 +185,7 @@ export default function Dashboard() {
               </div>
             </section>
 
-            {/* 2 · SCHEDULING EDITOR — editor completo (lo specchietto è nella sidebar) */}
-            <section id="scheduling-editor" data-testid="band-scheduling" className="space-y-4">
-              <BandHeader icon="🕰️" title="SCHEDULING" subtitle="Smart Flow Timeline · Smart Recurrence · Power Play · regole di rotazione" color="#00E5FF" />
-              <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-                <SmartFlowTimelinePanel />
-                <PowerPlayMonitor />
-                <RotationRulesPanel />
-              </div>
-            </section>
-
-            {/* 3 · WAREHOUSE & ASSETS — magazzino a larghezza piena + cassetti upload */}
+            {/* 2 · WAREHOUSE & ASSETS — magazzino a larghezza piena + cassetti upload */}
             <section data-testid="band-warehouse" className="space-y-4">
               <BandHeader icon="📚" title="WAREHOUSE & ASSETS" subtitle="Unified Asset Center · cassetti Ora Esatta / Spot / Basi / FX · Bulk ZIP" color="#D080FF" />
               <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
@@ -204,6 +194,16 @@ export default function Dashboard() {
                 <RegiaAudioPanel />
                 <TrackManagerPanel />
                 <TrashPanel />
+              </div>
+            </section>
+
+            {/* 3 · SCHEDULING EDITOR — editor completo (lo specchietto è nella sidebar) */}
+            <section id="scheduling-editor" data-testid="band-scheduling" className="space-y-4">
+              <BandHeader icon="🕰️" title="SCHEDULING" subtitle="Smart Flow Timeline · Smart Recurrence · Power Play · regole di rotazione" color="#00E5FF" />
+              <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+                <SmartFlowTimelinePanel />
+                <PowerPlayMonitor />
+                <RotationRulesPanel />
               </div>
             </section>
 
@@ -1820,6 +1820,18 @@ function TrackModal({ mode, target, onClose, onDone }) {
                   }`}
                 >
                   💰 Spot Pubblicitario
+                </button>
+                <button
+                  data-testid="modal-kind-billboard"
+                  onClick={() => setKind("billboard")}
+                  title="Spot/billboard libero: nessuna data o contratto richiesto"
+                  className={`py-2 rounded border font-mono text-xs uppercase transition ${
+                    kind === "billboard"
+                      ? "border-orange-400 text-orange-300 bg-orange-500/10"
+                      : "border-white/10 text-zinc-400"
+                  }`}
+                >
+                  📣 Billboard (libero)
                 </button>
                 <button
                   data-testid="modal-kind-fx"
