@@ -113,6 +113,23 @@ async def start(db):
     asyncio.create_task(_bot.poll_forever())
 
 
+async def run(db):
+    """Come `start`, ma come coroutine awaitabile/cancellabile: il chiamante
+    (lease leader in server.py) la tiene viva solo sul pod che detiene il lease,
+    così un solo pod fa getUpdates per token."""
+    global _bot
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+    if not token:
+        logger.info("TELEGRAM_BOT_TOKEN not set; telegram integration disabled")
+        return
+    _bot = TelegramBot(token, db)
+    try:
+        await _bot.poll_forever()
+    finally:
+        if _bot:
+            _bot.running = False
+
+
 def status() -> dict:
     if not _bot:
         return {"enabled": False, "reason": "TELEGRAM_BOT_TOKEN non configurato"}

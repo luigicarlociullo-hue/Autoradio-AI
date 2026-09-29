@@ -3,6 +3,7 @@ from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo.errors import DuplicateKeyError
 import os
 import logging
 import asyncio
@@ -5938,15 +5939,15 @@ async def hls_live_playlist(request: Request):
 
     for i, t in enumerate(entries):
         _raw_dur = t.get("duration_sec")
-        if _raw_dur is None or (isinstance(_raw_dur, (int, float)) and _raw_dur <= 0):
-            # v13.33 · Se arriva qui una traccia senza durata, dopo i filtri
-            # in _clock_pick_* non dovrebbe MAI succedere. Logga un warning
-            # per rintracciare la falla.
+        dur = float(t.get("real_duration_sec") or _raw_dur or 0)  # v13.41 · EXTINF usa la durata reale, non paddata
+        if dur <= 0:
+            # v13.45 · niente 180s inventati: salta l'entry e rilancia il probe.
             logger.warning(
-                f"[hls_live_playlist] fallback duration_sec=180 su track id={t.get('id')} "
-                f"title={t.get('title')!r} (duration_sec={_raw_dur!r}) — filtro pick fallito?"
+                f"[hls_live_playlist] skip track id={t.get('id')} title={t.get('title')!r} "
+                f"(duration_sec={_raw_dur!r}) — reprobe schedulato"
             )
-        dur = float(t.get("real_duration_sec") or _raw_dur or 180)  # v13.41 · EXTINF usa la durata reale, non paddata
+            _schedule_reprobe(t.get("id"))
+            continue
         title = (t.get("title") or "R-A.I.").replace(",", " ")
         artist = (t.get("artist") or "R-A.I.").replace(",", " ")
         url = t.get("audio_url") or ""
@@ -7243,7 +7244,7 @@ def _resolve_local_path_from_url(url: str) -> Optional[Path]:
 
 
 @api_router.post("/admin/audio/reprobe-durations")
-async def admin_audio_reprobe_durations(limit: int = 500):
+async def admin_audio_reprobe_durations(limit: int = 500, track_id: Optional[str] = None):
     """v13.25 · Ricalcola `duration_sec` per le tracce esistenti usando
     ffprobe sul file fisico. Aggiunge un margine di sicurezza per evitare
     che lo `station_clock` avanzi un attimo prima che l'audio finisca
@@ -7282,7 +7283,7 @@ async def admin_audio_reprobe_durations(limit: int = 500):
     probed_storage = 0
     unreadable = 0
     skipped_no_url = 0
-    async for t in db.tracks.find({}, {"_id": 0, "id": 1, "audio_url": 1, "duration_sec": 1}).limit(limit):
+    async for t in db.tracks.find({"id": track_id} if track_id else {}, {"_id": 0, "id": 1, "audio_url": 1, "duration_sec": 1}).limit(limit):
         scanned += 1
         tid = t.get("id")
         url = t.get("audio_url") or ""
@@ -7574,7 +7575,7 @@ async def _dj_pregen_once():
         return False
 
 
-async def _clock_pick_dj_jingle() -> Optional[dict]:
+async def _clock_pick_dj_jingle(exclude_ids: Optional[set] = None) -> Optional[dict]:
     """Pesca un jingle DJ dalla libreria (`tracks.is_jingle=true`). Sono file
     audio brevi (10-25s) preregistrati con le voci Leo/Aria/Max — permettono
     di avere la voce dei DJ nel flusso HLS senza dipendere da TTS live."""
@@ -7584,6 +7585,10 @@ async def _clock_pick_dj_jingle() -> Optional[dict]:
         "on_air": {"$ne": False}, "deleted_at": None,
         # v13.33 · Escludi jingle senza durata valida (evita silenzi da 180s)
         "duration_sec": {"$gt": 0},
+        # v13.45 · esclude jingle già in coda: senza, ogni passaggio di refill
+        # riprende lo stesso (last_played_at cambia solo alla promozione) e il
+        # dedupe lo sostituiva con un brano → cadenza "1 jingle ogni 1 brano" rotta.
+        **({"id": {"$nin": [i for i in exclude_ids if i]}} if exclude_ids else {}),
         "$or": [{"start_date": {"$exists": False}}, {"start_date": None}, {"start_date": {"$lte": _now_iso_s}}],
         "$and": [{"$or": [{"end_date": {"$exists": False}}, {"end_date": None}, {"end_date": {"$gte": _now_iso_s}}]}],
     }
@@ -7598,7 +7603,7 @@ async def _clock_pick_dj_jingle() -> Optional[dict]:
     return tr
 
 
-async def _clock_pick_fx() -> Optional[dict]:
+async def _clock_pick_fx(exclude_ids: Optional[set] = None) -> Optional[dict]:
     """v13.41 · Fix ticket #247410: pesca un FX dalla libreria (`tracks.is_fx=true`)
     per la rotazione automatica. Finora gli FX erano riproducibili SOLO via il
     pulsante manuale "play live" in Regia — mai dal clock live. Stesso pattern
@@ -7608,6 +7613,7 @@ async def _clock_pick_fx() -> Optional[dict]:
         "is_fx": True, "status": "ready", "audio_url": {"$ne": None},
         "on_air": {"$ne": False}, "deleted_at": None,
         "duration_sec": {"$gt": 0},
+        **({"id": {"$nin": [i for i in exclude_ids if i]}} if exclude_ids else {}),
     }
     tr = await db.tracks.find_one(
         q, {"_id": 0, "id": 1, "title": 1, "artist": 1, "audio_url": 1,
@@ -7667,12 +7673,12 @@ async def _clock_pick_track(exclude_ids: Optional[set] = None) -> Optional[dict]
     if _ai.get("ai_human_priority"):
         tr_com = await db.tracks.find_one(
             {"source": "community", "status": "ready", "audio_url": {"$ne": None},
-             "on_air": {"$ne": False}, "deleted_at": None, **dp, **_not_queued, "$and": [_slot_q]},
+             "on_air": {"$ne": False}, "deleted_at": None, "duration_sec": {"$gt": 0}, **dp, **_not_queued, "$and": [_slot_q]},
             {"_id": 0, "id": 1, "title": 1, "artist": 1, "audio_url": 1, "duration_sec": 1, "real_duration_sec": 1, "bpm": 1},
             sort=[("last_played_at", 1)],
         )
         if tr_com:
-            tr_com["duration_sec"] = float(tr_com.get("duration_sec") or 180)  # v13.40 · era int(): troncava
+            tr_com["duration_sec"] = float(tr_com["duration_sec"])  # v13.40 · era int(): troncava
             return tr_com
     q = {
         "source": {"$in": _sources},
@@ -7700,13 +7706,14 @@ async def _clock_pick_track(exclude_ids: Optional[set] = None) -> Optional[dict]
     tr = random.choice(tr_pool) if tr_pool else None
     if not tr:
         tr_pool = await db.tracks.find(
-            {"status": "ready", "audio_url": {"$ne": None}, "on_air": {"$ne": False}, "deleted_at": None, **_not_queued, "$and": [_slot_q]},
+            {"status": "ready", "audio_url": {"$ne": None}, "on_air": {"$ne": False}, "deleted_at": None,
+             "duration_sec": {"$gt": 0}, **_not_queued, "$and": [_slot_q]},
             {"_id": 0, "id": 1, "title": 1, "artist": 1, "audio_url": 1, "duration_sec": 1, "real_duration_sec": 1, "bpm": 1},
         ).sort([("last_played_at", 1)]).limit(_pool_size).to_list(length=_pool_size)
         tr = random.choice(tr_pool) if tr_pool else None
     if not tr:
         return None
-    tr["duration_sec"] = float(tr.get("duration_sec") or 180)  # v13.40 · era int(): troncava
+    tr["duration_sec"] = float(tr["duration_sec"])  # v13.40 · era int(): troncava (filtro $gt:0 garantisce durata valida)
     return tr
 
 
@@ -7716,6 +7723,128 @@ async def _clock_pick_track(exclude_ids: Optional[set] = None) -> Optional[dict]
 # refill girava inline dentro ogni /api/stream/now e live.m3u8, ritardando la
 # scrittura del nuovo `current` e facendo partire refill concorrenti.
 _clock_lock = asyncio.Lock()   # serializza le scritture del clock (uvicorn --workers 1)
+
+
+# v13.45 · MULTI-POD SAFETY. `_clock_lock` serializza solo dentro UN processo:
+# con 2+ pod ogni scrittura su `station_clock` passa per `_clock_cas`, che
+# scrive solo se `ver` non è cambiato dall'ultima lettura (compare-and-swap).
+def _clock_ver_filter(clock: dict) -> dict:
+    ver = (clock or {}).get("ver")
+    return {"_id": "clock", "ver": ver} if ver is not None else {"_id": "clock", "ver": {"$exists": False}}
+
+
+async def _clock_cas(clock: dict, updates: dict, upsert: bool = False) -> bool:
+    """Scrive `updates` su station_clock solo se nessun altro l'ha modificato
+    dopo che `clock` è stato letto. True = scrittura applicata (e `clock["ver"]`
+    aggiornato in locale); False = un altro pod/task ha vinto, scarta tutto."""
+    try:
+        res = await db.station_clock.update_one(
+            _clock_ver_filter(clock), {"$set": updates, "$inc": {"ver": 1}}, upsert=upsert,
+        )
+    except DuplicateKeyError:
+        return False   # upsert su doc già esistente con altra `ver`
+    if res.matched_count == 1 or res.upserted_id is not None:
+        clock["ver"] = int(clock.get("ver") or 0) + 1
+        return True
+    return False
+
+
+def _dur_or_default(value, default: float, ctx: str) -> float:
+    """Durata con default, ma logga quando il default scatta (era silenzioso)."""
+    try:
+        v = float(value) if value is not None else 0.0
+    except Exception:
+        v = 0.0
+    if v <= 0:
+        logger.warning(f"[duration] {ctx}: duration_sec={value!r} → default {default}s")
+        return float(default)
+    return v
+
+
+_reprobe_inflight: set = set()
+_reprobe_last: dict = {}
+_REPROBE_COOLDOWN_SEC = 600
+
+
+def _schedule_reprobe(track_id: Optional[str]) -> None:
+    """Rilancia ffprobe su UNA traccia senza durata valida, in background.
+    Single-flight + cooldown per traccia (non martella lo storage)."""
+    if not track_id or track_id in _reprobe_inflight:
+        return
+    import time as _t
+    if _t.monotonic() - _reprobe_last.get(track_id, -1e9) < _REPROBE_COOLDOWN_SEC:
+        return
+    _reprobe_last[track_id] = _t.monotonic()
+    _reprobe_inflight.add(track_id)
+
+    async def _run():
+        try:
+            r = await admin_audio_reprobe_durations(limit=1, track_id=track_id)
+            logger.info(f"[reprobe] auto track={track_id} → {r}")
+        except Exception as e:
+            logger.warning(f"[reprobe] auto track={track_id} failed: {e}")
+        finally:
+            _reprobe_inflight.discard(track_id)
+
+    asyncio.create_task(_run())
+
+
+# v13.45 · LEADER LEASE per i ticker di background (un solo pod li esegue).
+POD_ID = f"{os.environ.get('HOSTNAME') or 'pod'}-{os.getpid()}-{uuid.uuid4().hex[:6]}"
+_LEASE_TTL_SEC = 10
+_LEASE_RENEW_SEC = 3
+
+
+async def _try_lead(name: str, ttl: int = _LEASE_TTL_SEC) -> Optional[bool]:
+    """True = lease nostro (acquisito/rinnovato). False = lo detiene un altro
+    pod. None = Mongo non risponde (stato ignoto)."""
+    now = datetime.now(timezone.utc)
+    try:
+        await db.station_leases.find_one_and_update(
+            {"_id": name, "$or": [{"until": {"$lt": now}}, {"holder": POD_ID}]},
+            {"$set": {"holder": POD_ID, "until": now + timedelta(seconds=ttl)}},
+            upsert=True,
+        )
+        return True
+    except DuplicateKeyError:
+        return False
+    except Exception as e:
+        logger.warning(f"[lease] {name} check failed: {e}")
+        return None
+
+
+async def _leader_supervisor(name: str, factories: dict):
+    """Avvia i loop di `factories` ({label: () -> coroutine}) solo mentre questo
+    pod detiene il lease `name`; li cancella appena lo perde. I loop non vanno
+    modificati: gestiscono già CancelledError."""
+    import time as _t
+    tasks: dict = {}
+    last_ok = _t.monotonic()
+
+    def _stop_all():
+        for t in tasks.values():
+            if not t.done():
+                t.cancel()
+        tasks.clear()
+
+    try:
+        while True:
+            lead = await _try_lead(name)
+            if lead is None:   # Mongo giù: tieni lo stato finché il lease locale non scade
+                lead = bool(tasks) and (_t.monotonic() - last_ok) < _LEASE_TTL_SEC
+            elif lead:
+                last_ok = _t.monotonic()
+            if lead and not tasks:
+                logger.info(f"[lease] {POD_ID} è LEADER di '{name}' → avvio {list(factories)}")
+                for label, f in factories.items():
+                    tasks[label] = asyncio.create_task(f())
+            elif not lead and tasks:
+                logger.warning(f"[lease] {POD_ID} ha perso '{name}' → stop {list(tasks)}")
+                _stop_all()
+            await asyncio.sleep(_LEASE_RENEW_SEC)
+    except asyncio.CancelledError:
+        _stop_all()
+        raise
 _clock_refill_task: Optional[asyncio.Task] = None   # un solo refill in volo alla volta
 # Se il brano precedente è finito da meno di così, il successivo parte
 # ESATTAMENTE alla sua fine teorica (niente buco da granularità del ticker);
@@ -7769,9 +7898,9 @@ async def _clock_promote(force: bool = False) -> dict:
     now = datetime.now(timezone.utc)
     clock = await db.station_clock.find_one({"_id": "clock"})
     changed = False
-    if not clock:
+    _doc_missing = not clock
+    if _doc_missing:
         clock = {"_id": "clock", "current": None, "queue": [], "music_counter": 0, "updated_at": now.isoformat()}
-        changed = True
     # Se non c'è current o è scaduto → promuovi dalla coda o pesca dal catalogo
     def _is_expired(cur):
         if not cur or not cur.get("started_at"):
@@ -7794,8 +7923,21 @@ async def _clock_promote(force: bool = False) -> dict:
                 f"[clock] current id={cur.get('id')} title={cur.get('title')!r} "
                 f"ha duration_sec={_dur!r} → trattato come scaduto immediatamente"
             )
+            _schedule_reprobe(cur.get("id"))
             return True
         return (now - started).total_seconds() >= _dur_f
+
+    # v13.45 · CLAIM: prima di consumare eventi Timeline / estrarre dalla queue,
+    # un solo pod vince il CAS su `ver`. Chi perde ritorna il clock già
+    # promosso dal vincitore (niente doppio pop, niente doppio `seq`).
+    if force or _is_expired(clock.get("current")):
+        _base = {"updated_at": now.isoformat()}
+        if _doc_missing:
+            _base.update({"current": None, "queue": [], "seq": 0, "music_counter": 0})
+        if not await _clock_cas(clock, _base, upsert=_doc_missing):
+            return await db.station_clock.find_one({"_id": "clock"}) or clock
+    _seen_q = {t.get("id") for t in (clock.get("queue") or [])}
+    _popped = set()
 
     while force or _is_expired(clock.get("current")):
         force = False
@@ -7808,6 +7950,8 @@ async def _clock_promote(force: bool = False) -> dict:
         if not promo:
             q = clock.get("queue") or []
             promo = q.pop(0) if q else None
+            if promo:
+                _popped.add(promo.get("id"))
         else:
             q = clock.get("queue") or []
         if not promo:
@@ -7844,7 +7988,7 @@ async def _clock_promote(force: bool = False) -> dict:
                 "title": _fu.get("title") or "Spot",
                 "artist": _fu.get("artist") or "R-A.I. Advertising",
                 "audio_url": _fu["audio_url"],
-                "duration_sec": _pad_short(float(_fu.get("duration_sec") or 20)),
+                "duration_sec": _pad_short(_dur_or_default(_fu.get("duration_sec"), 20, f"follow_up {_fu.get('id')}")),
                 "is_follow_up": True,
                 "parent_id": promo.get("id"),
                 "video_url": _fu.get("video_url"),
@@ -7867,14 +8011,30 @@ async def _clock_promote(force: bool = False) -> dict:
 
     if changed:
         clock["updated_at"] = now.isoformat()
-        # `music_counter` è di proprietà del refill: qui solo all'inserimento.
-        await db.station_clock.update_one(
-            {"_id": "clock"},
-            {"$set": {"current": clock.get("current"), "queue": clock.get("queue") or [],
-                      "seq": int(clock.get("seq") or 0), "updated_at": clock["updated_at"]},
-             "$setOnInsert": {"music_counter": 0}},
-            upsert=True,
-        )
+        # `music_counter` è di proprietà del refill: qui non si tocca.
+        # Dopo il claim solo refill/FLASH possono aver toccato il clock: in quel
+        # caso si ribasa sulla queue fresca (novità in testa/coda restano dove
+        # erano) invece di perdere l'evento Timeline già consumato.
+        for _attempt in range(4):
+            if await _clock_cas(clock, {"current": clock.get("current"), "queue": clock.get("queue") or [],
+                                        "seq": int(clock.get("seq") or 0), "updated_at": clock["updated_at"]}):
+                break
+            fresh = await db.station_clock.find_one({"_id": "clock"}) or {}
+            fq = fresh.get("queue") or []
+            ours = {t.get("id") for t in (clock.get("queue") or [])}
+            known = _seen_q | _popped | ours
+            lead = []
+            for t in fq:
+                if t.get("id") in known:
+                    break
+                lead.append(t)
+            post = [t for t in fq[len(lead):] if t.get("id") not in known]
+            clock["queue"] = lead + (clock.get("queue") or []) + post
+            clock["ver"] = fresh.get("ver")
+            logger.info(f"[clock] promote CAS conflict → rebase (attempt {_attempt + 1}, +{len(lead)}/{len(post)} nuovi)")
+        else:
+            logger.error("[clock] promote CAS fallito dopo 4 tentativi — promozione scartata")
+            return await db.station_clock.find_one({"_id": "clock"}) or clock
     return clock
 
 
@@ -7962,15 +8122,15 @@ async def _clock_refill_queue():
                 # risorsa ripiega sul jingle preregistrato dalla libreria tracce.
                 picked = await _clock_pick_dj_voice_segment()
                 if not picked:
-                    picked = await _clock_pick_dj_jingle()
+                    picked = await _clock_pick_dj_jingle(exclude_ids=_queued_ids)
                 if picked:
                     dj_slot_filled = True
             if not picked and need_jingle:
-                picked = await _clock_pick_dj_jingle()
+                picked = await _clock_pick_dj_jingle(exclude_ids=_queued_ids)
                 if picked:
                     jingle_slot_filled = True
             if not picked and need_fx:
-                picked = await _clock_pick_fx()
+                picked = await _clock_pick_fx(exclude_ids=_queued_ids)
                 if picked:
                     fx_slot_filled = True
             if not picked:
@@ -8014,18 +8174,20 @@ async def _clock_refill_queue():
 
         if not picks:
             return
+        # v13.45 · Coda + 3 contatori in UN'unica scrittura CAS contro la `ver`
+        # letta all'inizio: se nel frattempo un altro pod/promozione/FLASH ha
+        # toccato il clock, le scelte (basate su uno stato vecchio) si scartano
+        # e il prossimo tick ricalcola. Mai scritture separate dei contatori.
         async with _clock_lock:
-            fresh = await db.station_clock.find_one({"_id": "clock"}) or {}
-            fq = list(fresh.get("queue") or [])
-            taken = {(fresh.get("current") or {}).get("id")} | {t.get("id") for t in fq}
-            fq += [p for p in picks if p.get("id") not in taken]
-            await db.station_clock.update_one(
-                {"_id": "clock"},
-                {"$set": {"queue": fq, "music_counter": counter, "jingle_counter": jingle_counter,
-                          "fx_counter": fx_counter,
-                          "updated_at": datetime.now(timezone.utc).isoformat()}},
-                upsert=True,
+            ok = await _clock_cas(
+                clock,
+                {"queue": list(clock.get("queue") or []) + picks, "music_counter": counter,
+                 "jingle_counter": jingle_counter, "fx_counter": fx_counter,
+                 "updated_at": datetime.now(timezone.utc).isoformat()},
+                upsert=not clock,
             )
+        if not ok:
+            logger.info(f"[clock] refill scartato (CAS): clock cambiato durante il calcolo ({len(picks)} picks)")
     except Exception as e:
         logger.warning(f"[clock] refill error: {e}")
 
@@ -8102,14 +8264,9 @@ async def stream_now():
             "duration_sec": cur.get("duration_sec"),
             "started_at": cur.get("started_at"),
             "offset_sec": offset,
-            # v13.33 · Log warning se il fallback `or 180` scatta qui (filtro
-            # pick dovrebbe aver impedito duration=0/None nel current)
-            "remaining_sec": max(0.0, float(cur.get("duration_sec") or (
-                logger.warning(
-                    f"[stream_now] fallback duration_sec=180 su current id={cur.get('id')} "
-                    f"title={cur.get('title')!r} — filtro pick fallito?"
-                ) or 180
-            )) - offset),
+            # v13.45 · niente più durata inventata (180): senza durata valida il
+            # clock tratta il current come scaduto, quindi remaining = 0.
+            "remaining_sec": max(0.0, float(cur.get("duration_sec") or 0) - offset),
             "bpm": cur.get("bpm"),
             "is_timeline": bool(cur.get("is_timeline")),
             "kind": cur.get("kind"),
@@ -9583,14 +9740,16 @@ async def admin_ad_manager_flash(payload: Optional[dict] = None):
     if not cluster:
         raise HTTPException(404, "Nessuno spot disponibile per costruire il cluster")
     async with _clock_lock:   # v13.40 · niente sovrascritture con promozione/refill concorrenti
-        clock = await db.station_clock.find_one({"_id": "clock"}) or {}
-        q = clock.get("queue") or []
-        # Metti il cluster in TESTA alla queue (dopo il current)
-        new_q = cluster + q
-        await db.station_clock.update_one(
-            {"_id": "clock"}, {"$set": {"queue": new_q, "updated_at": datetime.now(timezone.utc).isoformat()}},
-            upsert=True,
-        )
+        for _ in range(6):
+            clock = await db.station_clock.find_one({"_id": "clock"}) or {}
+            q = clock.get("queue") or []
+            # Metti il cluster in TESTA alla queue (dopo il current)
+            if await _clock_cas(clock, {"queue": cluster + q, "updated_at": datetime.now(timezone.utc).isoformat()},
+                                upsert=not clock):
+                break
+            await asyncio.sleep(0.05)
+        else:
+            raise HTTPException(503, "Clock occupato, riprova")
     logger.info(f"[ad-manager] FLASH cluster ({len(cluster)} elementi) inserito in coda")
     return {"ok": True, "cluster_len": len(cluster), "cluster": cluster}
 
@@ -9893,8 +10052,28 @@ async def stream_queue_preview():
     }
 
 
+_STARTUP_READY = False
+
+
+@app.get("/health")
+@api_router.get("/health")
+async def health():
+    """Readiness: 200 solo dopo ensure_seeded() e con il doc `station_clock`
+    presente in Mongo; 503 altrimenti (il load balancer non instrada al pod)."""
+    if not _STARTUP_READY:
+        return JSONResponse({"ok": False, "reason": "startup in corso"}, status_code=503)
+    try:
+        clk = await asyncio.wait_for(db.station_clock.find_one({"_id": "clock"}, {"_id": 1}), timeout=3)
+    except Exception as e:
+        return JSONResponse({"ok": False, "reason": f"mongo: {e}"}, status_code=503)
+    if not clk:
+        return JSONResponse({"ok": False, "reason": "station_clock assente"}, status_code=503)
+    return {"ok": True, "pod": POD_ID}
+
+
 @app.on_event("startup")
 async def on_startup():
+    global _STARTUP_READY
     # Registra il router API PRIMA di ogni tick di startup: tutte le rotte
     # definite sopra sono ora fisicamente aggiunte all'app.
     app.include_router(api_router)
@@ -9915,7 +10094,11 @@ async def on_startup():
         logger.info(f"[startup] ffmpeg={_ffmpeg} ffprobe={_ffprobe} — audio pipeline pronta")
     await ensure_seeded()
     await _seed_admin(db)   # seed admin Regia (idempotente)
-    await telegram_bot.start(db)
+    try:
+        await _clock_promote()   # crea il doc station_clock se manca (CAS-safe anche con più pod)
+    except Exception as e:
+        logger.warning(f"[startup] clock init skipped: {e}")
+    _STARTUP_READY = True
     # v13.13 · FM_MODE PERSISTENTE — se l'admin lo accende, resta acceso
     # anche dopo restart/chiusura app finché non lo spegne manualmente.
     _st_fm = await db.station.find_one({"_id": "state"}, {"fm_mode": 1}) or {}
@@ -9958,28 +10141,11 @@ async def on_startup():
     # integrity check, time_signal pregen). Default: DISABILITATO.
     # Riattiva da regia via PATCH /api/admin/background-tasks.
     bg_enabled = os.environ.get("BACKGROUND_TASKS_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
-    if bg_enabled:
-        asyncio.create_task(_suno_library_filler())
-        asyncio.create_task(_suno_integrity_check())
-        asyncio.create_task(_time_signal_pregenerator())
-        # v13.21 · DJ voice pregen ticker — gated dal kill-switch di regia:
-        # come gli altri background task, parte solo se BACKGROUND_TASKS_ENABLED
-        # è ON, così una regia in economy non brucia crediti LLM/TTS di nascosto.
-        asyncio.create_task(_dj_pregen_ticker())
-        logger.info("[startup] Background AI tasks ENABLED (Suno filler, integrity, time_signal pregen, DJ voice pregen)")
-    else:
-        logger.info("[startup] Background AI tasks DISABLED (BACKGROUND_TASKS_ENABLED=false) — nessun consumo automatico")
-    # Auto-scheduling Pillole (v13.3) — sempre attivo, ma internamente si
-    # sospende se FM_MODE è OFF, quindi zero costi in economy.
-    asyncio.create_task(_pillole_scheduler())
-    logger.info("[startup] Pillole auto-scheduler running (gated by FM_MODE)")
-    # v13.6 · TRUE BROADCASTER — clock ticker (avanza il brano corrente).
-    # Su Tier 0 il pod dorme senza traffico: alla riattivazione il primo GET
-    # su /api/stream/now o /api/stream/live.m3u8 richiama _clock_advance() e
-    # ripristina lo stato coerente. Zero costi API ricorrenti.
-    asyncio.create_task(_clock_ticker())
-    logger.info("[startup] Station clock ticker running (in-pod, tier0-tolerant)")
-    # v13.9 · VIDEO CLOCK ticker (stinger rotation sincrona HLS)
+    # v13.45 · Tutti i ticker/scheduler girano SOLO sul pod che detiene il lease
+    # "scheduler" (Mongo `station_leases`, TTL 10s, rinnovo 3s). Con N pod
+    # prima ogni pod avviava i propri loop → doppi tick [dj-pregen], contatori
+    # e coda del clock sovrascritti a vicenda, doppio polling Telegram.
+    # `_clock_advance` da /stream/now resta attivo su ogni pod (è CAS-safe).
     async def _video_ticker():
         while True:
             try:
@@ -9987,14 +10153,32 @@ async def on_startup():
                 await _video_advance()
             except asyncio.CancelledError: break
             except Exception as e: logger.debug(f"[video-clock] {e}")
-    asyncio.create_task(_video_ticker())
-    logger.info("[startup] Video clock ticker running (HLS stinger rotation)")
-    # v13.30 · Power Play ticker — self-heal on-demand + scheduling giornaliero
-    asyncio.create_task(_power_play_ticker())
-    logger.info("[startup] Power Play (Disco del Giorno) ticker running")
-    # v13.31 · Beat-Match pre-render ticker (attivo solo di notte + toggle)
-    asyncio.create_task(_beatmatch_pregen_ticker())
-    logger.info("[startup] Beat-Match pre-render ticker running (night-only)")
+
+    _leader_loops = {
+        # v13.6 · TRUE BROADCASTER — clock ticker (avanza il brano corrente).
+        "clock": _clock_ticker,
+        # v13.9 · VIDEO CLOCK ticker (stinger rotation sincrona HLS)
+        "video": _video_ticker,
+        # Auto-scheduling Pillole (v13.3): si sospende da sola se FM_MODE è OFF.
+        "pillole": _pillole_scheduler,
+        # v13.30 · Power Play (Disco del Giorno) · v13.31 · Beat-Match (solo notte)
+        "power_play": _power_play_ticker,
+        "beatmatch": _beatmatch_pregen_ticker,
+        "telegram": lambda: telegram_bot.run(db),
+    }
+    if bg_enabled:
+        _leader_loops.update({
+            "suno_filler": _suno_library_filler,
+            "suno_integrity": _suno_integrity_check,
+            "time_signal_pregen": _time_signal_pregenerator,
+            # v13.21 · DJ voice pregen: gated da BACKGROUND_TASKS_ENABLED
+            "dj_pregen": _dj_pregen_ticker,
+        })
+        logger.info("[startup] Background AI tasks ENABLED (Suno filler, integrity, time_signal pregen, DJ voice pregen) · leader-only")
+    else:
+        logger.info("[startup] Background AI tasks DISABLED (BACKGROUND_TASKS_ENABLED=false) — nessun consumo automatico")
+    asyncio.create_task(_leader_supervisor("scheduler", _leader_loops))
+    logger.info(f"[startup] pod {POD_ID}: ticker leader-only ({list(_leader_loops)}) in attesa del lease")
 
 
 async def _suno_integrity_check():
