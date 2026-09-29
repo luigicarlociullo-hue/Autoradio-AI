@@ -6605,7 +6605,27 @@ async def admin_timeline_list(status: str = "pending", limit: int = 100):
 async def admin_timeline_delete(event_id: str):
     """v13.29 · Cascade delete: se `event_id` è un template rrule, elimina
     anche TUTTE le occorrenze figlie pending future (parent_id = template.id).
-    Le occorrenze già consumate restano come storico immutabile."""
+    Le occorrenze già consumate restano come storico immutabile.
+
+    v13.42 · Fix ticket #247410: un `event_id` che inizia con "virt-" è una
+    occorrenza VIRTUALE (mai esistita come documento — viene generata al volo
+    da /admin/timeline/calendar espandendo la rrule del template). Prima di
+    questa fix, cancellarla non faceva nulla (delete_one su un id inesistente,
+    deleted_count=0) e l'evento "ricompariva" al prossimo refresh del
+    calendario perché la rrule lo rigenerava sempre. Ora registriamo
+    quell'occorrenza in `excluded_occurrences` sul template: sia il calendario
+    che il materializzatore la salteranno da qui in avanti — esattamente il
+    comportamento "elimina solo questa occorrenza" di un evento ricorrente."""
+    import re
+    m = re.match(r"^virt-(tpl-[0-9a-f]+)-(\d+)$", event_id)
+    if m:
+        tpl_id, epoch_s = m.group(1), m.group(2)
+        occ_iso = datetime.fromtimestamp(int(epoch_s), tz=timezone.utc).isoformat()
+        r = await db.timeline_events.update_one(
+            {"id": tpl_id, "status": "template"},
+            {"$addToSet": {"excluded_occurrences": occ_iso}},
+        )
+        return {"ok": r.matched_count > 0, "excluded_single_occurrence": True, "cascaded_children": 0}
     doc = await db.timeline_events.find_one({"id": event_id}, {"_id": 0, "status": 1})
     r = await db.timeline_events.delete_one({"id": event_id})
     cascaded = 0
@@ -6814,8 +6834,12 @@ async def _rrule_materialize_due(window_sec: int = 90):
         ).to_list(200)
         for tpl in templates:
             occurrences = _rrule_expand(tpl.get("rrule") or {}, now, to_dt)
+            excluded = set(tpl.get("excluded_occurrences") or [])
             for occ in occurrences:
                 occ_iso = occ.isoformat()
+                # v13.42 · Occorrenza singola eliminata dall'utente: mai rimaterializzare
+                if occ_iso in excluded:
+                    continue
                 # Dedup: la coppia (parent_id, scheduled_at) è unica
                 existing = await db.timeline_events.find_one(
                     {"parent_id": tpl["id"], "scheduled_at": occ_iso},
@@ -6932,8 +6956,12 @@ async def admin_timeline_calendar(from_ts: str, to_ts: str, limit_virtual: int =
     virtuals = []
     for tpl in templates:
         occs = _rrule_expand(tpl.get("rrule") or {}, f_dt, t_dt)
+        excluded = set(tpl.get("excluded_occurrences") or [])
         for occ in occs[:limit_virtual]:
-            key = (tpl["id"], occ.isoformat())
+            occ_iso_chk = occ.isoformat()
+            if occ_iso_chk in excluded:
+                continue
+            key = (tpl["id"], occ_iso_chk)
             if key in materialized_keys:
                 continue
             v = {k: v for k, v in tpl.items() if k not in ("_id", "id", "status", "rrule", "created_at")}

@@ -146,13 +146,25 @@ export default function AdminCalendar() {
     return c;
   }, [events, selectedDate]);
 
-  const deleteEvent = async (id) => {
-    if (!window.confirm("Eliminare questo evento dal palinsesto?")) return;
+  // v13.42 · Fix ticket #247410: un evento ricorrente non aveva la scelta
+  // "solo questa occorrenza" vs "intera serie" (il cestino cancellava sempre
+  // il solo id cliccato, che per un'occorrenza virtuale non esiste come
+  // documento — il backend cancellava 0 righe e l'evento ricompariva al
+  // refresh, ma qui veniva comunque mostrato un falso "Evento eliminato").
+  const deleteEvent = async (id, { series = false, parentId = null } = {}) => {
+    const msg = series
+      ? "Eliminare l'INTERA SERIE ricorrente? Verranno rimosse tutte le occorrenze future."
+      : "Eliminare questa occorrenza dal palinsesto?";
+    if (!window.confirm(msg)) return;
     setBusy(true);
     try {
-      await api.delete(`/admin/timeline/${id}`);
-      toast.success("Evento eliminato");
-      setEvents((prev) => prev.filter((e) => e.id !== id));
+      const targetId = series ? parentId : id;
+      const r = await api.delete(`/admin/timeline/${targetId}`);
+      if (!r?.data?.ok) { toast.error("Eliminazione non riuscita"); return; }
+      toast.success(series ? "Serie ricorrente eliminata" : "Occorrenza eliminata");
+      setEvents((prev) => series
+        ? prev.filter((e) => e.id !== targetId && e.parent_id !== targetId)
+        : prev.filter((e) => e.id !== id));
       setExpandedId(null);
     } catch { toast.error("Errore eliminazione"); }
     finally { setBusy(false); }
@@ -450,16 +462,44 @@ export default function AdminCalendar() {
                           {ev.duration_sec}s · {ev.audio_url ? ev.audio_url.split("/").slice(-1)[0] : "no audio"}
                         </div>
                         {!consumed && (
-                          <button
-                            onClick={(e) => { e.stopPropagation(); deleteEvent(ev.id); }}
-                            disabled={busy}
-                            data-testid={`calendar-delete-${ev.id}`}
-                            className="px-2 py-1 rounded text-[10px] font-bold"
-                            style={{ background: "rgba(255,45,149,0.25)", border: "1px solid rgba(255,45,149,0.6)", color: "#fff" }}
-                            title="Elimina evento"
-                          >
-                            🗑 Elimina
-                          </button>
+                          ev.parent_id ? (
+                            // v13.42 · Evento ricorrente: scelta esplicita singola/serie
+                            // (prima si cancellava solo l'id cliccato, che per le
+                            // occorrenze virtuali non esiste come documento).
+                            <div className="flex items-center gap-1">
+                              <button
+                                onClick={(e) => { e.stopPropagation(); deleteEvent(ev.id); }}
+                                disabled={busy}
+                                data-testid={`calendar-delete-${ev.id}`}
+                                className="px-2 py-1 rounded text-[10px] font-bold"
+                                style={{ background: "rgba(255,45,149,0.25)", border: "1px solid rgba(255,45,149,0.6)", color: "#fff" }}
+                                title="Elimina solo questa occorrenza"
+                              >
+                                🗑 Solo questa
+                              </button>
+                              <button
+                                onClick={(e) => { e.stopPropagation(); deleteEvent(ev.id, { series: true, parentId: ev.parent_id }); }}
+                                disabled={busy}
+                                data-testid={`calendar-delete-series-${ev.id}`}
+                                className="px-2 py-1 rounded text-[10px] font-bold"
+                                style={{ background: "rgba(255,45,149,0.4)", border: "1px solid rgba(255,45,149,0.8)", color: "#fff" }}
+                                title="Elimina l'intera serie ricorrente"
+                              >
+                                🗑🗑 Intera serie
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              onClick={(e) => { e.stopPropagation(); deleteEvent(ev.id); }}
+                              disabled={busy}
+                              data-testid={`calendar-delete-${ev.id}`}
+                              className="px-2 py-1 rounded text-[10px] font-bold"
+                              style={{ background: "rgba(255,45,149,0.25)", border: "1px solid rgba(255,45,149,0.6)", color: "#fff" }}
+                              title="Elimina evento"
+                            >
+                              🗑 Elimina
+                            </button>
+                          )
                         )}
                       </div>
                     )}
