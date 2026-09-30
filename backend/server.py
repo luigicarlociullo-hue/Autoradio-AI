@@ -10116,7 +10116,10 @@ async def _power_play_resolve_track(pp: Optional[dict]) -> Optional[dict]:
          "duration_sec": 1, "bpm": 1},
     )
     if tr:
-        tr["duration_sec"] = int(tr.get("duration_sec") or 180)
+        # v13.47 · stesso tipo di indovinello rimosso altrove: se manca la durata
+        # il default (180s) c'è ancora, ma ora si vede nel log. Float, non int():
+        # int() troncava i decimali e accorciava il brano.
+        tr["duration_sec"] = _dur_or_default(tr.get("duration_sec"), 180, f"power_play track {tr.get('id')}")
         tr["is_power_play"] = True
     return tr
 

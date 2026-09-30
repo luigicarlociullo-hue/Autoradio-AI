@@ -15,7 +15,7 @@ PP_ID = "song0"
 SIM_HOURS = 3
 
 
-async def _simulate(dj, jingle, speaker, min_gap):
+async def _simulate(dj, jingle, speaker, min_gap, ready_after=None, probe=None):
     db = server.db
     await db.client.drop_database("cadence_sim")
     await db.tracks.insert_many(
@@ -28,6 +28,8 @@ async def _simulate(dj, jingle, speaker, min_gap):
         state["pp_min_gap_songs"] = min_gap
     await db.station.update_one({"_id": "state"}, {"$set": state}, upsert=True)
     await db.power_play_daily.insert_one({"_id": server._rome_today_key(), "track_id": PP_ID, "source": "library"})
+    if ready_after is not None:   # Suno still generating: the PP track exists but is not ready yet
+        await db.tracks.update_one({"id": PP_ID}, {"$set": {"status": "pending"}})
     await db.station_clock.insert_one({"_id": "clock", "current": None, "queue": [], "seq": 0,
                                        "music_counter": 0, "jingle_counter": 0, "fx_counter": 0})
 
@@ -50,6 +52,12 @@ async def _simulate(dj, jingle, speaker, min_gap):
                 await db.tracks.update_one({"id": head["id"]}, {"$set": {"last_played_at": f"2026-01-01T{step // 3600:02d}:{(step // 60) % 60:02d}:{step % 60:02d}"}})
             elapsed += head["duration_sec"]
             played.append(head["id"])
+            if ready_after is not None and len(played) == ready_after:
+                clk = await db.station_clock.find_one({"_id": "clock"}, {"pp_since": 1})
+                if probe is not None:
+                    probe["pp_since_at_ready"] = clk.get("pp_since")
+                    probe["ready_at_index"] = len(played)
+                await db.tracks.update_one({"id": PP_ID}, {"$set": {"status": "ready"}})
         return played
     finally:
         server._clock_pick_dj_voice_segment = real
@@ -80,3 +88,53 @@ def test_power_play_min_gap(dj, jingle, speaker, min_gap):
         assert between >= gap, f"Power Play repeated after only {between} songs (min {gap}): {songs[max(0, a - 1):b + 1]}"
     # not dead: roughly one PP per (gap + 1) songs
     assert len(pp_idx) >= len(songs) // (gap + 1) // 2
+
+
+def test_not_ready_power_play_neither_resets_nor_stalls():
+    """PP track not ready (Suno generating): never served, pp_since keeps counting
+    (no reset), it is served as soon as it becomes ready, and the gap holds after."""
+    probe = {}
+    played = _loop.run_until_complete(_simulate(1, 1, True, None, ready_after=40, probe=probe))
+    gap = _effective_gap(None)
+    assert PP_ID not in played[:40], "served while not ready"
+    assert probe["pp_since_at_ready"] >= gap, f"counter was reset/stalled while not ready: {probe}"
+    first = played.index(PP_ID)
+    songs_before_first = sum(1 for p in played[40:first] if p.startswith("song"))
+    assert songs_before_first <= 6, f"PP delayed {songs_before_first} songs after becoming ready (queued items only)"
+    songs = [p for p in played if p.startswith("song")]
+    pp_idx = [i for i, s in enumerate(songs) if s == PP_ID]
+    assert len(pp_idx) >= 2
+    for a, b in zip(pp_idx, pp_idx[1:]):
+        assert b - a - 1 >= gap
+
+
+def test_new_field_absent_on_old_clock_document():
+    """The clock document of a running station has no pp_since yet: it must default to 0 safely."""
+    async def run():
+        db = server.db
+        await db.client.drop_database("cadence_sim")
+        await db.tracks.insert_many([{"id": f"song{i}", "title": "S", "artist": "A", "audio_url": "/x.mp3", "duration_sec": 200.0,
+                                      "status": "ready", "source": "suno", "on_air": True, "deleted_at": None} for i in range(20)])
+        await db.power_play_daily.insert_one({"_id": server._rome_today_key(), "track_id": PP_ID})
+        await db.station_clock.insert_one({"_id": "clock", "current": None, "queue": [], "seq": 3, "ver": 7,
+                                           "music_counter": 5, "jingle_counter": 1, "fx_counter": 0})   # no pp_since
+        await server._clock_refill_queue()
+        return await db.station_clock.find_one({"_id": "clock"})
+    c = _loop.run_until_complete(run())
+    assert 1 <= c["pp_since"] <= len(c["queue"])                                    # counted from 0, written back
+    assert len(c["queue"]) == server._CLOCK_QUEUE_LOOKAHEAD
+    assert PP_ID not in [t["id"] for t in c["queue"][:6]]                         # first PP only after the gap
+
+
+def test_missing_duration_default_is_logged(caplog):
+    async def run():
+        db = server.db
+        await db.client.drop_database("cadence_sim")
+        await db.tracks.insert_one({"id": PP_ID, "title": "PP", "artist": "A", "audio_url": "/x.mp3", "duration_sec": 0,
+                                    "status": "ready", "source": "suno", "on_air": True, "deleted_at": None})
+        return await server._power_play_resolve_track({"track_id": PP_ID})
+    import logging
+    with caplog.at_level(logging.WARNING):
+        tr = _loop.run_until_complete(run())
+    assert tr["duration_sec"] == 180.0 and tr["is_power_play"]
+    assert any("power_play track" in r.message and "default 180" in r.message for r in caplog.records)
