@@ -48,7 +48,7 @@ async def _simulate(dj, jingle, speaker, voice):
         n_voice[0] += 1
         return {"id": f"voice{n_voice[0]}", "title": "V", "artist": "DJ", "audio_url": "/x/v.mp3", "duration_sec": 20.0}
 
-    async def no_pp():
+    async def no_pp(*args, **kwargs):
         return None
 
     real = (server._clock_pick_dj_voice_segment, server._power_play_maybe_pick)

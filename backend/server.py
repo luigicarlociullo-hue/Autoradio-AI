@@ -5,6 +5,8 @@ from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo.errors import DuplicateKeyError
 import os
+import re
+import shutil
 import logging
 import asyncio
 import random
@@ -6210,21 +6212,139 @@ async def _resolve_current_hour_time_signal() -> Optional[str]:
     — vedi /admin/time-signal/generate-permanent) e, se presente, la usa e
     NON rigenera mai — zero consumi ricorrenti di Universal Key. Solo se
     assente ripiega sulla vecchia cache per data+ora (compatibilità finché
-    l'utente non genera i 24 permanenti)."""
+    l'utente non genera i 24 permanenti).
+
+    v13.47 · Non legge MAI il kill-switch (riprodurre un file esistente costa
+    zero). Un permanente con `validated=False` (audio vuoto/muto/illeggibile)
+    NON viene servito; uno senza il campo (generato prima della validazione)
+    viene servito ma segnalato: usa /admin/time-signal/verify per controllarlo.
+    Se non c'è nulla da servire, log ERROR esplicito con ora e motivo."""
     try:
         from zoneinfo import ZoneInfo
         _it_now = datetime.now(ZoneInfo("Europe/Rome"))
     except Exception:
         _it_now = datetime.now(timezone.utc)
+    reason = "nessun permanente per quest'ora"
     _permanent_ts = await db.time_signal_permanent.find_one({"_id": _it_now.hour})
     if _permanent_ts and _permanent_ts.get("speech_audio_url"):
-        return _permanent_ts["speech_audio_url"]
+        if _permanent_ts.get("validated") is False:
+            reason = f"permanente non valido ({_permanent_ts.get('validation_reason')})"
+        else:
+            if "validated" not in _permanent_ts:
+                logger.warning(f"[time-signal] ora {_it_now.hour}: permanente NON validato (creato prima del controllo audio) "
+                               f"— servito comunque; verifica con GET /api/admin/time-signal/verify")
+            return _permanent_ts["speech_audio_url"]
     _hour_key = _it_now.strftime("%Y-%m-%d %H")
     _fresh_ts = await db.time_signal_cache.find_one({"_id": _hour_key})
     if _fresh_ts and _fresh_ts.get("speech_audio_url"):
         return _fresh_ts["speech_audio_url"]
-    logger.warning(f"[time-signal] cache miss per hour_key={_hour_key}")
+    logger.error(f"[time-signal] NESSUN AUDIO per ora Rome {_it_now.hour:02d} (hour_key={_hour_key}): {reason}; "
+                 f"nessuna cache. Il segnale orario andrà in onda MUTO o verrà saltato.")
     return None
+
+
+# v13.47 · VALIDAZIONE AUDIO — un segnale orario "permanente" non deve mai essere
+# un file vuoto, illeggibile o muto (prima si salvava qualunque cosa tornasse dal TTS).
+_TS_SILENCE_MAX_DB = -50.0   # picco sotto questa soglia = muto
+
+
+async def _run_capture(*cmd: str, timeout: float = 30.0) -> tuple:
+    proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    try:
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        raise
+    return proc.returncode, out.decode(errors="ignore"), err.decode(errors="ignore")
+
+
+async def _validate_audio_file(path: str) -> dict:
+    """{ok, reason, bytes, duration_sec, max_volume_db}: bytes>0, durata ffprobe>0,
+    picco (ffmpeg volumedetect) sopra _TS_SILENCE_MAX_DB."""
+    info = {"ok": False, "reason": None, "bytes": 0, "duration_sec": 0.0, "max_volume_db": None}
+    try:
+        info["bytes"] = os.path.getsize(path)
+    except OSError:
+        info["reason"] = "file_missing"
+        return info
+    if info["bytes"] <= 0:
+        info["reason"] = "empty_file"
+        return info
+    if not shutil.which("ffprobe") or not shutil.which("ffmpeg"):
+        info["reason"] = "ffmpeg_unavailable"
+        return info
+    try:
+        rc, out, _ = await _run_capture("ffprobe", "-v", "error", "-show_entries", "format=duration",
+                                        "-of", "default=nw=1:nk=1", path)
+        dur = float(out.strip()) if rc == 0 and out.strip() else 0.0
+    except Exception:
+        dur = 0.0
+    info["duration_sec"] = round(dur, 3)
+    if dur <= 0:
+        info["reason"] = "no_duration"
+        return info
+    try:
+        _, _, err = await _run_capture("ffmpeg", "-hide_banner", "-nostats", "-i", path, "-af", "volumedetect", "-f", "null", "-")
+    except Exception:
+        info["reason"] = "volumedetect_failed"
+        return info
+    m = re.search(r"max_volume:\s*(-?inf|-?[0-9.]+)\s*dB", err)
+    if not m:
+        info["reason"] = "volumedetect_failed"
+        return info
+    mv = float("-inf") if "inf" in m.group(1) else float(m.group(1))
+    info["max_volume_db"] = None if mv == float("-inf") else mv
+    if mv < _TS_SILENCE_MAX_DB:
+        info["reason"] = "silent"
+        return info
+    info["ok"] = True
+    return info
+
+
+async def _validate_audio_url(url: str) -> dict:
+    """Valida un audio dato il suo URL /api/...: file locale, altrimenti copia da Object Storage."""
+    import tempfile
+    p = _resolve_local_path_from_url(url)
+    if p and p.exists():
+        return await _validate_audio_file(str(p))
+    key = None
+    for prefix, sub in (("/api/tts/", "tts"), ("/api/suno_audio/", "suno"), ("/api/community_audio/", "community")):
+        if url.startswith(prefix):
+            key = f"{sub}/{url[len(prefix):].split('?')[0]}"
+    data = await object_storage.get_bytes(key) if key else None
+    if not data:
+        return {"ok": False, "reason": "file_missing", "bytes": 0, "duration_sec": 0.0, "max_volume_db": None}
+    fd, tmp = tempfile.mkstemp(prefix="tsval_", suffix=".mp3")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        return await _validate_audio_file(tmp)
+    finally:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+
+
+@api_router.get("/admin/time-signal/verify")
+async def admin_verify_permanent_time_signals():
+    """SOLA LETTURA · ricontrolla i 24 segnali orari permanenti esistenti
+    (byte, durata ffprobe, muto?) e elenca le ore da rigenerare. Non scrive nulla."""
+    hours, bad = [], []
+    for h in range(24):
+        doc = await db.time_signal_permanent.find_one({"_id": h}, {"_id": 0})
+        if not doc or not doc.get("speech_audio_url"):
+            hours.append({"hour": h, "status": "missing"})
+            bad.append(h)
+            continue
+        v = await _validate_audio_url(doc["speech_audio_url"])
+        row = {"hour": h, "status": "ok" if v["ok"] else "bad", "reason": v["reason"], "url": doc["speech_audio_url"],
+               "bytes": v["bytes"], "duration_sec": v["duration_sec"], "max_volume_db": v["max_volume_db"],
+               "stored_validated": doc.get("validated")}
+        hours.append(row)
+        if not v["ok"]:
+            bad.append(h)
+    return {"ok": not bad, "bad_hours": bad, "checked": 24, "hours": hours}
 
 
 @api_router.post("/admin/time-signal/generate-permanent")
@@ -6250,41 +6370,63 @@ async def admin_generate_permanent_time_signals(
         if dj_doc:
             voice_key = dj_doc.get("voice_key") or voice_key
             dj_name = dj_doc.get("name")
-    generated, skipped, failed = [], [], []
+    # v13.47 · Click esplicito dell'admin: gira anche con il kill-switch OFF (nessun
+    # LLM, testo fisso; il kill-switch governa solo la generazione AUTOMATICA).
+    # Ogni file viene VALIDATO prima di salvarlo come permanente.
+    generated, skipped, failed, results = [], [], [], []
     for h in range(24):
         if not force:
-            existing = await db.time_signal_permanent.find_one({"_id": h}, {"_id": 1})
-            if existing:
+            existing = await db.time_signal_permanent.find_one({"_id": h}, {"_id": 1, "validated": 1})
+            if existing and existing.get("validated") is not False:
                 skipped.append(h)
+                results.append({"hour": h, "status": "skipped_existing"})
                 continue
         text = f"Sono le {h:02d}:00 su R-A.I. Radio!"
         try:
             fn, subpath = await synth_speech(text, voice_key, kind="time_signal", dj_id=dj_id)
+            err = None if fn else "tts_returned_nothing"
         except Exception as e:
             logger.warning(f"[time-signal-permanent] hour={h} synth failed: {e}")
-            fn = None
+            fn, subpath, err = None, None, f"tts_error: {str(e)[:160]}"
         if not fn:
             failed.append(h)
+            results.append({"hour": h, "status": "failed", "reason": err})
+            continue
+        url = f"/api/{subpath}/{fn}"
+        v = await _validate_audio_url(url)
+        if not v["ok"]:
+            logger.error(f"[time-signal-permanent] hour={h} audio NON valido ({v['reason']}, {v['bytes']} bytes) → non salvato")
+            failed.append(h)
+            results.append({"hour": h, "status": "failed", "reason": f"audio_invalid:{v['reason']}", "bytes": v["bytes"],
+                            "duration_sec": v["duration_sec"], "max_volume_db": v["max_volume_db"]})
             continue
         await db.time_signal_permanent.update_one(
             {"_id": h},
             {"$set": {
                 "hour": h,
                 "script": text,
-                "speech_audio_url": f"/api/{subpath}/{fn}",
+                "speech_audio_url": url,
                 "voice_key": voice_key,
                 "dj_id": dj_id,
                 "dj_name": dj_name,
                 "created_at": now_iso(),
-            }},
+                "validated": True,
+                "validated_at": now_iso(),
+                "bytes": v["bytes"],
+                "duration_sec": v["duration_sec"],
+                "max_volume_db": v["max_volume_db"],
+            }, "$unset": {"validation_reason": ""}},
             upsert=True,
         )
         generated.append(h)
+        results.append({"hour": h, "status": "generated", "bytes": v["bytes"], "duration_sec": v["duration_sec"],
+                        "max_volume_db": v["max_volume_db"]})
     return {
-        "ok": True,
+        "ok": not failed,
         "generated": generated,
         "skipped_existing": skipped,
         "failed": failed,
+        "results": results,
     }
 
 
@@ -7636,6 +7778,14 @@ async def _clock_pick_track(exclude_ids: Optional[set] = None) -> Optional[dict]
     coda contemporaneamente (last_played_at si aggiorna solo alla
     promozione a current, quindi da solo non basta a deduplicare)."""
     _excl = {i for i in (exclude_ids or set()) if i}
+    # v13.47 · il Power Play di oggi suona SOLO dal suo slot (con il gap minimo):
+    # dal pool normale rientrava a caso, aggiungendosi alle ripetizioni.
+    try:
+        _pp_today = await _power_play_get_today()
+        if _pp_today and _pp_today.get("track_id"):
+            _excl.add(_pp_today["track_id"])
+    except Exception:
+        pass
     _not_queued = {"id": {"$nin": list(_excl)}} if _excl else {}
     # v13.7 · Human Priority: se ON, community tracks in cima
     try:
@@ -8240,6 +8390,7 @@ async def _clock_refill_queue():
         counter = int(clock.get("music_counter") or 0)
         jingle_counter = int(clock.get("jingle_counter") or 0)
         fx_counter = int(clock.get("fx_counter") or 0)
+        pp_since = int(clock.get("pp_since") or 0)   # brani musicali dall'ultimo Power Play
         picks = []
         while queue_len + len(picks) < _CLOCK_QUEUE_LOOKAHEAD:
             # Decidi se inserire un jingle DJ o un brano musicale
@@ -8271,7 +8422,7 @@ async def _clock_refill_queue():
                 # v13.30 · POWER PLAY (Disco del Giorno): prima di pescare un brano
                 # dalla libreria, controlla se il rotation counter dice "tocca al PP".
                 # Se sì e il PP è pronto, servilo; altrimenti music normale.
-                picked = await _power_play_maybe_pick()
+                picked = await _power_play_maybe_pick(pp_since=pp_since)
                 if not picked:
                     picked = await _clock_pick_track(exclude_ids=_queued_ids)
                 # incrementa counter musicale solo quando aggiungiamo musica reale
@@ -8279,6 +8430,7 @@ async def _clock_refill_queue():
                     counter += 1
                     jingle_counter += 1
                     fx_counter += 1
+                    pp_since += 1
             if not picked:
                 break
             if dj_slot_filled:
@@ -8311,6 +8463,8 @@ async def _clock_refill_queue():
                         picked = alt; found_alt = True; break
                 if not found_alt:
                     break
+            if picked.get("is_power_play"):
+                pp_since = 0   # solo se il PP è davvero in coda (il dedupe sopra può averlo sostituito)
             picks.append(picked)
             _queued_ids.add(picked.get("id"))
 
@@ -8324,7 +8478,7 @@ async def _clock_refill_queue():
             ok = await _clock_cas(
                 clock,
                 {"queue": list(clock.get("queue") or []) + picks, "music_counter": counter,
-                 "jingle_counter": jingle_counter, "fx_counter": fx_counter,
+                 "jingle_counter": jingle_counter, "fx_counter": fx_counter, "pp_since": pp_since,
                  "updated_at": datetime.now(timezone.utc).isoformat()},
                 upsert=not clock,
             )
@@ -9997,7 +10151,10 @@ async def _power_play_resolve_track(pp: Optional[dict]) -> Optional[dict]:
          "duration_sec": 1, "bpm": 1},
     )
     if tr:
-        tr["duration_sec"] = int(tr.get("duration_sec") or 180)
+        # v13.47 · stesso tipo di indovinello rimosso altrove: se manca la durata
+        # il default (180s) c'è ancora, ma ora si vede nel log. Float, non int():
+        # int() troncava i decimali e accorciava il brano.
+        tr["duration_sec"] = _dur_or_default(tr.get("duration_sec"), 180, f"power_play track {tr.get('id')}")
         tr["is_power_play"] = True
     return tr
 
@@ -10108,7 +10265,21 @@ async def admin_power_play_today():
         "power_play": pp,
         "track": track,
         "rotation_every": _POWER_PLAY_ROTATION,
+        "min_gap_songs": await _power_play_min_gap(),
     }
+
+
+@api_router.patch("/admin/power-play/config")
+async def admin_power_play_config(payload: dict):
+    """Brani minimi tra due riproduzioni del Power Play. Body: {"min_gap_songs": N}.
+    Il minimo effettivo non scende mai sotto `rotation_every`."""
+    try:
+        n = int(payload.get("min_gap_songs"))
+    except Exception:
+        raise HTTPException(400, "min_gap_songs intero richiesto")
+    n = max(_POWER_PLAY_ROTATION, min(50, n))
+    await db.station.update_one({"_id": "state"}, {"$set": {"pp_min_gap_songs": n}}, upsert=True)
+    return {"ok": True, "min_gap_songs": n}
 
 
 @api_router.post("/admin/power-play/regenerate")
@@ -10139,30 +10310,34 @@ async def admin_power_play_regenerate():
     return {"ok": True, "vetoed_count": veto_count, "power_play": new_doc}
 
 
-async def _power_play_maybe_pick() -> Optional[dict]:
-    """Se il rotation counter dice "tocca al Power Play", ritorna il PP di
-    oggi (già scaricato/pronto). Altrimenti None. Incrementa il contatore
-    solo se il PP è effettivamente pronto (`ready`), altrimenti passa e
-    riprova al prossimo giro (evita "buchi" in coda quando Suno sta ancora
-    generando)."""
-    st = await db.station.find_one({"_id": "state"}, {"pp_counter": 1}) or {}
-    counter = int(st.get("pp_counter") or 0)
-    if counter <= 0:
-        # Non è il momento: incrementa e passa
-        await db.station.update_one({"_id": "state"}, {"$set": {"pp_counter": counter + 1}}, upsert=True)
+_POWER_PLAY_DEFAULT_MIN_GAP = 6   # brani minimi tra due riproduzioni dello stesso Power Play
+
+
+async def _power_play_min_gap() -> int:
+    """Brani minimi tra due Power Play: `station.state.pp_min_gap_songs` (default 6),
+    mai sotto l'alternanza storica `_POWER_PLAY_ROTATION`, max 50."""
+    st = await db.station.find_one({"_id": "state"}, {"pp_min_gap_songs": 1}) or {}
+    try:
+        cfg = int(st.get("pp_min_gap_songs") or _POWER_PLAY_DEFAULT_MIN_GAP)
+    except Exception:
+        cfg = _POWER_PLAY_DEFAULT_MIN_GAP
+    return max(_POWER_PLAY_ROTATION, min(50, cfg))
+
+
+async def _power_play_maybe_pick(pp_since: int = 0) -> Optional[dict]:
+    """Ritorna il Power Play di oggi se sono passati almeno `min_gap` brani dal
+    precedente (`pp_since` = brani musicali accodati dall'ultimo Power Play), se
+    è pronto; altrimenti None.
+
+    v13.47 · `pp_since` vive nel documento del clock e viene scritto con la
+    stessa CAS di coda e contatori (prima era `station.pp_counter`, fuori CAS:
+    un refill scartato lo faceva avanzare comunque). Il chiamante lo azzera
+    solo se il Power Play è davvero finito in coda (il dedupe può sostituirlo)."""
+    if pp_since < await _power_play_min_gap():
         return None
-    if counter < _POWER_PLAY_ROTATION:
-        await db.station.update_one({"_id": "state"}, {"$set": {"pp_counter": counter + 1}}, upsert=True)
-        return None
-    # Turno PP: reset counter e prova a servire
     pp = await _power_play_get_today()
-    tr = await _power_play_resolve_track(pp)
-    if not tr:
-        # PP non pronto (Suno in generazione o libreria vuota): NON resettare,
-        # riprova al giro successivo — così l'alternanza resta fedele.
-        return None
-    await db.station.update_one({"_id": "state"}, {"$set": {"pp_counter": 0}}, upsert=True)
-    return tr
+    # PP non pronto (Suno in generazione o libreria vuota) → None, riprova al giro dopo.
+    return await _power_play_resolve_track(pp)
 
 
 @api_router.get("/admin/play-log")
