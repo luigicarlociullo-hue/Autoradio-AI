@@ -101,5 +101,3 @@ frontend/node_modules/.cache/default-development/3.pack
 frontend/node_modules/.cache/default-development/7.pack
 frontend/node_modules/.cache/default-development/9.pack
 
-# Written at publish time by scripts/write_build_sha.sh
-backend/BUILD_SHA

@@ -10470,7 +10470,7 @@ _STARTUP_READY = False
 
 
 def _resolve_build_sha() -> str:
-    """Short git SHA of the running build: `git rev-parse --short HEAD`, else backend/BUILD_SHA, else 'unknown'."""
+    """Short git SHA of the running build: `git rev-parse --short HEAD`, else backend/build_sha.txt, else 'unknown'."""
     try:
         r = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=str(Path(__file__).parent), capture_output=True, text=True, timeout=3)
         if r.returncode == 0 and r.stdout.strip():
@@ -10478,8 +10478,8 @@ def _resolve_build_sha() -> str:
     except Exception:
         pass
     try:
-        v = (Path(__file__).parent / "BUILD_SHA").read_text().strip()
-        if v:
+        v = (Path(__file__).parent / "build_sha.txt").read_text().strip()
+        if v and v != "unknown":
             return v.split()[0][:12]
     except Exception:
         pass

@@ -43,11 +43,15 @@ def test_health_reports_sha(monkeypatch):
 def test_build_sha_fallbacks(tmp_path, monkeypatch):
     real = subprocess.run
     monkeypatch.setattr(server.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError()))   # no git
-    sha_file = server.Path(server.__file__).parent / "BUILD_SHA"
-    saved = sha_file.read_text() if sha_file.exists() else None   # a real publish-time BUILD_SHA must survive the test
+    sha_file = server.Path(server.__file__).parent / "build_sha.txt"
+    saved = sha_file.read_text() if sha_file.exists() else None   # a real publish-time build_sha.txt must survive the test
     sha_file.unlink(missing_ok=True)
     try:
         assert server._resolve_build_sha() == "unknown"
+        sha_file.write_text("unknown\n")
+        assert server._resolve_build_sha() == "unknown"           # placeholder counts as no value
+        sha_file.write_text("")
+        assert server._resolve_build_sha() == "unknown"           # empty file too
         sha_file.write_text("deadbee\n")
         assert server._resolve_build_sha() == "deadbee"
     finally:
@@ -61,6 +65,7 @@ def test_build_sha_fallbacks(tmp_path, monkeypatch):
 @pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
 def test_duration_audit_flags_and_is_read_only(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "SUNO_AUDIO_DIR", tmp_path)
+    monkeypatch.setattr(server.object_storage, "is_enabled", lambda: False)   # hermetic: no network even if .env enables it
     subprocess.run(["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i", "sine=d=3", "-y", str(tmp_path / "a.mp3")], check=True)
 
     def trk(i, title, dur, url="/api/suno_audio/a.mp3"):
