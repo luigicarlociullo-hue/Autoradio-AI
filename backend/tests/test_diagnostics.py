@@ -44,13 +44,16 @@ def test_build_sha_fallbacks(tmp_path, monkeypatch):
     real = subprocess.run
     monkeypatch.setattr(server.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError()))   # no git
     sha_file = server.Path(server.__file__).parent / "BUILD_SHA"
-    assert not sha_file.exists()
-    assert server._resolve_build_sha() == "unknown"
-    sha_file.write_text("deadbee\n")
+    saved = sha_file.read_text() if sha_file.exists() else None   # a real publish-time BUILD_SHA must survive the test
+    sha_file.unlink(missing_ok=True)
     try:
+        assert server._resolve_build_sha() == "unknown"
+        sha_file.write_text("deadbee\n")
         assert server._resolve_build_sha() == "deadbee"
     finally:
-        sha_file.unlink()
+        sha_file.unlink(missing_ok=True)
+        if saved is not None:
+            sha_file.write_text(saved)
     monkeypatch.setattr(server.subprocess, "run", real)
     assert server._resolve_build_sha() != ""
 
