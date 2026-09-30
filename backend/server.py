@@ -10352,6 +10352,89 @@ async def admin_play_log(limit: int = 200, since_seq: int = 0):
     return {"count": len(rows), "rows": rows}
 
 
+_DURATION_AUDIT_PRIORITY_TITLES = ("notte senza fine", "Neon night forever")
+
+
+def _audio_storage_key(url: str) -> Optional[str]:
+    for prefix, folder in (("/api/suno_audio/", "suno"), ("/api/tts/", "tts"), ("/api/community_audio/", "community")):
+        if url.startswith(prefix):
+            return f"{folder}/{url[len(prefix):].split('?')[0]}"
+    return None
+
+
+async def _ffprobe_track_duration(url: str) -> tuple:
+    """(real_duration_sec | None, source, error). Read-only: local file, else a temp copy from Object Storage."""
+    import tempfile as _tempfile
+    p = _resolve_local_path_from_url(url)
+    if p and p.exists():
+        d = ((await video_service.probe_video(str(p))) or {}).get("duration_sec")
+        return (float(d) if d else None), "local", (None if d else "ffprobe_no_duration")
+    key = _audio_storage_key(url)
+    if not key or not object_storage.is_enabled():
+        return None, None, "file_unreachable"
+    data = await object_storage.fetch_mp3(key)
+    if not data:
+        return None, "storage", "storage_key_not_found"
+    fd, tmp = _tempfile.mkstemp(prefix="duraudit_", suffix=".mp3")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        d = ((await video_service.probe_video(tmp)) or {}).get("duration_sec")
+        return (float(d) if d else None), "storage", (None if d else "ffprobe_no_duration")
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+@api_router.get("/admin/tracks/duration-audit")
+async def admin_tracks_duration_audit(title: str = "", limit: int = 50):
+    """Read-only. Per track: declared `duration_sec` vs real ffprobe duration. Flags |diff| > 0.5s and missing values.
+    Note: reprobe-durations stores real+2.0s on purpose, so a +2.0s diff on those tracks is the safety margin
+    (`reprobe_margin`), not corruption. Without `title`, the priority titles ("notte senza fine", "Neon night forever")
+    come first. Admin only (gate /api/admin). Writes nothing."""
+    limit = max(1, min(200, limit))
+    base = {"deleted_at": None}
+    proj = {"_id": 0, "id": 1, "title": 1, "artist": 1, "audio_url": 1, "duration_sec": 1, "real_duration_sec": 1, "is_jingle": 1}
+
+    async def _by_title(t):
+        return await db.tracks.find({**base, "title": {"$regex": re.escape(t), "$options": "i"}}, proj).limit(limit).to_list(limit)
+
+    if title.strip():
+        rows = await _by_title(title.strip())
+    else:
+        rows = []
+        for pt in _DURATION_AUDIT_PRIORITY_TITLES:
+            rows += await _by_title(pt)
+        seen = {r["id"] for r in rows}
+        if len(rows) < limit:
+            rows += await db.tracks.find({**base, "id": {"$nin": list(seen)}}, proj).limit(limit - len(rows)).to_list(limit)
+        rows = rows[:limit]
+    out, flagged = [], 0
+    for t in rows:
+        declared = t.get("duration_sec")
+        url = t.get("audio_url") or ""
+        real, source, err = await _ffprobe_track_duration(url) if url else (None, None, "no_audio_url")
+        flags = []
+        ok_declared = isinstance(declared, (int, float)) and declared > 0
+        if not ok_declared:
+            flags.append("missing_declared")
+        if real is None:
+            flags.append(err or "no_real")
+        diff = None
+        if real is not None and ok_declared:
+            diff = round(float(declared) - real, 3)
+            if abs(diff) > 0.5:
+                flags.append("declared_longer" if diff > 0 else "declared_shorter")   # shorter => clock cuts the song
+        flagged += bool(flags)
+        out.append({"id": t.get("id"), "title": t.get("title"), "artist": t.get("artist"), "is_jingle": bool(t.get("is_jingle")),
+                    "audio_url": url, "declared_sec": declared, "stored_real_sec": t.get("real_duration_sec"),
+                    "ffprobe_sec": None if real is None else round(real, 3), "diff_sec": diff, "source": source,
+                    "reprobe_margin": diff is not None and abs(diff - 2.0) <= 0.5, "flags": flags})
+    return {"count": len(out), "flagged": flagged, "rows": out}
+
+
 @api_router.get("/stream/queue")
 async def stream_queue_preview():
     """Coda elastica preview: espone al frontend cosa suonerà PROSSIMAMENTE

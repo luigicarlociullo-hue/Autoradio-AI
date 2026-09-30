@@ -1,6 +1,8 @@
-"""Diagnostics: /api/health carries the build SHA; carries the build SHA.
+"""Diagnostics: /api/health carries the build SHA; /api/admin/tracks/duration-audit is admin-gated, read-only,
+and flags declared-vs-ffprobe duration differences > 0.5s and missing values.
 Run:  python -m pytest -n 0 tests/test_diagnostics.py   (from backend/)
 """
+import shutil
 import subprocess
 
 import httpx
@@ -51,3 +53,40 @@ def test_build_sha_fallbacks(tmp_path, monkeypatch):
         sha_file.unlink()
     monkeypatch.setattr(server.subprocess, "run", real)
     assert server._resolve_build_sha() != ""
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg required")
+def test_duration_audit_flags_and_is_read_only(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "SUNO_AUDIO_DIR", tmp_path)
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i", "sine=d=3", "-y", str(tmp_path / "a.mp3")], check=True)
+
+    def trk(i, title, dur, url="/api/suno_audio/a.mp3"):
+        d = {"id": i, "title": title, "artist": "A", "audio_url": url, "deleted_at": None}
+        if dur is not None:
+            d["duration_sec"] = dur
+        return d
+
+    async def run():
+        db = server.db
+        await db.client.drop_database("cadence_sim")
+        await db.tracks.insert_many([
+            trk("ok", "Zeta", 3.0), trk("short", "Notte senza fine", 1.0), trk("nodur", "Neon night forever", None),
+            trk("margin", "Margin", 5.0), trk("gone", "Gone", 10.0, "/api/suno_audio/missing.mp3")])
+        before = await db.tracks.find({}, {"_id": 0}).sort("id", 1).to_list(20)
+        async with _client() as c:
+            anon = await c.get("/api/admin/tracks/duration-audit")
+            r = await c.get("/api/admin/tracks/duration-audit", headers=_admin())
+            f = await c.get("/api/admin/tracks/duration-audit?title=senza", headers=_admin())
+        after = await db.tracks.find({}, {"_id": 0}).sort("id", 1).to_list(20)
+        return anon, r.json(), f.json(), before == after
+    anon, body, filt, unchanged = _loop.run_until_complete(run())
+    assert anon.status_code == 401 and unchanged
+    rows = {r["id"]: r for r in body["rows"]}
+    assert [r["id"] for r in body["rows"][:2]] == ["short", "nodur"]            # priority titles first
+    assert rows["ok"]["flags"] == [] and abs(rows["ok"]["ffprobe_sec"] - 3.0) < 0.2
+    assert "declared_shorter" in rows["short"]["flags"] and rows["short"]["diff_sec"] < -0.5
+    assert "missing_declared" in rows["nodur"]["flags"]
+    assert "declared_longer" in rows["margin"]["flags"] and rows["margin"]["reprobe_margin"] is True
+    assert "file_unreachable" in rows["gone"]["flags"]
+    assert body["flagged"] == 4
+    assert [r["id"] for r in filt["rows"]] == ["short"]
