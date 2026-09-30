@@ -7977,10 +7977,33 @@ async def _clock_advance(force: bool = False) -> dict:
     return clock
 
 
+_CLOCK_CLAIM_TTL_SEC = 6.0   # un claim di promozione non rilasciato (pod morto) scade dopo tanto
+
+
 async def _clock_promote(force: bool = False) -> dict:
     """v13.40 · Parte veloce di `_clock_advance`: promuove il prossimo
     elemento (Timeline dovuta → queue → pick diretto se la queue è vuota)
-    e scrive subito `current`/`queue`. Da chiamare sotto `_clock_lock`."""
+    e scrive subito `current`/`queue`. Da chiamare sotto `_clock_lock`.
+
+    v13.47 · Il claim è ESCLUSIVO (`claim_by`/`claim_until` nel doc del clock):
+    finché un pod sta promuovendo, gli altri non promuovono. Prima il claim era
+    solo un incremento di `ver`: un secondo pod che leggeva DOPO il claim e
+    PRIMA della scrittura finale claimava a sua volta, e l'ultimo a scrivere
+    sovrascriveva l'altro — un evento Timeline già consumato (es. segnale
+    orario) poteva sparire senza andare in onda."""
+    state = {"claimed": False, "released": False, "token": f"{POD_ID}:{uuid.uuid4().hex[:8]}"}
+    try:
+        return await _clock_promote_inner(force, state)
+    finally:
+        if state["claimed"] and not state["released"]:   # uscita senza scrittura finale (nessuna promozione / errore)
+            try:
+                await db.station_clock.update_one({"_id": "clock", "claim_by": state["token"]},
+                                                  {"$set": {"claim_by": None, "claim_until": None}})
+            except Exception as e:
+                logger.warning(f"[clock] release claim failed (scade da solo in {_CLOCK_CLAIM_TTL_SEC}s): {e}")
+
+
+async def _clock_promote_inner(force: bool, state: dict) -> dict:
     now = datetime.now(timezone.utc)
     clock = await db.station_clock.find_one({"_id": "clock"})
     changed = False
@@ -8017,11 +8040,21 @@ async def _clock_promote(force: bool = False) -> dict:
     # un solo pod vince il CAS su `ver`. Chi perde ritorna il clock già
     # promosso dal vincitore (niente doppio pop, niente doppio `seq`).
     if force or _is_expired(clock.get("current")):
-        _base = {"updated_at": now.isoformat()}
+        # Un altro pod sta già promuovendo (claim vivo)? Lascia fare a lui.
+        _cu, _cb = clock.get("claim_until"), clock.get("claim_by")
+        if _cu and _cb:
+            try:
+                if datetime.fromisoformat(_cu) > now:
+                    return clock
+            except Exception:
+                pass   # claim illeggibile: trattalo come scaduto
+        _base = {"updated_at": now.isoformat(), "claim_by": state["token"],
+                 "claim_until": (now + timedelta(seconds=_CLOCK_CLAIM_TTL_SEC)).isoformat()}
         if _doc_missing:
             _base.update({"current": None, "queue": [], "seq": 0, "music_counter": 0})
         if not await _clock_cas(clock, _base, upsert=_doc_missing):
             return await db.station_clock.find_one({"_id": "clock"}) or clock
+        state["claimed"] = True
     _seen_q = {t.get("id") for t in (clock.get("queue") or [])}
     _popped = set()
 
@@ -8115,7 +8148,9 @@ async def _clock_promote(force: bool = False) -> dict:
         # erano) invece di perdere l'evento Timeline già consumato.
         for _attempt in range(4):
             if await _clock_cas(clock, {"current": clock.get("current"), "queue": clock.get("queue") or [],
-                                        "seq": int(clock.get("seq") or 0), "updated_at": clock["updated_at"]}):
+                                        "seq": int(clock.get("seq") or 0), "updated_at": clock["updated_at"],
+                                        "claim_by": None, "claim_until": None}):   # scrittura finale = rilascio del claim
+                state["released"] = True
                 _play_log(clock, _last_reason, _promoted)
                 break
             fresh = await db.station_clock.find_one({"_id": "clock"}) or {}
