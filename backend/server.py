@@ -7,6 +7,8 @@ from pymongo.errors import DuplicateKeyError
 import os
 import re
 import subprocess
+import time
+import hashlib
 import shutil
 import logging
 import asyncio
@@ -6205,6 +6207,39 @@ def _sanitize_follow_ups(raw) -> list:
     return out
 
 
+_TS_PERM_URL_RE = re.compile(r"^/api/tts/[A-Za-z0-9_.\-]+\.mp3$")
+_TS_REACH_OK_TTL, _TS_REACH_BAD_TTL, _TS_REACH_UNKNOWN_TTL, _TS_REACH_TIMEOUT = 300.0, 30.0, 20.0, 3.0
+_ts_reach_cache: dict = {}   # (ora, url) -> (raggiungibile, scadenza monotonic)
+
+
+async def _ts_url_reachable(hour: int, url: str) -> bool:
+    """Il file del segnale orario si può servire da QUESTO pod? Locale non vuoto, oppure presente in Object Storage.
+    Nessun ffprobe (gira dentro il claim di 6 s): cache breve per ora+url. Storage lento (timeout) = sconosciuto:
+    non blocchiamo il segnale, riproviamo tra poco."""
+    now = time.monotonic()
+    hit = _ts_reach_cache.get((hour, url))
+    if hit and hit[1] > now:
+        return hit[0]
+    ok, ttl = False, _TS_REACH_BAD_TTL
+    try:
+        p = _resolve_local_path_from_url(url)
+        if p and p.exists() and p.stat().st_size > 0:
+            ok = True
+        else:
+            key = _audio_storage_key(url)
+            if key and object_storage.is_enabled():
+                ok = bool(await asyncio.wait_for(object_storage.get_bytes(key), _TS_REACH_TIMEOUT))
+        if ok:
+            ttl = _TS_REACH_OK_TTL
+    except asyncio.TimeoutError:
+        ok, ttl = True, _TS_REACH_UNKNOWN_TTL
+        logger.warning(f"[time-signal] ora {hour}: controllo raggiungibilità in timeout ({url}) — assumo raggiungibile")
+    except Exception as e:
+        logger.warning(f"[time-signal] ora {hour}: controllo raggiungibilità fallito ({url}): {e}")
+    _ts_reach_cache[(hour, url)] = (ok, now + ttl)
+    return ok
+
+
 async def _resolve_current_hour_time_signal() -> Optional[str]:
     """Audio del segnale orario dell'ora REALE corrente (Europe/Rome).
 
@@ -6230,17 +6265,22 @@ async def _resolve_current_hour_time_signal() -> Optional[str]:
     if _permanent_ts and _permanent_ts.get("speech_audio_url"):
         if _permanent_ts.get("validated") is False:
             reason = f"permanente non valido ({_permanent_ts.get('validation_reason')})"
+        elif not await _ts_url_reachable(_it_now.hour, _permanent_ts["speech_audio_url"]):
+            reason = f"permanente NON raggiungibile ({_permanent_ts['speech_audio_url']})"
         else:
             if "validated" not in _permanent_ts:
                 logger.warning(f"[time-signal] ora {_it_now.hour}: permanente NON validato (creato prima del controllo audio) "
                                f"— servito comunque; verifica con GET /api/admin/time-signal/verify")
             return _permanent_ts["speech_audio_url"]
+    # Fallback: SOLO la cache di QUESTA ora (mai il file di un'altra ora: annuncerebbe l'ora sbagliata).
     _hour_key = _it_now.strftime("%Y-%m-%d %H")
     _fresh_ts = await db.time_signal_cache.find_one({"_id": _hour_key})
     if _fresh_ts and _fresh_ts.get("speech_audio_url"):
-        return _fresh_ts["speech_audio_url"]
+        if await _ts_url_reachable(_it_now.hour, _fresh_ts["speech_audio_url"]):
+            return _fresh_ts["speech_audio_url"]
+        reason += f"; cache NON raggiungibile ({_fresh_ts['speech_audio_url']})"
     logger.error(f"[time-signal] NESSUN AUDIO per ora Rome {_it_now.hour:02d} (hour_key={_hour_key}): {reason}; "
-                 f"nessuna cache. Il segnale orario andrà in onda MUTO o verrà saltato.")
+                 f"il segnale orario verrà SALTATO (nessun altro file viene usato al suo posto).")
     return None
 
 
@@ -6327,25 +6367,128 @@ async def _validate_audio_url(url: str) -> dict:
             pass
 
 
+async def _ts_hour_status(doc: Optional[dict]) -> dict:
+    """Stato di un segnale orario permanente: {ok, reason, url, v}. SOLA LETTURA.
+    Buono = /api/tts/*.mp3, non marcato validated=False, valida come audio e (se lo storage è attivo) presente nello storage."""
+    url = (doc or {}).get("speech_audio_url")
+    if not url:
+        return {"ok": False, "reason": "missing", "url": None, "v": None}
+    if (doc or {}).get("validated") is False:
+        return {"ok": False, "reason": f"flagged_invalid:{doc.get('validation_reason')}", "url": url, "v": None}
+    if not _TS_PERM_URL_RE.match(url):
+        return {"ok": False, "reason": "not_tts_mp3", "url": url, "v": None}
+    v = await _validate_audio_url(url)
+    if not v["ok"]:
+        return {"ok": False, "reason": v["reason"], "url": url, "v": v}
+    if object_storage.is_enabled() and not await object_storage.get_bytes(f"tts/{url.rsplit('/', 1)[-1]}"):
+        return {"ok": False, "reason": "not_in_object_storage", "url": url, "v": v}
+    return {"ok": True, "reason": None, "url": url, "v": v}
+
+
 @api_router.get("/admin/time-signal/verify")
 async def admin_verify_permanent_time_signals():
     """SOLA LETTURA · ricontrolla i 24 segnali orari permanenti esistenti
-    (byte, durata ffprobe, muto?) e elenca le ore da rigenerare. Non scrive nulla."""
+    (formato /api/tts/*.mp3, byte, durata ffprobe, muto?, presenza in Object Storage)
+    e elenca le ore da rigenerare. Non scrive nulla."""
     hours, bad = [], []
     for h in range(24):
         doc = await db.time_signal_permanent.find_one({"_id": h}, {"_id": 0})
-        if not doc or not doc.get("speech_audio_url"):
+        st = await _ts_hour_status(doc)
+        if st["reason"] == "missing":
             hours.append({"hour": h, "status": "missing"})
             bad.append(h)
             continue
-        v = await _validate_audio_url(doc["speech_audio_url"])
-        row = {"hour": h, "status": "ok" if v["ok"] else "bad", "reason": v["reason"], "url": doc["speech_audio_url"],
+        v = st["v"] or {"bytes": 0, "duration_sec": 0.0, "max_volume_db": None}
+        row = {"hour": h, "status": "ok" if st["ok"] else "bad", "reason": st["reason"], "url": st["url"],
                "bytes": v["bytes"], "duration_sec": v["duration_sec"], "max_volume_db": v["max_volume_db"],
                "stored_validated": doc.get("validated")}
         hours.append(row)
-        if not v["ok"]:
+        if not st["ok"]:
             bad.append(h)
     return {"ok": not bad, "bad_hours": bad, "checked": 24, "hours": hours}
+
+
+def _parse_hours_spec(spec: Optional[str]) -> list:
+    """"0,1,2" / "0-7" / "0-3,9" -> lista ordinata di ore 0-23. ValueError se non valida."""
+    if spec is None or not spec.strip():
+        return list(range(24))
+    out = set()
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        a, _, b = part.partition("-")
+        lo, hi = int(a), int(b if b else a)
+        if not (0 <= lo <= hi <= 23):
+            raise ValueError(f"ore fuori range 0-23: {part}")
+        out.update(range(lo, hi + 1))
+    if not out:
+        raise ValueError("nessuna ora indicata")
+    return sorted(out)
+
+
+async def _validate_audio_bytes(data: bytes) -> dict:
+    """Come _validate_audio_file ma su bytes (tempfile locale)."""
+    import tempfile
+    fd, tmp = tempfile.mkstemp(prefix="tsbytes_", suffix=".mp3")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        return await _validate_audio_file(tmp)
+    finally:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+
+
+async def _generate_time_signal_hour(h: int, text: str, voice_key: str, dj_id: Optional[str], allow_local_only: bool) -> dict:
+    """Genera UN segnale orario permanente. Ritorna {ok, url, v, storage_verified} oppure {ok: False, reason, ...}.
+    Mai Bark/wav; niente kill-switch (click esplicito admin). Il file nuovo ha un nome NUOVO (hash del contenuto):
+    non sovrascrive mai un file esistente, quindi un tentativo fallito non può rovinare un'ora già buona.
+    Sequenza: sintesi -> validazione bytes -> upload -> re-fetch -> validazione dei bytes ri-scaricati."""
+    try:
+        audio, provider = await elevenlabs_service.synth_bytes(text, voice_key, kind="time_signal", dj_id=dj_id)
+    except Exception as e:
+        logger.warning(f"[time-signal-permanent] hour={h} synth failed: {e}")
+        return {"ok": False, "reason": f"tts_error: {str(e)[:160]}"}
+    if not audio:
+        return {"ok": False, "reason": "tts_returned_nothing"}
+    v0 = await _validate_audio_bytes(audio)
+    if not v0["ok"]:
+        return {"ok": False, "reason": f"audio_invalid:{v0['reason']}", "bytes": v0["bytes"],
+                "duration_sec": v0["duration_sec"], "max_volume_db": v0["max_volume_db"]}
+    name = f"tts_ts{h:02d}_{hashlib.sha256(audio).hexdigest()[:16]}.mp3"
+    key, url = f"tts/{name}", f"/api/tts/{name}"
+    storage_on = object_storage.is_enabled()
+    if not storage_on and not allow_local_only:
+        return {"ok": False, "reason": "object_storage_disabled"}
+    local = elevenlabs_service.TTS_DIR / name
+    created_local = not local.exists()
+    try:
+        if storage_on:
+            if not await object_storage.put_mp3(key, audio):
+                return {"ok": False, "reason": "upload_failed"}
+            back = await object_storage.get_bytes(key)
+            if not back:
+                return {"ok": False, "reason": "refetch_failed"}
+            if back != audio:
+                return {"ok": False, "reason": "refetch_mismatch", "bytes": len(back)}
+            v = await _validate_audio_bytes(back)
+            if not v["ok"]:
+                return {"ok": False, "reason": f"refetch_invalid:{v['reason']}", "bytes": v["bytes"]}
+            local.write_bytes(audio)   # cache locale di questo pod; gli altri pod leggono dallo storage
+        else:
+            local.write_bytes(audio)   # allow_local_only: il file su disco è l'unica copia
+            v = await _validate_audio_file(str(local))
+            if not v["ok"]:
+                if created_local:
+                    local.unlink(missing_ok=True)
+                return {"ok": False, "reason": f"local_invalid:{v['reason']}", "bytes": v["bytes"]}
+        return {"ok": True, "url": url, "v": v, "storage_verified": storage_on, "provider": provider}
+    except Exception as e:
+        logger.warning(f"[time-signal-permanent] hour={h} generazione fallita: {e}")
+        return {"ok": False, "reason": f"error:{str(e)[:160]}"}
 
 
 @api_router.post("/admin/time-signal/generate-permanent")
@@ -6353,82 +6496,71 @@ async def admin_generate_permanent_time_signals(
     force: bool = False,
     voice_key: str = "nova",
     dj_id: Optional[str] = None,
+    hours: Optional[str] = None,
+    dry_run: bool = False,
+    allow_local_only: bool = False,
 ):
-    """v13.42 · Fix ticket #247410: genera UNA TANTUM i 24 segnali orari (uno
-    per ogni ora del giorno, testo FISSO e deterministico — niente LLM,
-    niente battuta casuale) e li salva in modo permanente in
-    `time_signal_permanent` (chiave = ora 0-23). Da qui in avanti
-    `_resolve_current_hour_time_signal` li riusa ogni giorno senza più
-    generare nulla: zero consumi ricorrenti di Universal Key, e non serve
-    più tenere acceso l'interruttore "task in background" per questo scopo.
+    """Genera i segnali orari permanenti (testo FISSO, niente LLM) in `time_signal_permanent` (chiave = ora 0-23).
 
-    `force=True` rigenera tutte e 24 le ore (es. dopo un cambio voce/testo);
-    altrimenti salta le ore che hanno già un annuncio permanente.
-    """
+    Selezione: `hours` ("0-7", "0,1,9", "0-3,9"; default tutte). Senza `force` un'ora GIÀ BUONA (mp3 /api/tts/, valido,
+    presente nello storage, non validated=False) non viene toccata; con `force=true` le ore selezionate vengono rigenerate
+    comunque. `dry_run=true` elenca cosa verrebbe rigenerato senza chiamare il TTS.
+
+    Ogni ora: sintesi (SOLO mp3, mai Bark/wav; funziona anche con ai_openai_talk OFF: è un click esplicito, il gate resta
+    sul parlato live) -> validazione -> upload su Object Storage (errore se fallisce; se lo storage è spento serve
+    `allow_local_only=true`) -> re-fetch -> validazione dei bytes ri-scaricati. `validated=True` solo se tutto passa. Un
+    tentativo fallito non modifica MAI il documento esistente né sovrascrive il suo file."""
+    try:
+        wanted = _parse_hours_spec(hours)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"hours non valido: {e}")
     dj_name = None
     if dj_id:
         dj_doc = await db.djs.find_one({"id": dj_id}, {"_id": 0, "voice_key": 1, "name": 1})
         if dj_doc:
             voice_key = dj_doc.get("voice_key") or voice_key
             dj_name = dj_doc.get("name")
-    # v13.47 · Click esplicito dell'admin: gira anche con il kill-switch OFF (nessun
-    # LLM, testo fisso; il kill-switch governa solo la generazione AUTOMATICA).
-    # Ogni file viene VALIDATO prima di salvarlo come permanente.
     generated, skipped, failed, results = [], [], [], []
-    for h in range(24):
+    for h in wanted:
         if not force:
-            existing = await db.time_signal_permanent.find_one({"_id": h}, {"_id": 1, "validated": 1})
-            if existing and existing.get("validated") is not False:
+            st = await _ts_hour_status(await db.time_signal_permanent.find_one({"_id": h}))
+            if st["ok"]:
                 skipped.append(h)
                 results.append({"hour": h, "status": "skipped_existing"})
                 continue
+            prior = st["reason"]
+        else:
+            prior = "forced"
+        if dry_run:
+            results.append({"hour": h, "status": "would_regenerate", "because": prior})
+            continue
         text = f"Sono le {h:02d}:00 su R-A.I. Radio!"
-        try:
-            fn, subpath = await synth_speech(text, voice_key, kind="time_signal", dj_id=dj_id)
-            err = None if fn else "tts_returned_nothing"
-        except Exception as e:
-            logger.warning(f"[time-signal-permanent] hour={h} synth failed: {e}")
-            fn, subpath, err = None, None, f"tts_error: {str(e)[:160]}"
-        if not fn:
+        r = await _generate_time_signal_hour(h, text, voice_key, dj_id, allow_local_only)
+        if not r["ok"]:
+            logger.error(f"[time-signal-permanent] hour={h} NON rigenerata ({r['reason']}) → documento esistente invariato")
             failed.append(h)
-            results.append({"hour": h, "status": "failed", "reason": err})
+            results.append({"hour": h, "status": "failed", **{k: v for k, v in r.items() if k != "ok"}})
             continue
-        url = f"/api/{subpath}/{fn}"
-        v = await _validate_audio_url(url)
-        if not v["ok"]:
-            logger.error(f"[time-signal-permanent] hour={h} audio NON valido ({v['reason']}, {v['bytes']} bytes) → non salvato")
-            failed.append(h)
-            results.append({"hour": h, "status": "failed", "reason": f"audio_invalid:{v['reason']}", "bytes": v["bytes"],
-                            "duration_sec": v["duration_sec"], "max_volume_db": v["max_volume_db"]})
-            continue
+        v = r["v"]
         await db.time_signal_permanent.update_one(
             {"_id": h},
             {"$set": {
-                "hour": h,
-                "script": text,
-                "speech_audio_url": url,
-                "voice_key": voice_key,
-                "dj_id": dj_id,
-                "dj_name": dj_name,
-                "created_at": now_iso(),
-                "validated": True,
-                "validated_at": now_iso(),
-                "bytes": v["bytes"],
-                "duration_sec": v["duration_sec"],
+                "hour": h, "script": text, "speech_audio_url": r["url"], "voice_key": voice_key,
+                "dj_id": dj_id, "dj_name": dj_name, "created_at": now_iso(),
+                "validated": True, "validated_at": now_iso(), "storage_verified": r["storage_verified"],
+                "provider": r["provider"], "bytes": v["bytes"], "duration_sec": v["duration_sec"],
                 "max_volume_db": v["max_volume_db"],
             }, "$unset": {"validation_reason": ""}},
             upsert=True,
         )
+        for k in [k for k in _ts_reach_cache if k[0] == h]:
+            _ts_reach_cache.pop(k, None)
         generated.append(h)
-        results.append({"hour": h, "status": "generated", "bytes": v["bytes"], "duration_sec": v["duration_sec"],
-                        "max_volume_db": v["max_volume_db"]})
-    return {
-        "ok": not failed,
-        "generated": generated,
-        "skipped_existing": skipped,
-        "failed": failed,
-        "results": results,
-    }
+        results.append({"hour": h, "status": "generated", "url": r["url"], "bytes": v["bytes"],
+                        "duration_sec": v["duration_sec"], "max_volume_db": v["max_volume_db"],
+                        "storage_verified": r["storage_verified"], "was": prior})
+    return {"ok": not failed, "dry_run": dry_run, "generated": generated, "skipped_existing": skipped,
+            "failed": failed, "results": results}
 
 
 async def _timeline_pick_due() -> Optional[dict]:
@@ -6501,10 +6633,10 @@ async def _timeline_pick_due() -> Optional[dict]:
                 _rd = await _probe_tts_duration(_live_au)
                 if _rd:
                     doc["duration_sec"] = round(_rd, 3)  # v13.40 · padding via _pad_short (era int(round)+1)
-        elif (doc.get("audio_url") or "").startswith("time_signal:"):
-            doc["audio_url"] = None
         else:
-            logger.warning(f"[time-signal] uso audio_url congelato come fallback per {doc.get('id')}")
+            # Mai l'audio_url congelato: potrebbe essere il file di un'altra ora. Nessun audio → evento saltato.
+            doc["audio_url"] = None
+            logger.error(f"[time-signal] {doc.get('id')}: nessun audio valido per l'ora corrente → evento saltato")
     # Costruisce l'entry compatibile con la queue del clock
     entry = {
         "id": doc.get("id") or f"tl-{uuid.uuid4().hex[:10]}",

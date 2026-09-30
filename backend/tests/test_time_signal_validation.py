@@ -1,8 +1,6 @@
 """Time-signal audio validation (mocked TTS/LLM, real ffmpeg/ffprobe).
 
-- explicit "Generate 24" runs with the kill-switch OFF, makes zero LLM calls, and
-  saves only files that are non-empty, have a duration and are not silent
-- failures (TTS error, empty/garbage/silent file) are never saved and are reported per hour
+- (generation itself is covered by test_time_signal_generation.py)
 - the resolver serves validated (or legacy, unflagged) files, refuses validated=False,
   never reads the kill-switch, and logs an ERROR when it has nothing to serve
 - /admin/time-signal/verify is read-only and lists bad hours
@@ -60,32 +58,6 @@ def _no_llm(monkeypatch):
     return calls
 
 
-def test_generate_with_switch_off_saves_only_validated_files(monkeypatch):
-    llm = _no_llm(monkeypatch)
-    plan = {h: "tone" for h in range(24)}
-    plan.update({3: "empty", 5: "silence", 7: "garbage", 9: None})   # 9: TTS returns nothing
-    plan[11] = "raise"
-    files = {h: (_make(f"h{h}", k) if k not in (None, "raise") else None) for h, k in plan.items()}
-
-    async def fake_synth(text, voice_key, kind="", strict_voice=False, dj_id=None):
-        h = int(text.split()[2][:2])
-        if plan[h] == "raise":
-            raise RuntimeError("elevenlabs down")
-        return (files[h], "tts") if files[h] else (None, None)
-    monkeypatch.setattr(server, "synth_speech", fake_synth)
-
-    res = _loop.run_until_complete(server.admin_generate_permanent_time_signals(force=True))
-    assert llm == []
-    assert res["ok"] is False and sorted(res["failed"]) == [3, 5, 7, 9, 11]
-    reasons = {r["hour"]: r["reason"] for r in res["results"] if r["status"] == "failed"}
-    assert reasons[3] == "audio_invalid:empty_file" and reasons[5] == "audio_invalid:silent"
-    assert reasons[7] == "audio_invalid:no_duration" and reasons[9] == "tts_returned_nothing" and reasons[11].startswith("tts_error")
-    saved = _loop.run_until_complete(server.db.time_signal_permanent.find({}).to_list(50))
-    assert sorted(d["_id"] for d in saved) == [h for h in range(24) if h not in (3, 5, 7, 9, 11)]
-    for d in saved:
-        assert d["validated"] is True and d["bytes"] > 0 and d["duration_sec"] > 0 and d["max_volume_db"] > -50
-
-
 def test_resolver_serves_validated_and_legacy_never_reads_switch_and_is_loud(monkeypatch, caplog):
     llm = _no_llm(monkeypatch)
 
@@ -95,14 +67,15 @@ def test_resolver_serves_validated_and_legacy_never_reads_switch_and_is_loud(mon
     from zoneinfo import ZoneInfo
     h = datetime.now(ZoneInfo("Europe/Rome")).hour
     perm = server.db.time_signal_permanent
+    ok_name = _make("resolver_ok", "tone")                      # the served file must actually be reachable
 
     def resolve():
         return _loop.run_until_complete(server._resolve_current_hour_time_signal())
 
-    _loop.run_until_complete(perm.insert_one({"_id": h, "speech_audio_url": "/api/tts/ok.mp3", "validated": True}))
-    assert resolve() == "/api/tts/ok.mp3"
+    _loop.run_until_complete(perm.insert_one({"_id": h, "speech_audio_url": f"/api/tts/{ok_name}", "validated": True}))
+    assert resolve() == f"/api/tts/{ok_name}"
     _loop.run_until_complete(perm.update_one({"_id": h}, {"$unset": {"validated": ""}}))
-    assert resolve() == "/api/tts/ok.mp3"                       # legacy file (no flag): still served
+    assert resolve() == f"/api/tts/{ok_name}"                       # legacy file (no flag): still served
     _loop.run_until_complete(perm.update_one({"_id": h}, {"$set": {"validated": False, "validation_reason": "silent"}}))
     with caplog.at_level(logging.ERROR):
         assert resolve() is None

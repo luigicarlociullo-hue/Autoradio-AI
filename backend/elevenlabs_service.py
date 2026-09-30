@@ -88,12 +88,13 @@ async def _talk_switch_on() -> bool:
         return True
 
 
-async def _synth_openai(text: str, voice_key: str) -> bytes | None:
-    """OpenAI TTS-1-HD via Emergent gateway (fallback). Ritorna bytes mp3 o None."""
+async def _synth_openai(text: str, voice_key: str, ignore_talk_switch: bool = False) -> bytes | None:
+    """OpenAI TTS-1-HD via Emergent gateway (fallback). Ritorna bytes mp3 o None.
+    `ignore_talk_switch` è riservato a `synth_bytes` (generazione admin esplicita di asset permanenti)."""
     if not OPENAI_API_KEY or not OPENAI_BASE_URL:
         return None
     # v13.7 · Gate AI Master Control: OPENAI TALK OFF → non chiamare l'API
-    if not await _talk_switch_on():
+    if not ignore_talk_switch and not await _talk_switch_on():
         logger.info("[TTS] OpenAI TALK bloccato: AI OPENAI TALK OFF")
         return None
     voice = VOICE_KEY_TO_OPENAI.get(voice_key, "nova")
@@ -226,6 +227,23 @@ async def _synth_elevenlabs(text: str, voice_key: str, kind: str = "", dj_id: st
     except Exception as e:
         logger.warning(f"ElevenLabs error: {e}")
         return None
+
+
+async def synth_bytes(text: str, voice_key: str, kind: str = "", dj_id: str | None = None) -> tuple:
+    """(mp3 bytes, provider) oppure (None, None). NIENTE cache, NIENTE scrittura su disco, NIENTE lettura del
+    kill-switch `ai_openai_talk`: serve alla generazione ESPLICITA dell'admin di asset permanenti (segnali orari),
+    che deve funzionare anche con l'interruttore OFF. Il parlato live continua a passare da `synth_speech` (gated).
+    Mai Bark: solo ElevenLabs/OpenAI, quindi sempre mp3."""
+    text = (text or "").strip()
+    if not text:
+        return None, None
+    audio = await _synth_elevenlabs(text, voice_key, kind=kind, dj_id=dj_id)
+    if audio:
+        return audio, "elevenlabs"
+    audio = await _synth_openai(text, voice_key, ignore_talk_switch=True)
+    if audio:
+        return audio, "openai-tts-1-hd"
+    return None, None
 
 
 async def synth_speech(text: str, voice_key: str = "female-1", kind: str = "", dj_id: str | None = None) -> str | None:
