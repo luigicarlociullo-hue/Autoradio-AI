@@ -7866,6 +7866,92 @@ def _clock_entry_end(cur: Optional[dict]) -> Optional[datetime]:
     return started + timedelta(seconds=dur)
 
 
+# v13.46 · PLAY LOG — una riga per promozione in `station_play_log`, per poter
+# ricostruire cosa è andato davvero in onda (tracks.last_played_at conserva solo
+# l'ultima riproduzione). Fire-and-forget: un errore qui non tocca mai il clock.
+import collections as _collections
+_PLAY_LOG_TTL_SEC = 14 * 24 * 3600
+_play_log_tasks: set = set()
+_first_offset_seen = _collections.OrderedDict()
+_SHORT_ITEM_LOG_SEC = 40
+
+
+def _play_log_kind(e: dict) -> str:
+    if e.get("kind"):
+        return str(e["kind"])
+    if e.get("is_timeline"):
+        return f"timeline:{e.get('timeline_kind') or '?'}"
+    if e.get("is_dj_jingle"):
+        return "jingle"
+    if e.get("is_fx"):
+        return "fx"
+    if e.get("is_follow_up"):
+        return "follow_up"
+    if e.get("is_power_play"):
+        return "power_play"
+    return "music"
+
+
+def _spawn_logged(coro) -> None:
+    t = asyncio.create_task(coro)
+    _play_log_tasks.add(t)
+    t.add_done_callback(_play_log_tasks.discard)
+
+
+def _play_log(clock: dict, reason: Optional[str], promoted: int) -> None:
+    """Accoda (senza attendere) l'inserimento del log della promozione appena scritta."""
+    try:
+        cur = clock.get("current") or {}
+        now = datetime.now(timezone.utc)
+        try:
+            lag = (now - datetime.fromisoformat(cur["started_at"].replace("Z", "+00:00"))).total_seconds()
+        except Exception:
+            lag = None
+        _spawn_logged(_play_log_write({
+            "seq": int(clock.get("seq") or 0), "ver": clock.get("ver"), "pod": POD_ID,
+            "id": cur.get("id"), "title": cur.get("title"), "artist": cur.get("artist"),
+            "kind": _play_log_kind(cur), "reason": reason, "skipped_before": max(0, promoted - 1),
+            "started_at": cur.get("started_at"), "promote_lag_sec": lag,
+            "declared_duration": cur.get("duration_sec"), "real_duration": cur.get("real_duration_sec"),
+            "is_follow_up": bool(cur.get("is_follow_up")),
+            "queue_ids": [t.get("id") for t in (clock.get("queue") or [])[:8]],
+            "logged_at": now,   # datetime: richiesto dall'indice TTL
+        }))
+    except Exception as e:
+        logger.debug(f"[play-log] skip: {e}")
+
+
+async def _play_log_write(doc: dict) -> None:
+    try:
+        await db.station_play_log.insert_one(doc)
+    except Exception as e:
+        logger.warning(f"[play-log] insert failed: {e}")
+
+
+def _play_log_first_offset(cur: dict, seq: int, offset: float) -> None:
+    """Item corti: registra l'offset servito da /stream/now alla PRIMA richiesta
+    dopo la promozione (dice se l'intro viene già "mangiata" lato server)."""
+    try:
+        dur = float(cur.get("duration_sec") or 0)
+        if dur <= 0 or dur >= _SHORT_ITEM_LOG_SEC or seq in _first_offset_seen:
+            return
+        _first_offset_seen[seq] = 1
+        while len(_first_offset_seen) > 200:
+            _first_offset_seen.popitem(last=False)
+
+        async def _w():
+            try:
+                await db.station_play_log.update_one(
+                    {"seq": seq, "first_offset_sec": {"$exists": False}},
+                    {"$set": {"first_offset_sec": round(offset, 3),
+                              "first_offset_at": datetime.now(timezone.utc).isoformat()}})
+            except Exception as e:
+                logger.debug(f"[play-log] first_offset skip: {e}")
+        _spawn_logged(_w())
+    except Exception:
+        pass
+
+
 async def _clock_advance(force: bool = False) -> dict:
     """Fa avanzare il clock se il brano corrente è scaduto (o se `force`).
     Ripopola `queue` fino a `_CLOCK_QUEUE_LOOKAHEAD`. Restituisce il clock aggiornato.
@@ -7939,25 +8025,35 @@ async def _clock_promote(force: bool = False) -> dict:
     _seen_q = {t.get("id") for t in (clock.get("queue") or [])}
     _popped = set()
 
+    _promo_forced = bool(force)
+    _promoted = 0        # promozioni in questa chiamata (>1 = il pod aveva dormito)
+    _last_reason = None
     while force or _is_expired(clock.get("current")):
         force = False
         # v13.17 · Timeline priority — check eventi maturi PRIMA di pescare
         # dalla queue standard. Soft-sync: entriamo qui solo quando il brano
         # corrente è già terminato naturalmente (via _is_expired basato su
         # duration_sec). Zero troncamenti.
+        _forced_now = _promo_forced
+        _promo_forced = False
+        _reason = "timeline"
         promo = await _timeline_pick_due()
         # Se nessun evento timeline dovuto, procedi con queue standard
         if not promo:
             q = clock.get("queue") or []
             promo = q.pop(0) if q else None
+            _reason = "queue"
             if promo:
                 _popped.add(promo.get("id"))
         else:
             q = clock.get("queue") or []
         if not promo:
+            _reason = "pick"
             promo = await _clock_pick_track(
                 exclude_ids={(clock.get("current") or {}).get("id")} | {t.get("id") for t in q}
             )
+        if _forced_now and promo:
+            _reason += "+skip"   # promozione forzata da /admin/stream/skip
         if not promo:
             break
         promo = dict(promo)
@@ -7997,6 +8093,8 @@ async def _clock_promote(force: bool = False) -> dict:
             q = fu_entries + (q or [])
         clock["current"] = promo
         clock["queue"] = q
+        _promoted += 1
+        _last_reason = _reason
         # v13.40 · Numero progressivo del `current`: diventa
         # #EXT-X-MEDIA-SEQUENCE della playlist HLS (prima fisso a 0).
         clock["seq"] = int(clock.get("seq") or 0) + 1
@@ -8018,6 +8116,7 @@ async def _clock_promote(force: bool = False) -> dict:
         for _attempt in range(4):
             if await _clock_cas(clock, {"current": clock.get("current"), "queue": clock.get("queue") or [],
                                         "seq": int(clock.get("seq") or 0), "updated_at": clock["updated_at"]}):
+                _play_log(clock, _last_reason, _promoted)
                 break
             fresh = await db.station_clock.find_one({"_id": "clock"}) or {}
             fq = fresh.get("queue") or []
@@ -8231,6 +8330,8 @@ async def stream_now():
     Il client hls.js/radioEngine usa questo valore per crossfade intelligente."""
     clock = await _clock_advance()   # self-heal se il pod ha dormito
     offset, cur = _clock_now_offset(clock)
+    if cur:
+        _play_log_first_offset(cur, int(clock.get("seq") or 0), offset)
     next_list = (clock.get("queue") or [])[:5]
     # BPM crossfade suggestion
     next_xfade_ms = None
@@ -10021,6 +10122,17 @@ async def _power_play_maybe_pick() -> Optional[dict]:
     return tr
 
 
+@api_router.get("/admin/play-log")
+async def admin_play_log(limit: int = 200, since_seq: int = 0):
+    """Ultime promozioni del clock (più recenti prima). Solo admin (gate /api/admin)."""
+    limit = max(1, min(1000, limit))
+    rows = await db.station_play_log.find({"seq": {"$gt": since_seq}}, {"_id": 0}).sort("seq", -1).limit(limit).to_list(limit)
+    for r in rows:
+        if isinstance(r.get("logged_at"), datetime):
+            r["logged_at"] = r["logged_at"].isoformat()
+    return {"count": len(rows), "rows": rows}
+
+
 @api_router.get("/stream/queue")
 async def stream_queue_preview():
     """Coda elastica preview: espone al frontend cosa suonerà PROSSIMAMENTE
@@ -10098,6 +10210,11 @@ async def on_startup():
         await _clock_promote()   # crea il doc station_clock se manca (CAS-safe anche con più pod)
     except Exception as e:
         logger.warning(f"[startup] clock init skipped: {e}")
+    try:   # v13.46 · play log: TTL 14 giorni + lookup per seq (idempotente)
+        await db.station_play_log.create_index("logged_at", expireAfterSeconds=_PLAY_LOG_TTL_SEC)
+        await db.station_play_log.create_index("seq")
+    except Exception as e:
+        logger.warning(f"[startup] play-log index skipped: {e}")
     _STARTUP_READY = True
     # v13.13 · FM_MODE PERSISTENTE — se l'admin lo accende, resta acceso
     # anche dopo restart/chiusura app finché non lo spegne manualmente.
