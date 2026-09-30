@@ -8154,6 +8154,21 @@ async def _clock_promote(force: bool = False) -> dict:
                 logger.warning(f"[clock] release claim failed (scade da solo in {_CLOCK_CLAIM_TTL_SEC}s): {e}")
 
 
+async def _timeline_give_back(ids: list) -> None:
+    """Promozione scartata: gli eventi Timeline che avevamo già marcato `consumed` tornano `pending` (sarebbero persi),
+    e i cloni di ricorrenza ancora pending creati dal pick vengono rimossi (li ricrea il prossimo pick)."""
+    ids = [i for i in ids if i]
+    if not ids:
+        return
+    try:
+        await db.timeline_events.delete_many({"parent_id": {"$in": ids}, "status": "pending"})
+        r = await db.timeline_events.update_many({"id": {"$in": ids}, "status": "consumed"},
+                                                 {"$set": {"status": "pending"}, "$unset": {"consumed_at": ""}})
+        logger.warning(f"[clock] {r.modified_count} eventi Timeline restituiti a pending: {ids}")
+    except Exception as e:
+        logger.error(f"[clock] give-back Timeline fallito per {ids}: {e}")
+
+
 async def _clock_promote_inner(force: bool, state: dict) -> dict:
     now = datetime.now(timezone.utc)
     clock = await db.station_clock.find_one({"_id": "clock"})
@@ -8209,6 +8224,8 @@ async def _clock_promote_inner(force: bool, state: dict) -> dict:
     _seen_q = {t.get("id") for t in (clock.get("queue") or [])}
     _popped = set()
 
+    _base_seq = int(clock.get("seq") or 0)   # seq al momento del claim: se cambia, un altro pod ha promosso
+    _tl_consumed = []                        # id eventi Timeline consumati da questa chiamata (da restituire se abortiamo)
     _promo_forced = bool(force)
     _promoted = 0        # promozioni in questa chiamata (>1 = il pod aveva dormito)
     _last_reason = None
@@ -8241,6 +8258,8 @@ async def _clock_promote_inner(force: bool, state: dict) -> dict:
         if not promo:
             break
         promo = dict(promo)
+        if _reason.startswith("timeline"):
+            _tl_consumed.append(promo.get("id"))
         # v13.40 · Start concatenato: il nuovo elemento parte alla fine teorica
         # del precedente, non all'istante del tick (fino a 2s di buco prima).
         prev_end = _clock_entry_end(clock.get("current"))
@@ -8305,6 +8324,13 @@ async def _clock_promote_inner(force: bool, state: dict) -> dict:
                 _play_log(clock, _last_reason, _promoted)
                 break
             fresh = await db.station_clock.find_one({"_id": "clock"}) or {}
+            # Claim perso (scaduto mentre eravamo fermi) o seq cambiato: un altro pod ha promosso al posto nostro.
+            # Riscrivere sopra di lui darebbe due promozioni con lo stesso seq. Abortisci e restituisci l'evento.
+            if fresh.get("claim_by") != state["token"] or int(fresh.get("seq") or 0) != _base_seq:
+                logger.error(f"[clock] promote ABORT: claim/seq cambiati durante la promozione "
+                             f"(claim_by={fresh.get('claim_by')!r} seq={fresh.get('seq')} base_seq={_base_seq}) — scarto la mia promozione")
+                await _timeline_give_back(_tl_consumed)
+                return fresh or clock
             fq = fresh.get("queue") or []
             ours = {t.get("id") for t in (clock.get("queue") or [])}
             known = _seen_q | _popped | ours
@@ -8319,6 +8345,7 @@ async def _clock_promote_inner(force: bool, state: dict) -> dict:
             logger.info(f"[clock] promote CAS conflict → rebase (attempt {_attempt + 1}, +{len(lead)}/{len(post)} nuovi)")
         else:
             logger.error("[clock] promote CAS fallito dopo 4 tentativi — promozione scartata")
+            await _timeline_give_back(_tl_consumed)
             return await db.station_clock.find_one({"_id": "clock"}) or clock
     return clock
 
