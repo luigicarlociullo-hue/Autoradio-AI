@@ -6,6 +6,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo.errors import DuplicateKeyError
 import os
 import re
+import subprocess
 import shutil
 import logging
 import asyncio
@@ -10385,6 +10386,26 @@ async def stream_queue_preview():
 _STARTUP_READY = False
 
 
+def _resolve_build_sha() -> str:
+    """Short git SHA of the running build: `git rev-parse --short HEAD`, else backend/BUILD_SHA, else 'unknown'."""
+    try:
+        r = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=str(Path(__file__).parent), capture_output=True, text=True, timeout=3)
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.strip()
+    except Exception:
+        pass
+    try:
+        v = (Path(__file__).parent / "BUILD_SHA").read_text().strip()
+        if v:
+            return v.split()[0][:12]
+    except Exception:
+        pass
+    return "unknown"
+
+
+BUILD_SHA = _resolve_build_sha()
+
+
 @app.get("/health")
 @api_router.get("/health")
 async def health():
@@ -10398,7 +10419,7 @@ async def health():
         return JSONResponse({"ok": False, "reason": f"mongo: {e}"}, status_code=503)
     if not clk:
         return JSONResponse({"ok": False, "reason": "station_clock assente"}, status_code=503)
-    return {"ok": True, "pod": POD_ID}
+    return {"ok": True, "pod": POD_ID, "sha": BUILD_SHA}
 
 
 @app.on_event("startup")
