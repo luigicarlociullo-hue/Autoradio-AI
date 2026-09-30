@@ -7636,6 +7636,14 @@ async def _clock_pick_track(exclude_ids: Optional[set] = None) -> Optional[dict]
     coda contemporaneamente (last_played_at si aggiorna solo alla
     promozione a current, quindi da solo non basta a deduplicare)."""
     _excl = {i for i in (exclude_ids or set()) if i}
+    # v13.47 · il Power Play di oggi suona SOLO dal suo slot (con il gap minimo):
+    # dal pool normale rientrava a caso, aggiungendosi alle ripetizioni.
+    try:
+        _pp_today = await _power_play_get_today()
+        if _pp_today and _pp_today.get("track_id"):
+            _excl.add(_pp_today["track_id"])
+    except Exception:
+        pass
     _not_queued = {"id": {"$nin": list(_excl)}} if _excl else {}
     # v13.7 · Human Priority: se ON, community tracks in cima
     try:
@@ -8205,6 +8213,7 @@ async def _clock_refill_queue():
         counter = int(clock.get("music_counter") or 0)
         jingle_counter = int(clock.get("jingle_counter") or 0)
         fx_counter = int(clock.get("fx_counter") or 0)
+        pp_since = int(clock.get("pp_since") or 0)   # brani musicali dall'ultimo Power Play
         picks = []
         while queue_len + len(picks) < _CLOCK_QUEUE_LOOKAHEAD:
             # Decidi se inserire un jingle DJ o un brano musicale
@@ -8236,7 +8245,7 @@ async def _clock_refill_queue():
                 # v13.30 · POWER PLAY (Disco del Giorno): prima di pescare un brano
                 # dalla libreria, controlla se il rotation counter dice "tocca al PP".
                 # Se sì e il PP è pronto, servilo; altrimenti music normale.
-                picked = await _power_play_maybe_pick()
+                picked = await _power_play_maybe_pick(pp_since=pp_since)
                 if not picked:
                     picked = await _clock_pick_track(exclude_ids=_queued_ids)
                 # incrementa counter musicale solo quando aggiungiamo musica reale
@@ -8244,6 +8253,7 @@ async def _clock_refill_queue():
                     counter += 1
                     jingle_counter += 1
                     fx_counter += 1
+                    pp_since += 1
             if not picked:
                 break
             if dj_slot_filled:
@@ -8276,6 +8286,8 @@ async def _clock_refill_queue():
                         picked = alt; found_alt = True; break
                 if not found_alt:
                     break
+            if picked.get("is_power_play"):
+                pp_since = 0   # solo se il PP è davvero in coda (il dedupe sopra può averlo sostituito)
             picks.append(picked)
             _queued_ids.add(picked.get("id"))
 
@@ -8289,7 +8301,7 @@ async def _clock_refill_queue():
             ok = await _clock_cas(
                 clock,
                 {"queue": list(clock.get("queue") or []) + picks, "music_counter": counter,
-                 "jingle_counter": jingle_counter, "fx_counter": fx_counter,
+                 "jingle_counter": jingle_counter, "fx_counter": fx_counter, "pp_since": pp_since,
                  "updated_at": datetime.now(timezone.utc).isoformat()},
                 upsert=not clock,
             )
@@ -10073,7 +10085,21 @@ async def admin_power_play_today():
         "power_play": pp,
         "track": track,
         "rotation_every": _POWER_PLAY_ROTATION,
+        "min_gap_songs": await _power_play_min_gap(),
     }
+
+
+@api_router.patch("/admin/power-play/config")
+async def admin_power_play_config(payload: dict):
+    """Brani minimi tra due riproduzioni del Power Play. Body: {"min_gap_songs": N}.
+    Il minimo effettivo non scende mai sotto `rotation_every`."""
+    try:
+        n = int(payload.get("min_gap_songs"))
+    except Exception:
+        raise HTTPException(400, "min_gap_songs intero richiesto")
+    n = max(_POWER_PLAY_ROTATION, min(50, n))
+    await db.station.update_one({"_id": "state"}, {"$set": {"pp_min_gap_songs": n}}, upsert=True)
+    return {"ok": True, "min_gap_songs": n}
 
 
 @api_router.post("/admin/power-play/regenerate")
@@ -10104,30 +10130,34 @@ async def admin_power_play_regenerate():
     return {"ok": True, "vetoed_count": veto_count, "power_play": new_doc}
 
 
-async def _power_play_maybe_pick() -> Optional[dict]:
-    """Se il rotation counter dice "tocca al Power Play", ritorna il PP di
-    oggi (già scaricato/pronto). Altrimenti None. Incrementa il contatore
-    solo se il PP è effettivamente pronto (`ready`), altrimenti passa e
-    riprova al prossimo giro (evita "buchi" in coda quando Suno sta ancora
-    generando)."""
-    st = await db.station.find_one({"_id": "state"}, {"pp_counter": 1}) or {}
-    counter = int(st.get("pp_counter") or 0)
-    if counter <= 0:
-        # Non è il momento: incrementa e passa
-        await db.station.update_one({"_id": "state"}, {"$set": {"pp_counter": counter + 1}}, upsert=True)
+_POWER_PLAY_DEFAULT_MIN_GAP = 6   # brani minimi tra due riproduzioni dello stesso Power Play
+
+
+async def _power_play_min_gap() -> int:
+    """Brani minimi tra due Power Play: `station.state.pp_min_gap_songs` (default 6),
+    mai sotto l'alternanza storica `_POWER_PLAY_ROTATION`, max 50."""
+    st = await db.station.find_one({"_id": "state"}, {"pp_min_gap_songs": 1}) or {}
+    try:
+        cfg = int(st.get("pp_min_gap_songs") or _POWER_PLAY_DEFAULT_MIN_GAP)
+    except Exception:
+        cfg = _POWER_PLAY_DEFAULT_MIN_GAP
+    return max(_POWER_PLAY_ROTATION, min(50, cfg))
+
+
+async def _power_play_maybe_pick(pp_since: int = 0) -> Optional[dict]:
+    """Ritorna il Power Play di oggi se sono passati almeno `min_gap` brani dal
+    precedente (`pp_since` = brani musicali accodati dall'ultimo Power Play), se
+    è pronto; altrimenti None.
+
+    v13.47 · `pp_since` vive nel documento del clock e viene scritto con la
+    stessa CAS di coda e contatori (prima era `station.pp_counter`, fuori CAS:
+    un refill scartato lo faceva avanzare comunque). Il chiamante lo azzera
+    solo se il Power Play è davvero finito in coda (il dedupe può sostituirlo)."""
+    if pp_since < await _power_play_min_gap():
         return None
-    if counter < _POWER_PLAY_ROTATION:
-        await db.station.update_one({"_id": "state"}, {"$set": {"pp_counter": counter + 1}}, upsert=True)
-        return None
-    # Turno PP: reset counter e prova a servire
     pp = await _power_play_get_today()
-    tr = await _power_play_resolve_track(pp)
-    if not tr:
-        # PP non pronto (Suno in generazione o libreria vuota): NON resettare,
-        # riprova al giro successivo — così l'alternanza resta fedele.
-        return None
-    await db.station.update_one({"_id": "state"}, {"$set": {"pp_counter": 0}}, upsert=True)
-    return tr
+    # PP non pronto (Suno in generazione o libreria vuota) → None, riprova al giro dopo.
+    return await _power_play_resolve_track(pp)
 
 
 @api_router.get("/admin/play-log")
