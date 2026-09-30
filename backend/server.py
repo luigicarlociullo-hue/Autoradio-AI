@@ -5,6 +5,8 @@ from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo.errors import DuplicateKeyError
 import os
+import re
+import shutil
 import logging
 import asyncio
 import random
@@ -6210,21 +6212,139 @@ async def _resolve_current_hour_time_signal() -> Optional[str]:
     — vedi /admin/time-signal/generate-permanent) e, se presente, la usa e
     NON rigenera mai — zero consumi ricorrenti di Universal Key. Solo se
     assente ripiega sulla vecchia cache per data+ora (compatibilità finché
-    l'utente non genera i 24 permanenti)."""
+    l'utente non genera i 24 permanenti).
+
+    v13.47 · Non legge MAI il kill-switch (riprodurre un file esistente costa
+    zero). Un permanente con `validated=False` (audio vuoto/muto/illeggibile)
+    NON viene servito; uno senza il campo (generato prima della validazione)
+    viene servito ma segnalato: usa /admin/time-signal/verify per controllarlo.
+    Se non c'è nulla da servire, log ERROR esplicito con ora e motivo."""
     try:
         from zoneinfo import ZoneInfo
         _it_now = datetime.now(ZoneInfo("Europe/Rome"))
     except Exception:
         _it_now = datetime.now(timezone.utc)
+    reason = "nessun permanente per quest'ora"
     _permanent_ts = await db.time_signal_permanent.find_one({"_id": _it_now.hour})
     if _permanent_ts and _permanent_ts.get("speech_audio_url"):
-        return _permanent_ts["speech_audio_url"]
+        if _permanent_ts.get("validated") is False:
+            reason = f"permanente non valido ({_permanent_ts.get('validation_reason')})"
+        else:
+            if "validated" not in _permanent_ts:
+                logger.warning(f"[time-signal] ora {_it_now.hour}: permanente NON validato (creato prima del controllo audio) "
+                               f"— servito comunque; verifica con GET /api/admin/time-signal/verify")
+            return _permanent_ts["speech_audio_url"]
     _hour_key = _it_now.strftime("%Y-%m-%d %H")
     _fresh_ts = await db.time_signal_cache.find_one({"_id": _hour_key})
     if _fresh_ts and _fresh_ts.get("speech_audio_url"):
         return _fresh_ts["speech_audio_url"]
-    logger.warning(f"[time-signal] cache miss per hour_key={_hour_key}")
+    logger.error(f"[time-signal] NESSUN AUDIO per ora Rome {_it_now.hour:02d} (hour_key={_hour_key}): {reason}; "
+                 f"nessuna cache. Il segnale orario andrà in onda MUTO o verrà saltato.")
     return None
+
+
+# v13.47 · VALIDAZIONE AUDIO — un segnale orario "permanente" non deve mai essere
+# un file vuoto, illeggibile o muto (prima si salvava qualunque cosa tornasse dal TTS).
+_TS_SILENCE_MAX_DB = -50.0   # picco sotto questa soglia = muto
+
+
+async def _run_capture(*cmd: str, timeout: float = 30.0) -> tuple:
+    proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    try:
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        raise
+    return proc.returncode, out.decode(errors="ignore"), err.decode(errors="ignore")
+
+
+async def _validate_audio_file(path: str) -> dict:
+    """{ok, reason, bytes, duration_sec, max_volume_db}: bytes>0, durata ffprobe>0,
+    picco (ffmpeg volumedetect) sopra _TS_SILENCE_MAX_DB."""
+    info = {"ok": False, "reason": None, "bytes": 0, "duration_sec": 0.0, "max_volume_db": None}
+    try:
+        info["bytes"] = os.path.getsize(path)
+    except OSError:
+        info["reason"] = "file_missing"
+        return info
+    if info["bytes"] <= 0:
+        info["reason"] = "empty_file"
+        return info
+    if not shutil.which("ffprobe") or not shutil.which("ffmpeg"):
+        info["reason"] = "ffmpeg_unavailable"
+        return info
+    try:
+        rc, out, _ = await _run_capture("ffprobe", "-v", "error", "-show_entries", "format=duration",
+                                        "-of", "default=nw=1:nk=1", path)
+        dur = float(out.strip()) if rc == 0 and out.strip() else 0.0
+    except Exception:
+        dur = 0.0
+    info["duration_sec"] = round(dur, 3)
+    if dur <= 0:
+        info["reason"] = "no_duration"
+        return info
+    try:
+        _, _, err = await _run_capture("ffmpeg", "-hide_banner", "-nostats", "-i", path, "-af", "volumedetect", "-f", "null", "-")
+    except Exception:
+        info["reason"] = "volumedetect_failed"
+        return info
+    m = re.search(r"max_volume:\s*(-?inf|-?[0-9.]+)\s*dB", err)
+    if not m:
+        info["reason"] = "volumedetect_failed"
+        return info
+    mv = float("-inf") if "inf" in m.group(1) else float(m.group(1))
+    info["max_volume_db"] = None if mv == float("-inf") else mv
+    if mv < _TS_SILENCE_MAX_DB:
+        info["reason"] = "silent"
+        return info
+    info["ok"] = True
+    return info
+
+
+async def _validate_audio_url(url: str) -> dict:
+    """Valida un audio dato il suo URL /api/...: file locale, altrimenti copia da Object Storage."""
+    import tempfile
+    p = _resolve_local_path_from_url(url)
+    if p and p.exists():
+        return await _validate_audio_file(str(p))
+    key = None
+    for prefix, sub in (("/api/tts/", "tts"), ("/api/suno_audio/", "suno"), ("/api/community_audio/", "community")):
+        if url.startswith(prefix):
+            key = f"{sub}/{url[len(prefix):].split('?')[0]}"
+    data = await object_storage.get_bytes(key) if key else None
+    if not data:
+        return {"ok": False, "reason": "file_missing", "bytes": 0, "duration_sec": 0.0, "max_volume_db": None}
+    fd, tmp = tempfile.mkstemp(prefix="tsval_", suffix=".mp3")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        return await _validate_audio_file(tmp)
+    finally:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+
+
+@api_router.get("/admin/time-signal/verify")
+async def admin_verify_permanent_time_signals():
+    """SOLA LETTURA · ricontrolla i 24 segnali orari permanenti esistenti
+    (byte, durata ffprobe, muto?) e elenca le ore da rigenerare. Non scrive nulla."""
+    hours, bad = [], []
+    for h in range(24):
+        doc = await db.time_signal_permanent.find_one({"_id": h}, {"_id": 0})
+        if not doc or not doc.get("speech_audio_url"):
+            hours.append({"hour": h, "status": "missing"})
+            bad.append(h)
+            continue
+        v = await _validate_audio_url(doc["speech_audio_url"])
+        row = {"hour": h, "status": "ok" if v["ok"] else "bad", "reason": v["reason"], "url": doc["speech_audio_url"],
+               "bytes": v["bytes"], "duration_sec": v["duration_sec"], "max_volume_db": v["max_volume_db"],
+               "stored_validated": doc.get("validated")}
+        hours.append(row)
+        if not v["ok"]:
+            bad.append(h)
+    return {"ok": not bad, "bad_hours": bad, "checked": 24, "hours": hours}
 
 
 @api_router.post("/admin/time-signal/generate-permanent")
@@ -6250,41 +6370,63 @@ async def admin_generate_permanent_time_signals(
         if dj_doc:
             voice_key = dj_doc.get("voice_key") or voice_key
             dj_name = dj_doc.get("name")
-    generated, skipped, failed = [], [], []
+    # v13.47 · Click esplicito dell'admin: gira anche con il kill-switch OFF (nessun
+    # LLM, testo fisso; il kill-switch governa solo la generazione AUTOMATICA).
+    # Ogni file viene VALIDATO prima di salvarlo come permanente.
+    generated, skipped, failed, results = [], [], [], []
     for h in range(24):
         if not force:
-            existing = await db.time_signal_permanent.find_one({"_id": h}, {"_id": 1})
-            if existing:
+            existing = await db.time_signal_permanent.find_one({"_id": h}, {"_id": 1, "validated": 1})
+            if existing and existing.get("validated") is not False:
                 skipped.append(h)
+                results.append({"hour": h, "status": "skipped_existing"})
                 continue
         text = f"Sono le {h:02d}:00 su R-A.I. Radio!"
         try:
             fn, subpath = await synth_speech(text, voice_key, kind="time_signal", dj_id=dj_id)
+            err = None if fn else "tts_returned_nothing"
         except Exception as e:
             logger.warning(f"[time-signal-permanent] hour={h} synth failed: {e}")
-            fn = None
+            fn, subpath, err = None, None, f"tts_error: {str(e)[:160]}"
         if not fn:
             failed.append(h)
+            results.append({"hour": h, "status": "failed", "reason": err})
+            continue
+        url = f"/api/{subpath}/{fn}"
+        v = await _validate_audio_url(url)
+        if not v["ok"]:
+            logger.error(f"[time-signal-permanent] hour={h} audio NON valido ({v['reason']}, {v['bytes']} bytes) → non salvato")
+            failed.append(h)
+            results.append({"hour": h, "status": "failed", "reason": f"audio_invalid:{v['reason']}", "bytes": v["bytes"],
+                            "duration_sec": v["duration_sec"], "max_volume_db": v["max_volume_db"]})
             continue
         await db.time_signal_permanent.update_one(
             {"_id": h},
             {"$set": {
                 "hour": h,
                 "script": text,
-                "speech_audio_url": f"/api/{subpath}/{fn}",
+                "speech_audio_url": url,
                 "voice_key": voice_key,
                 "dj_id": dj_id,
                 "dj_name": dj_name,
                 "created_at": now_iso(),
-            }},
+                "validated": True,
+                "validated_at": now_iso(),
+                "bytes": v["bytes"],
+                "duration_sec": v["duration_sec"],
+                "max_volume_db": v["max_volume_db"],
+            }, "$unset": {"validation_reason": ""}},
             upsert=True,
         )
         generated.append(h)
+        results.append({"hour": h, "status": "generated", "bytes": v["bytes"], "duration_sec": v["duration_sec"],
+                        "max_volume_db": v["max_volume_db"]})
     return {
-        "ok": True,
+        "ok": not failed,
         "generated": generated,
         "skipped_existing": skipped,
         "failed": failed,
+        "results": results,
     }
 
 
