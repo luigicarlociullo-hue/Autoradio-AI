@@ -37,6 +37,12 @@ def _make(name, kind):
 
 
 @pytest.fixture(autouse=True)
+def _storage_off(monkeypatch):
+    """Independent of backend/.env: no Object Storage (and no network) unless a test installs its own fake."""
+    monkeypatch.setattr(server.object_storage, "is_enabled", lambda: False)
+
+
+@pytest.fixture(autouse=True)
 def _clean():
     async def wipe():
         await server.db.client.drop_database("cadence_sim")
@@ -106,3 +112,22 @@ def test_verify_lists_bad_hours_and_writes_nothing():
     assert by[0]["status"] == "ok" and by[0]["duration_sec"] > 0
     assert by[1]["reason"] == "silent" and by[2]["reason"] == "empty_file" and by[3]["reason"] == "file_missing"
     assert by[4]["status"] == "missing"
+
+
+def test_verify_flags_local_only_file_missing_from_object_storage(monkeypatch):
+    """With storage on, a file that exists only on this pod's disk is NOT good: other pods cannot serve it."""
+    local_only, stored = _make("v_local_only", "tone"), _make("v_stored", "tone")
+    objs = {f"tts/{stored}": (TTS_DIR / stored).read_bytes()}
+
+    async def get_bytes(key):
+        return objs.get(key)
+    monkeypatch.setattr(server.object_storage, "is_enabled", lambda: True)
+    monkeypatch.setattr(server.object_storage, "get_bytes", get_bytes)
+    _loop.run_until_complete(server.db.time_signal_permanent.insert_many([
+        {"_id": 0, "speech_audio_url": f"/api/tts/{stored}", "validated": True},
+        {"_id": 1, "speech_audio_url": f"/api/tts/{local_only}", "validated": True},
+        {"_id": 2, "speech_audio_url": "/api/audio/abc.wav", "validated": True}]))
+    by = {r["hour"]: r for r in _loop.run_until_complete(server.admin_verify_permanent_time_signals())["hours"]}
+    assert by[0]["status"] == "ok"
+    assert by[1]["status"] == "bad" and by[1]["reason"] == "not_in_object_storage"
+    assert by[2]["status"] == "bad" and by[2]["reason"] == "not_tts_mp3"
