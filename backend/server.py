@@ -8155,6 +8155,14 @@ async def _clock_refill_queue():
                 # dedup anti-ripetizione), il turno DJ sarebbe rimasto "dovuto"
                 # per sempre riempiendo l'intera coda di sola voce, zero musica.
                 counter = 0
+                if picked.get("is_dj_jingle"):
+                    # v13.46 · Nessuna voce pronta → il turno DJ è stato coperto da un
+                    # JINGLE di ripiego. Conta anche come jingle (e come stacco per gli
+                    # FX): senza reset, con dj=1 e jingle=1 il ciclo dopo aggiungeva un
+                    # secondo jingle di cadenza → brano, jingle, jingle, brano.
+                    # Invariante: al massimo un jingle tra due brani consecutivi.
+                    jingle_counter = 0
+                    fx_counter = 0
             if jingle_slot_filled:
                 jingle_counter = 0
             if fx_slot_filled:
