@@ -746,3 +746,4 @@ Vedi turni precedenti in questa sessione:
 - Mobile: order LedWall (piena larghezza, 390px) → player → info → chat. LiveBrainTicker e CueThinking non renderizzati (`{false && …}`, codice intatto); nessun testo tecnico nella hero (verificato regex).
 - `displayCurrent = effectiveCurrent || timelineNow` per mostrare il brano sul clock anche in standby. Nuovi stati `streamNext`, `lastDjLine`.
 - Verifica Playwright desktop 1920 + mobile 390: layout, ordine, assenza testo tecnico, 0 errori JS. Nessun'altra pagina toccata.
+- v13.46 · Live Brain (componente `LiveBrain`, terminale operazioni AI) reinserito in home in sezione dedicata `home-live-brain` tra hero e "Le Stelle di Neuroni"; props `current={effectiveCurrent}` `segments={segments}`. LiveBrainTicker/CueThinking restano nascosti nel player. Nessun componente eliminato.

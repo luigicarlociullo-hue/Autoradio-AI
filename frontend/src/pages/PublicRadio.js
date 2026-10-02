@@ -868,6 +868,11 @@ export default function PublicRadio() {
 
       </section>
 
+      {/* ================ LIVE BRAIN — terminale operazioni AI, prima delle Stelle (v13.46) ================ */}
+      <section className="max-w-7xl mx-auto px-3 sm:px-4 pt-3 pb-1 relative z-10" data-testid="home-live-brain">
+        <LiveBrain current={effectiveCurrent} segments={segments} />
+      </section>
+
       {/* ================ LE STELLE DI NEURONI — barretta spie tra hero e team (v13.5) ================ */}
       <div data-testid="radioscope-section" className="relative z-10">
         <RadioscopoWidget />
