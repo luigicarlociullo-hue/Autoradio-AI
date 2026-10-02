@@ -239,7 +239,10 @@ function detectMode(current, isPlaying) {
   const kind = (current?.kind || "").toLowerCase();
   if (kind === "music") return "music";
   if (["talk","answer","news","joke","weather","horoscope","interview","motivation","community","history"].includes(kind)) return "talk";
-  if (kind === "time_signal" || kind === "time" || kind === "jingle") return "clock";
+  // Ticket #247410: gli eventi Timeline "Ora Esatta" reali in produzione
+  // hanno kind="ora_esatta" (italiano) dal backend, non "time_signal" —
+  // senza questo branch non raggiungevano mai la modalita' orologio.
+  if (kind === "time_signal" || kind === "time" || kind === "jingle" || kind === "ora_esatta") return "clock";
   return isPlaying ? "music" : "standby";
 }
 
@@ -308,6 +311,10 @@ export default function LedWall({
   }, []);
   // Override della prop `isPlaying` col segnale del Sync Live
   const effectivePlaying = isPlaying || syncPlaying;
+  // Ticket #247410: l'overlay DOM del logo (sotto, z-20) copre il canvas e
+  // quindi anche l'orologio atomico disegnato li' dentro durante time_signal
+  // /jingle. Stessa detezione del draw loop, va nascosto in questi casi.
+  const isClockMode = detectMode(current, effectivePlaying) === "clock";
 
   useEffect(() => {
     let alive = true;
@@ -449,7 +456,12 @@ export default function LedWall({
       }
 
       // === v13.40 · EFFETTI VISIVI SELEZIONABILI (sostituiscono il canvas Auto) ===
-      const fxMode = effectRef.current;
+      // Ticket #247410: quando sta per andare in onda un time_signal/jingle
+      // (target === "clock"), l'effetto scelto dall'utente (default "logo")
+      // va in return prima di raggiungere il blocco ATOMIC CLOCK qui sotto,
+      // cosi' l'orologio non appare mai tranne che con effect="auto". Forza
+      // il comportamento "auto" ogni volta che serve mostrare l'orologio.
+      const fxMode = (target === "clock") ? "auto" : effectRef.current;
       if (fxMode && fxMode !== "auto") {
         if (bgRef.current) bgRef.current.style.opacity = "0.10";
         const t = performance.now() / 1000;
@@ -833,7 +845,7 @@ export default function LedWall({
       />
       {/* L1 · canvas grafica generata */}
       <canvas ref={canvasRef} className="relative block w-full h-full" />
-      {effect === "logo" && (
+      {effect === "logo" && !isClockMode && (
         <div
           aria-hidden
           data-testid="ledwall-orb-overlay"

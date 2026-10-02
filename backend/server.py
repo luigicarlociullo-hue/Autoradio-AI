@@ -1617,6 +1617,10 @@ async def admin_tracks_upload(
                 "is_spot": kind == "spot",
                 "is_billboard": is_billboard,
                 "is_fx": kind == "fx",
+                # Ticket #247410: loop/fx non vanno MAI nella rotazione automatica
+                # (motivo per cui esiste questo campo) — prima non veniva mai
+                # impostato all'upload, quindi restava True di default.
+                "include_in_rotation": kind not in ("loop", "fx"),
                 "tags": merged_tags,
                 "updated_at": now,
                 **({"bpm": detected_bpm, "bpm_source": "server"} if detected_bpm else {}),
@@ -1656,6 +1660,8 @@ async def admin_tracks_upload(
             is_loop=(kind == "loop"),
             is_spot=(kind == "spot"),
             is_fx=(kind == "fx"),
+            # Ticket #247410: default automatico coerente col path "replace" sopra.
+            include_in_rotation=(kind not in ("loop", "fx")),
             is_pending_approval=pending,
             submitted_by=(submitted_by or None),
             loop_bind_speaker=(loop_bind_speaker or None) if kind == "loop" else None,
@@ -5905,6 +5911,14 @@ async def hls_live_playlist(request: Request):
 
     clock = await _clock_advance()   # self-heal
     offset, cur = _clock_now_offset(clock)
+    # Ticket #247410: short items (jingle/time_signal, duration < _SHORT_ITEM_LOG_SEC)
+    # have no legitimate need for live mid-join sync — the unconditional live-elapsed
+    # offset was serving clients straight into the middle (station_play_log showed
+    # first_offset_sec up to ~23s on items this short), eating the intro for everyone.
+    # Long tracks keep the live offset so simultaneous listeners stay in sync.
+    _cur_dur = float(cur.get("duration_sec") or 0)
+    if _cur_dur and _cur_dur < _SHORT_ITEM_LOG_SEC:
+        offset = 0.0
     proto = request.headers.get("x-forwarded-proto", "https")
     host = request.headers.get("x-forwarded-host") or request.headers.get("host") or ""
     base_url = f"{proto}://{host}"
@@ -7975,6 +7989,13 @@ async def _clock_pick_track(exclude_ids: Optional[set] = None) -> Optional[dict]
         "$and": [
             {"$or": [{"is_anthem": {"$exists": False}}, {"is_anthem": False}]},
             {"$or": [{"is_jingle": {"$exists": False}}, {"is_jingle": False}]},
+            # Ticket #247410: "Prova Loop" (un sottofondo caricato come kind=loop)
+            # finiva in rotazione come un brano normale — nessun filtro qui lo
+            # escludeva. Stesso discorso per fx/spot: non sono musica di rotazione.
+            {"$or": [{"is_loop": {"$exists": False}}, {"is_loop": False}]},
+            {"$or": [{"is_fx": {"$exists": False}}, {"is_fx": False}]},
+            {"$or": [{"is_spot": {"$exists": False}}, {"is_spot": False}]},
+            {"$or": [{"include_in_rotation": {"$exists": False}}, {"include_in_rotation": {"$ne": False}}]},
             dp, _window, _window_end, _slot_q,
         ],
         **_not_queued,
@@ -7990,7 +8011,16 @@ async def _clock_pick_track(exclude_ids: Optional[set] = None) -> Optional[dict]
     if not tr:
         tr_pool = await db.tracks.find(
             {"status": "ready", "audio_url": {"$ne": None}, "on_air": {"$ne": False}, "deleted_at": None,
-             "duration_sec": {"$gt": 0}, **_not_queued, "$and": [_slot_q]},
+             "duration_sec": {"$gt": 0}, **_not_queued,
+             # Ticket #247410: il fallback "non lasciare mai la rotazione vuota"
+             # non escludeva loop/fx/spot — stesso buco della query principale.
+             "$and": [
+                 _slot_q,
+                 {"$or": [{"is_loop": {"$exists": False}}, {"is_loop": False}]},
+                 {"$or": [{"is_fx": {"$exists": False}}, {"is_fx": False}]},
+                 {"$or": [{"is_spot": {"$exists": False}}, {"is_spot": False}]},
+                 {"$or": [{"include_in_rotation": {"$exists": False}}, {"include_in_rotation": {"$ne": False}}]},
+             ]},
             {"_id": 0, "id": 1, "title": 1, "artist": 1, "audio_url": 1, "duration_sec": 1, "real_duration_sec": 1, "bpm": 1},
         ).sort([("last_played_at", 1)]).limit(_pool_size).to_list(length=_pool_size)
         tr = random.choice(tr_pool) if tr_pool else None
@@ -8555,21 +8585,36 @@ async def _clock_refill_queue():
         while queue_len + len(picks) < _CLOCK_QUEUE_LOOKAHEAD:
             # Decidi se inserire un jingle DJ o un brano musicale
             need_dj = (counter > 0 and counter % _dj_every_n == 0) and _speaker_on
-            need_jingle = (jingle_counter > 0 and jingle_counter % _jingle_every_n == 0) and not need_dj
-            need_fx = (_fx_every_n > 0 and fx_counter > 0 and fx_counter % _fx_every_n == 0) and not need_dj and not need_jingle
             picked = None
             dj_slot_filled = False
             jingle_slot_filled = False
             fx_slot_filled = False
             if need_dj:
-                # v13.18 · prova prima un vero segmento parlato pronto, poi ne
-                # genera uno al volo se la coda è vuota, e solo come ultima
-                # risorsa ripiega sul jingle preregistrato dalla libreria tracce.
+                # v13.18 · prova un vero segmento parlato pronto.
+                # Ticket #247410: il fallback "nessuna voce pronta → ripiega su
+                # un jingle della libreria" faceva si' che con dj_talk_every_n=1
+                # (voce ogni 1 brano) e zero voci AI generate (toggle spenti per
+                # risparmio), OGNI singolo turno DJ diventasse un jingle di
+                # ripiego — azzerando ogni volta anche jingle_counter (v13.46),
+                # cosi' jingle_every_n_songs non riusciva MAI a scattare da solo:
+                # il turno DJ, molto piu' frequente, lo soffocava sempre prima.
+                # Ora un turno DJ senza voce pronta viene saltato (nessun jingle
+                # di ripiego): se non c'e' voce non c'e' "DJ turn", punto — la
+                # cadenza jingle configurata dall'utente torna libera di agire
+                # secondo il proprio ritmo, invece di essere sempre scavalcata.
                 picked = await _clock_pick_dj_voice_segment()
-                if not picked:
-                    picked = await _clock_pick_dj_jingle(exclude_ids=_queued_ids)
                 if picked:
                     dj_slot_filled = True
+            # Ticket #247410 (parte 2): need_jingle/need_fx devono dipendere
+            # dall'ESITO reale del turno DJ (dj_slot_filled), non dal solo
+            # "era dovuto" (need_dj) — con dj_talk_every_n=1, need_dj e' quasi
+            # sempre vero, quindi condizionare su need_dj bloccava per sempre
+            # jingle_every_n_songs anche quando il turno DJ non produceva nulla
+            # (fix precedente). Ora la cadenza jingle agisce quando il turno DJ
+            # non ha davvero occupato lo slot, a prescindere da quanto spesso
+            # "sarebbe dovuto" scattare.
+            need_jingle = (jingle_counter > 0 and jingle_counter % _jingle_every_n == 0) and not dj_slot_filled
+            need_fx = (_fx_every_n > 0 and fx_counter > 0 and fx_counter % _fx_every_n == 0) and not dj_slot_filled and not need_jingle
             if not picked and need_jingle:
                 picked = await _clock_pick_dj_jingle(exclude_ids=_queued_ids)
                 if picked:
@@ -8625,6 +8670,15 @@ async def _clock_refill_queue():
                     break
             if picked.get("is_power_play"):
                 pp_since = 0   # solo se il PP è davvero in coda (il dedupe sopra può averlo sostituito)
+            # Ticket #247410 follow-up: verify jingle_every_n_songs actually drives
+            # live picks (previously a dead setting, fixed in v13.41) before telling
+            # the customer the cadence issue is resolved. Remove once confirmed.
+            logger.info(
+                "[clock-cadence] kind=%s id=%s jingle_counter=%s jingle_every_n=%s "
+                "dj_counter=%s dj_every_n=%s fx_counter=%s fx_every_n=%s",
+                "dj" if dj_slot_filled else "jingle" if jingle_slot_filled else "fx" if fx_slot_filled else "music",
+                picked.get("id"), jingle_counter, _jingle_every_n, counter, _dj_every_n, fx_counter, _fx_every_n,
+            )
             picks.append(picked)
             _queued_ids.add(picked.get("id"))
 
@@ -10361,6 +10415,15 @@ async def _power_play_generate(source_hint: str = "auto") -> Optional[dict]:
          "$and": [
              {"$or": [{"is_anthem": {"$exists": False}}, {"is_anthem": False}]},
              {"$or": [{"is_jingle": {"$exists": False}}, {"is_jingle": False}]},
+             # Ticket #247410: stessa falla della rotazione normale (_clock_pick_track)
+             # — niente qui escludeva loop/fx/spot, cosi' un file FX di prova ("fx one",
+             # 7s) e' finito scelto come Power Play (Disco del Giorno) del giorno.
+             {"$or": [{"is_loop": {"$exists": False}}, {"is_loop": False}]},
+             {"$or": [{"is_fx": {"$exists": False}}, {"is_fx": False}]},
+             {"$or": [{"is_spot": {"$exists": False}}, {"is_spot": False}]},
+             {"$or": [{"include_in_rotation": {"$exists": False}}, {"include_in_rotation": {"$ne": False}}]},
+             # Durata minima ragionevole per un Power Play (evita file di test da pochi secondi).
+             {"$or": [{"duration_sec": {"$exists": False}}, {"duration_sec": {"$gte": 60}}]},
          ]},
         {"_id": 0, "id": 1, "title": 1, "artist": 1},
         sort=[("last_played_at", 1)],

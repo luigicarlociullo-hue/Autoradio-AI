@@ -2230,6 +2230,11 @@ function SyncToProductionButton() {
 function RotationRulesPanel() {
   const [j, setJ] = useState(2);
   const [d, setD] = useState(4);
+  // Ticket #247410: fx_every_n_songs esisteva gia' lato backend (rotazione
+  // FX automatica) ma non era esposto da nessuna parte in Regia — l'utente
+  // non aveva alcun modo di attivarla, quindi restava sempre 0 (disattivata)
+  // a prescindere da quanti file FX caricasse. "FX mai udibile" spiegato.
+  const [fx, setFx] = useState(0);
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
 
@@ -2238,6 +2243,7 @@ function RotationRulesPanel() {
       .then(r => {
         setJ(r.data?.jingle_every_n_songs ?? 2);
         setD(r.data?.dj_talk_every_n_songs ?? 4);
+        setFx(r.data?.fx_every_n_songs ?? 0);
         setLoaded(true);
       });
   }, []);
@@ -2248,10 +2254,11 @@ function RotationRulesPanel() {
       const fd = new FormData();
       fd.append("jingle_every_n_songs", String(j));
       fd.append("dj_talk_every_n_songs", String(d));
+      fd.append("fx_every_n_songs", String(fx));
       const backend = process.env.REACT_APP_BACKEND_URL;
       const r = await fetch(`${backend}/api/admin/rotation-rules`, { method: "POST", body: fd });
       if (!r.ok) throw new Error((await r.json().catch(()=>({}))).detail || r.statusText);
-      toast.success(`Regole salvate: jingle ogni ${j}, DJ ogni ${d}`);
+      toast.success(`Regole salvate: jingle ogni ${j}, DJ ogni ${d}${fx > 0 ? `, FX ogni ${fx}` : ""}`);
     } catch (e) {
       toast.error(`Errore: ${e.message}`);
     } finally {
@@ -2270,7 +2277,7 @@ function RotationRulesPanel() {
           Il palinsesto rispetta queste due regole in tempo reale. Il time signal all'ora piena è sempre incluso.
         </p>
       </div>
-      <div className="grid sm:grid-cols-2 gap-4">
+      <div className="grid sm:grid-cols-3 gap-4">
         <div className="p-4 rounded bg-white/[0.03] border border-white/5">
           <label className="label-mono block mb-2">Jingle ogni <span className="text-pink-300">N</span> brani</label>
           <input
@@ -2292,6 +2299,19 @@ function RotationRulesPanel() {
             className="w-full bg-zinc-900 border border-white/10 rounded px-3 py-2 text-2xl font-mono text-cyan-300 text-center"
           />
           <div className="text-xs text-zinc-500 mt-1">Attuale: 1 rubrica DJ (Leo/Aria/Max) ogni {d} brani musicali</div>
+        </div>
+        <div className="p-4 rounded bg-white/[0.03] border border-white/5">
+          <label className="label-mono block mb-2">FX ogni <span className="text-amber-300">Z</span> brani (0 = disattivato)</label>
+          <input
+            data-testid="rule-fx-n"
+            type="number" min={0} max={20}
+            value={fx}
+            onChange={(e) => setFx(Math.max(0, Number(e.target.value) || 0))}
+            className="w-full bg-zinc-900 border border-white/10 rounded px-3 py-2 text-2xl font-mono text-amber-300 text-center"
+          />
+          <div className="text-xs text-zinc-500 mt-1">
+            {fx > 0 ? `Attuale: 1 FX dalla libreria ogni ${fx} brani musicali` : "Nessun FX in rotazione automatica — carica FX in libreria e imposta un valore > 0"}
+          </div>
         </div>
       </div>
       <div className="mt-4">
