@@ -180,6 +180,8 @@ export default function PublicRadio() {
   // stato separato legge /api/stream/now così un evento Timeline in onda
   // (es. kind="time_signal") può comunque raggiungere il titolo e il LedWall.
   const [timelineNow, setTimelineNow] = useState(null);
+  const [streamNext, setStreamNext] = useState(null);   // v13.45 · prossimo brano da /api/stream/now
+  const [lastDjLine, setLastDjLine] = useState("");     // v13.45 · ultimo parlato DJ visto
   const [isPlaying, setIsPlaying] = useState(false);
   const [isPreparing, setIsPreparing] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -344,6 +346,7 @@ export default function PublicRadio() {
         const d = await r.json();
         if (!mountedRef.current) return;
         setTimelineNow(d?.current || null);
+        setStreamNext(Array.isArray(d?.next) ? (d.next[0] || null) : (d?.next || null));
       } catch (e) { /* silent */ }
     };
     pollTimelineNow();
@@ -609,6 +612,9 @@ export default function PublicRadio() {
   // realmente trasmesso. Il loop segments/generate resta invariato per il
   // resto (musica/talk generati on-demand) quando nessun evento è attivo.
   const effectiveCurrent = (timelineNow && timelineNow.is_timeline) ? timelineNow : current;
+  const displayCurrent = effectiveCurrent || timelineNow;  // v13.45 · in standby mostra comunque il brano in onda sul clock
+  const _djScript = effectiveCurrent?.spoken_text || effectiveCurrent?.script || "";
+  useEffect(() => { if (_djScript && _djScript.trim()) setLastDjLine(_djScript.trim()); }, [_djScript]);
 
   return (
     <div className="relative min-h-screen text-white">
@@ -699,21 +705,72 @@ export default function PublicRadio() {
         </div>
       </header>
 
-      {/* ================ HERO — Cruscotto 3-col (Above the Fold) ================ */}
-      <section className="max-w-7xl mx-auto px-4 pt-2 pb-0 relative z-10">
-        <div className="grid lg:grid-cols-12 gap-3 items-start">
-          {/* Colonna SX (5/12): LEDWALL Visualizzatore.
-              order-2 su mobile (ticket 239289): sotto lg questo blocco
-              decorativo (hero + team) precedeva sempre la colonna Play,
-              spingendo il controllo di riproduzione fuori dal primo
-              schermo. Su mobile va dopo Now Playing; da lg torna 1o. */}
-          <div className="lg:col-span-5 relative order-2 lg:order-1 lg:self-stretch flex flex-col">
-            <div className="absolute -top-2 right-3 z-20">
-              <VuMeter />
+      {/* ================ HERO — Stazione broadcast 3-col (v13.45) ================
+          Desktop: SX player + brano in onda · CENTRO LedWall dominante · DX info essenziali.
+          Mobile: LedWall a piena larghezza per primo, poi player, poi info, poi chat. */}
+      <section className="max-w-7xl mx-auto px-3 sm:px-4 pt-2 pb-0 relative z-10" data-testid="home-hero">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 lg:gap-4 items-stretch">
+
+          {/* ── SX (3/12): PLAYER + BRANO IN ONDA ── */}
+          <div className="order-2 lg:order-1 lg:col-span-3 console-panel p-4 flex flex-col min-w-0" data-testid="home-player-col">
+            <CornerAccents />
+            <div className="flex items-center justify-between gap-2">
+              {onAir ? (
+                <span className="on-air-badge !py-0.5 !px-2 !text-[10px]"><span className="dot" /> ON AIR</span>
+              ) : (
+                <span className="standby-badge !py-0.5 !px-2 !text-[10px]"><span className="dot" /> STANDBY</span>
+              )}
+              {displayCurrent?.kind && <KindBadge kind={displayCurrent.kind} />}
             </div>
-            {/* v13.40 · Effetto visivo LedWall selezionabile */}
+
+            {/* Copertina (se disponibile) oppure avatar R-AI */}
+            <div className="mt-4 flex items-center gap-3">
+              {displayCurrent?.image_url ? (
+                <img src={displayCurrent.image_url} alt="" className="w-20 h-20 rounded-lg object-cover shrink-0"
+                  style={{ boxShadow: "0 0 18px rgba(0,229,255,0.35)" }} data-testid="now-playing-cover" />
+              ) : (
+                <BigCue
+                  size={80}
+                  mode={(function () {
+                    const k = (effectiveCurrent?.kind || "").toLowerCase();
+                    if (!isPlaying && !isPreparing) return "idle";
+                    if (isPreparing) return "thinking";
+                    if (["talk","joke","weather","horoscope","interview","motivation","history","news","answer","community"].includes(k)) return "speaking";
+                    if (k === "music") return "happy";
+                    if (k === "time_signal") return "alert";
+                    if (k === "jingle") return "listen";
+                    return "idle";
+                  })()}
+                />
+              )}
+              <div className="min-w-0 flex-1" data-testid="now-playing-title">
+                <div className="text-[9px] font-mono uppercase tracking-[0.3em] text-cyan-400/80">In onda</div>
+                <div className="font-display text-xl sm:text-2xl font-black text-white leading-tight line-clamp-2" data-testid="current-title">
+                  {displayCurrent?.title || "R-A.I. Radio"}
+                </div>
+                <div className="text-sm text-zinc-300 truncate mt-0.5" data-testid="current-artist">
+                  {displayCurrent?.artist || displayCurrent?.dj_name || "La radio che pensa da sola"}
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-3"><Waveform active={isPlaying} /></div>
+
+            <div className="mt-4">
+              <SyncLivePlayer />
+            </div>
+
+            {/* elementi tecnici nascosti dalla home (restano nel codice) */}
+            {false && <LiveBrainTicker current={effectiveCurrent} />}
+            {false && <CueThinking current={effectiveCurrent} />}
+          </div>
+
+          {/* ── CENTRO (6/12): LEDWALL dominante · su mobile per primo, piena larghezza ── */}
+          <div className="order-1 lg:order-2 lg:col-span-6 relative flex flex-col min-w-0 -mx-3 sm:mx-0" data-testid="home-ledwall-col"
+            style={{ minHeight: "min(62vw, 560px)" }}>
+            <div className="absolute -top-2 right-3 z-20 hidden sm:block"><VuMeter /></div>
             <div className="absolute top-2 left-3 z-20 flex items-center gap-1.5" data-testid="ledwall-effect-control">
-              <label className="text-[9px] font-mono uppercase tracking-widest text-cyan-300/80" htmlFor="ledwall-effect-select">Effetto visivo</label>
+              <label className="sr-only" htmlFor="ledwall-effect-select">Effetto visivo</label>
               <select
                 id="ledwall-effect-select"
                 value={ledEffect}
@@ -738,83 +795,41 @@ export default function PublicRadio() {
               fillHeight
               effect={ledEffect}
             />
-            </div>
-
-          {/* Colonna CENTRALE (4/12): Now Playing + ON AIR + controlli.
-              order-1 su mobile: il Play deve essere il primo blocco
-              visibile, non il secondo (ticket 239289). */}
-          <div className="lg:col-span-4 console-panel p-4 md:p-5 flex flex-col order-1 lg:order-2">
-            <CornerAccents />
-            <span className="module-tag">MOD · A · NOW PLAYING</span>
-
-            <div className="flex items-center gap-2 mt-3 mb-2 flex-wrap">
-              {onAir ? (
-                <span className="on-air-badge !py-0.5 !px-2 !text-[10px]"><span className="dot" /> ON AIR</span>
-              ) : (
-                <span className="standby-badge !py-0.5 !px-2 !text-[10px]"><span className="dot" /> STANDBY</span>
-              )}
-              {effectiveCurrent && <KindBadge kind={effectiveCurrent.kind} />}
-              {effectiveCurrent?.llm_provider && (
-                <span className="chip" data-testid="current-llm-provider">
-                  <Cpu className="w-3 h-3" /> {effectiveCurrent.llm_provider}
-                </span>
-              )}
-              {effectiveCurrent?.dj_name && (
-                <span className="chip" style={{ color: "var(--console-cyan)" }}>
-                  <Mic className="w-3 h-3" /> {effectiveCurrent.dj_name}
-                </span>
-              )}
-            </div>
-
-            <div className="min-h-[2.5rem] flex items-center gap-3" data-testid="now-playing-title">
-              <BigCue
-                size={64}
-                mode={(function () {
-                  const k = (effectiveCurrent?.kind || "").toLowerCase();
-                  if (!isPlaying && !isPreparing) return "idle";
-                  if (isPreparing) return "thinking";
-                  if (["talk","joke","weather","horoscope","interview","motivation","history","news","answer","community"].includes(k)) return "speaking";
-                  if (k === "music") return "happy";
-                  if (k === "time_signal") return "alert";
-                  if (k === "jingle") return "listen";
-                  return "idle";
-                })()}
-              />
-              <LiveBrainTicker current={effectiveCurrent} />
-            </div>
-            <CueThinking current={effectiveCurrent} />
-            {effectiveCurrent && (
-              <div
-                className="font-display text-lg sm:text-xl font-bold text-glow-cyan mt-2 truncate"
-                data-testid="current-title"
-              >
-                {effectiveCurrent.title}
-              </div>
-            )}
-            {effectiveCurrent?.script && (
-              <p className="mt-2 text-zinc-400 leading-relaxed line-clamp-2 font-mono text-xs" data-testid="current-script">
-                {effectiveCurrent.script}
-              </p>
-            )}
-            <div className="mt-2">
-              <Waveform active={isPlaying} />
-            </div>
-
-            {/* v13.15 · BROADCASTER PREDEFINITO — SyncLive HLS alimentato dal
-                station_clock server-side. Sincronizzato per tutti gli ascoltatori. */}
-            <div className="mt-4">
-              <SyncLivePlayer />
-            </div>
-            <div className="mt-3 grid grid-cols-3 gap-2">
-              <MiniDisplay icon={Users}    label="LIVE"    value={station.listeners || 0} />
-              <MiniDisplay icon={Waves}    label="SEGS"    value={station.total_segments || 0} />
-              <MiniDisplay icon={Mic}      label="DJ"      value={djs.length} />
-            </div>
           </div>
 
-          {/* Colonna DX (3/12): CHAT NEURALE integrata */}
-          <div className="lg:col-span-3 flex flex-col order-3 lg:order-3" style={{ maxHeight: 400 }}>
-            <ChatMini heightClass="h-full" />
+          {/* ── DX (3/12): INFO ESSENZIALI + chat ── */}
+          <div className="order-3 lg:order-3 lg:col-span-3 flex flex-col gap-3 min-w-0" data-testid="home-info-col">
+            <div className="console-panel p-4 flex flex-col gap-4">
+              <CornerAccents />
+              <div data-testid="home-next-track">
+                <div className="text-[9px] font-mono uppercase tracking-[0.3em] text-zinc-500">A seguire</div>
+                <div className="font-display font-bold text-white text-base leading-tight mt-1 line-clamp-2">
+                  {streamNext?.title || "In preparazione…"}
+                </div>
+                {streamNext?.artist && <div className="text-xs text-zinc-400 truncate">{streamNext.artist}</div>}
+              </div>
+              <div data-testid="home-regia-status">
+                <div className="text-[9px] font-mono uppercase tracking-[0.3em] text-zinc-500">Regia</div>
+                <div className="flex items-center gap-2 mt-1 flex-wrap">
+                  <span className="font-display font-bold text-white text-base">
+                    {broadcastMode === "live_external" ? "Diretta manuale" : onAir ? "Automazione AI attiva" : "In attesa del Play"}
+                  </span>
+                  <span className="w-2 h-2 rounded-full" style={{ background: onAir ? "#FF6B1A" : "#00BFFF", boxShadow: `0 0 10px ${onAir ? "#FF6B1A" : "#00BFFF"}` }} />
+                </div>
+                <div className="text-xs text-zinc-400 mt-0.5">
+                  {effectiveCurrent?.dj_name ? `Al microfono: ${effectiveCurrent.dj_name}` : `${djs.length} speaker in studio`} · {station.listeners || 0} in ascolto
+                </div>
+              </div>
+              <div data-testid="home-last-dj-message">
+                <div className="text-[9px] font-mono uppercase tracking-[0.3em] text-zinc-500">Ultimo messaggio del DJ</div>
+                <p className="text-sm text-zinc-200 leading-relaxed mt-1 line-clamp-4 italic">
+                  {lastDjLine ? `“${lastDjLine}”` : "I DJ stanno per prendere la parola…"}
+                </p>
+              </div>
+            </div>
+            <div className="flex flex-col flex-1 min-h-[220px] lg:min-h-0" style={{ maxHeight: 360 }} data-testid="home-chat-col">
+              <ChatMini heightClass="h-full" />
+            </div>
           </div>
         </div>
 

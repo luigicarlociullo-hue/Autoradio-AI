@@ -740,3 +740,9 @@ Vedi turni precedenti in questa sessione:
 - **Upload libero**: kind `billboard` (→ is_spot + is_billboard, senza date); pulsante "📣 Billboard (libero)" nel modal Track Manager. Spot già senza obbligo date.
 - **Dual-mode**: `_get_ai_controls` default ON per chiave assente (AI 360 = stato di default); OFF esplicito = esclusione manuale (prod resta OFF finché non si riaccende).
 - Layout: WAREHOUSE al centro (2ª banda), SCHEDULING 3ª. Verifica Playwright: ordine, cassetto JINGLE 26, ricerca, slot click, picker 196→7 con ricerca, follow-ups senza Smart Recurrence, 0 errori.
+
+## v13.45 · HOME REDESIGN BROADCAST (2026-10-02) — solo PublicRadio.js
+- Hero 3 colonne (`home-hero`): SX 3/12 player + brano in onda (`home-player-col`: ON AIR/STANDBY, copertina `image_url` o BigCue, titolo/artista, waveform, SyncLivePlayer); CENTRO 6/12 LedWall dominante (`home-ledwall-col`, min-height min(62vw,560px), tendina effetti); DX 3/12 info (`home-info-col`: A seguire da `/api/stream/now.next[0]`, stato Regia, ultimo messaggio DJ `lastDjLine`) + Chat Neurale.
+- Mobile: order LedWall (piena larghezza, 390px) → player → info → chat. LiveBrainTicker e CueThinking non renderizzati (`{false && …}`, codice intatto); nessun testo tecnico nella hero (verificato regex).
+- `displayCurrent = effectiveCurrent || timelineNow` per mostrare il brano sul clock anche in standby. Nuovi stati `streamNext`, `lastDjLine`.
+- Verifica Playwright desktop 1920 + mobile 390: layout, ordine, assenza testo tecnico, 0 errori JS. Nessun'altra pagina toccata.
