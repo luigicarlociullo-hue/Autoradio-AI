@@ -7,7 +7,7 @@ export const RaiOrbLogo = ({ size = 56 }) => {
   const r = size / 2;
   const meridians = [0, 30, 60, 90, 120, 150];
   return (
-    <div className="rai-orb" style={{ width: size, height: size }} data-testid="rai-orb-logo" aria-label="R-AI">
+    <div className="rai-orb" style={{ width: size, height: size, perspective: `${Math.round(size * 2.9)}px` }} data-testid="rai-orb-logo" aria-label="R-AI">
       <div className="rai-orb-scene">
         <div className="rai-orb-sphere">
           <div className="rai-orb-core" />
@@ -25,7 +25,7 @@ export const RaiOrbLogo = ({ size = 56 }) => {
             );
           })}
         </div>
-        <div className="rai-orb-text">
+        <div className="rai-orb-text" style={{ fontSize: Math.max(7.5, size * 0.125) }}>
           {LETTERS.map((ch, i) => (
             <span
               key={i}

@@ -31,6 +31,39 @@ const DJ_COLOR = {
   Luma: "#00E5FF",    // Ciano brillante
 };
 
+// v13.47 · BRANDING R-AI condiviso: sfera wireframe stilizzata + "R-AI".
+// `big=false` → watermark semi-trasparente in basso a destra che pulsa a tempo
+// (usato da gradient/rings/eq/starfield/holo/auto). Mai sopra l'orologio:
+// il chiamante salta la chiamata quando il clock è visibile.
+function drawRaiMark(ctx, W, H, dpr, t, beat, opts = {}) {
+  const { alpha = 0.42, big = false, hue = 190 } = opts;
+  const r = big ? Math.min(W, H) * 0.30 : Math.max(16 * dpr, Math.min(W, H) * 0.075);
+  const x = big ? W / 2 : W - r - 14 * dpr;
+  const y = big ? H / 2 : H - r - 14 * dpr;
+  const a = alpha * (0.75 + 0.25 * beat);
+  ctx.save();
+  ctx.globalAlpha = a;
+  ctx.lineWidth = (big ? 1.4 : 1) * dpr;
+  ctx.strokeStyle = `hsla(${hue},95%,70%,1)`;
+  ctx.shadowColor = `hsla(${hue},95%,65%,0.9)`; ctx.shadowBlur = (big ? 18 : 8) * dpr;
+  const rot = t * 0.7;
+  ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke();            // equatore esterno
+  for (let i = 0; i < 3; i++) {                                                // meridiani rotanti
+    const rx = Math.abs(Math.cos(rot + (i * Math.PI) / 3)) * r;
+    ctx.beginPath(); ctx.ellipse(x, y, Math.max(0.5, rx), r, 0, 0, Math.PI * 2); ctx.stroke();
+  }
+  ctx.beginPath(); ctx.ellipse(x, y, r, r * 0.28, 0, 0, Math.PI * 2); ctx.stroke(); // parallelo
+  const core = ctx.createRadialGradient(x - r * 0.25, y - r * 0.25, 0, x, y, r * 0.42);
+  core.addColorStop(0, "rgba(255,255,255,0.95)"); core.addColorStop(0.5, `hsla(${hue},100%,60%,0.9)`); core.addColorStop(1, `hsla(${hue},100%,50%,0)`);
+  ctx.fillStyle = core; ctx.beginPath(); ctx.arc(x, y, r * (0.40 + beat * 0.06), 0, Math.PI * 2); ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.font = `800 ${Math.max(9, r * 0.42)}px "Space Grotesk","Orbitron",monospace`;
+  ctx.textAlign = "center"; ctx.textBaseline = "top";
+  ctx.fillStyle = `hsla(${hue},90%,85%,1)`;
+  ctx.fillText("R-AI", x, y + r + 4 * dpr);
+  ctx.restore();
+}
+
 // v13.40 · Effetti visivi selezionabili. Ogni modalità disegna il frame
 // completo (sfondo incluso) usando `beat` (0..1, da BPM server o ampiezza).
 function drawEffect(ctx, W, H, dpr, mode, p) {
@@ -38,6 +71,17 @@ function drawEffect(ctx, W, H, dpr, mode, p) {
   const cx = W / 2, cy = H / 2;
   const hueBase = nightMode ? 300 : 190;
   const accent = nightMode ? "255,61,138" : "0,229,255";
+  // v13.47 · ogni effetto (tranne "logo", che ha l'orb DOM) chiude con il watermark R-AI
+  if (mode !== "logo") {
+    _drawEffectBody(ctx, W, H, dpr, mode, p, cx, cy, hueBase, accent);
+    drawRaiMark(ctx, W, H, dpr, t, beat, { alpha: mode === "holo" ? 0.30 : 0.42, hue: hueBase });
+    return;
+  }
+  _drawEffectBody(ctx, W, H, dpr, mode, p, cx, cy, hueBase, accent);
+}
+
+function _drawEffectBody(ctx, W, H, dpr, mode, p, cx, cy, hueBase, accent) {
+  const { t, amp, beat, newBeat, bass, mid, high, freq, bins, st } = p;
 
   if (mode === "gradient") {
     const a = t * 0.25;
@@ -227,6 +271,23 @@ function drawEffect(ctx, W, H, dpr, mode, p) {
     ctx.shadowBlur = 0;
     if (st.notes.length > 40) st.notes.splice(0, st.notes.length - 40);
 
+    // v13.47 · ALONE OLOGRAFICO dietro l'orb DOM (RaiOrbLogo, 60% del riquadro):
+    // glow radiale + anello orbitale inclinato a tempo + scanline verticale.
+    {
+      const R = Math.min(W, H) * (0.30 + beat * 0.025);
+      const halo = ctx.createRadialGradient(cx, cy, R * 0.2, cx, cy, R * 1.35);
+      halo.addColorStop(0, `hsla(${hue},100%,60%,${0.10 + beat * 0.14})`);
+      halo.addColorStop(0.7, `hsla(${hue},100%,55%,0.05)`);
+      halo.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = halo; ctx.beginPath(); ctx.arc(cx, cy, R * 1.35, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = `rgba(255,255,255,${0.22 + beat * 0.45})`; ctx.lineWidth = 1.5 * dpr;
+      ctx.shadowColor = `hsl(${hue},95%,65%)`; ctx.shadowBlur = 10 * dpr;
+      ctx.beginPath(); ctx.ellipse(cx, cy, R * 1.25, R * 0.32, -0.5 + Math.sin(t * 0.4) * 0.2, 0, Math.PI * 2); ctx.stroke();
+      ctx.shadowBlur = 0;
+      const sy = cy - R + ((t * 70) % (2 * R));
+      ctx.fillStyle = `hsla(${hue},100%,75%,0.22)`; ctx.fillRect(cx - R * 1.1, sy, 2.2 * R, 1.5 * dpr);
+    }
+
     // v13.42 · Il logo stesso NON viene più disegnato sul canvas: su richiesta
     // del cliente, riusiamo il componente RaiOrbLogo (lo stesso già in alto in
     // home) come overlay DOM centrato, vedi il JSX del componente più sotto.
@@ -266,7 +327,7 @@ export default function LedWall({
       const el = orbWrapRef.current;
       if (!el) return;
       const { width, height } = el.getBoundingClientRect();
-      setOrbSize(Math.max(90, Math.min(260, Math.min(width, height) * 0.34)));
+      setOrbSize(Math.max(120, Math.min(520, Math.min(width, height) * 0.60)));  // v13.47 · 60% del riquadro (prima 34%)
     };
     measure();
     const ro2 = new ResizeObserver(measure);
@@ -751,6 +812,13 @@ export default function LedWall({
         ctx.shadowBlur = 0;
       }
 
+      // v13.47 · Watermark R-AI anche in "auto" — MAI sopra l'orologio
+      // (clock visibile) né in standby assoluto.
+      if (alphas.clock < 0.05 && !isAbsoluteStandby) {
+        const _wmBeat = Math.min(1, bass * 0.7 + mid * 0.3);
+        drawRaiMark(ctx, W, H, dpr, performance.now() / 1000, _wmBeat, { alpha: 0.36 * Math.max(alphas.music, alphas.talk, 0.4), hue: nightMode ? 300 : 190 });
+      }
+
       rafRef.current = requestAnimationFrame(draw);
     };
 
@@ -850,6 +918,7 @@ export default function LedWall({
           aria-hidden
           data-testid="ledwall-orb-overlay"
           className="absolute inset-0 flex items-center justify-center pointer-events-none z-20"
+          style={{ animation: "raiOrbFadeIn 1.4s ease-out both" }}
         >
           <RaiOrbLogo size={orbSize} />
         </div>

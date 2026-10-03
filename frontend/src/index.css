@@ -562,13 +562,15 @@ body {
 }
 .rai-orb-text span {
   position: absolute; left: 50%; top: 50%;
-  width: 8px; height: 10px; margin: -5px 0 0 -4px;
+  width: 1.07em; height: 1.34em; margin: -0.67em 0 0 -0.53em;
   font-family: "Space Grotesk", "Orbitron", ui-monospace, monospace;
-  font-size: 7.5px; font-weight: 800; line-height: 10px; text-align: center;
+  font-size: inherit; font-weight: 800; line-height: 1.34em; text-align: center;
   color: #bff7ff; letter-spacing: 0;
-  text-shadow: 0 0 4px #00e5ff, 0 0 9px rgba(0, 160, 255, 0.9);
+  text-shadow: 0 0 0.55em #00e5ff, 0 0 1.2em rgba(0, 160, 255, 0.9);
   transform-origin: 50% 50%;
 }
+.rai-orb-text { font-size: 7.5px; }
+@keyframes raiOrbFadeIn { from { opacity: 0; transform: scale(0.82); filter: blur(6px); } to { opacity: 1; transform: scale(1); filter: blur(0); } }
 @keyframes raiOrbSpin      { from { transform: rotateY(0deg); }   to { transform: rotateY(360deg); } }
 @keyframes raiOrbTextSpin  { from { transform: rotateZ(0deg); }   to { transform: rotateZ(360deg); } }
 @keyframes raiOrbPulse     { 0%, 100% { transform: scale(1); filter: brightness(1); } 50% { transform: scale(1.12); filter: brightness(1.25); } }

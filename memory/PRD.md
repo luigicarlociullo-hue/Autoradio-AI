@@ -747,3 +747,8 @@ Vedi turni precedenti in questa sessione:
 - `displayCurrent = effectiveCurrent || timelineNow` per mostrare il brano sul clock anche in standby. Nuovi stati `streamNext`, `lastDjLine`.
 - Verifica Playwright desktop 1920 + mobile 390: layout, ordine, assenza testo tecnico, 0 errori JS. Nessun'altra pagina toccata.
 - v13.46 · Live Brain (componente `LiveBrain`, terminale operazioni AI) reinserito in home in sezione dedicata `home-live-brain` tra hero e "Le Stelle di Neuroni"; props `current={effectiveCurrent}` `segments={segments}`. LiveBrainTicker/CueThinking restano nascosti nel player. Nessun componente eliminato.
+
+## v13.47 · LOGO R-AI CENTRALE NEL LEDWALL (2026-10-03)
+- Default "logo" per nuovi visitatori (già v13.41, localStorage rispettato). Orb DOM `RaiOrbLogo` 60% del riquadro (prima 34%, cap 520px), fade-in `raiOrbFadeIn` 1.4s, perspective proporzionale, lettere orbitali scalate (font em). Alone olografico canvas dietro l'orb (glow radiale, anello orbitale inclinato a tempo, scanline).
+- `drawRaiMark()`: watermark sfera stilizzata + "R-AI" in basso a dx, pulsante a tempo, in gradient/rings/eq/starfield/holo (via drawEffect) e in auto (solo se `alphas.clock < 0.05` e non standby → mai sopra l'orologio). Verifica Playwright: 5 effetti 9/9 campioni accesi; auto in standby 0 (canvas vuoto by design).
+- Invariati: detectMode, forzatura "auto" quando target=clock, selettore effetti.
