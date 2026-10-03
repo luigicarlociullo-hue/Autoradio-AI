@@ -303,7 +303,10 @@ function detectMode(current, isPlaying) {
   // Ticket #247410: gli eventi Timeline "Ora Esatta" reali in produzione
   // hanno kind="ora_esatta" (italiano) dal backend, non "time_signal" —
   // senza questo branch non raggiungevano mai la modalita' orologio.
-  if (kind === "time_signal" || kind === "time" || kind === "jingle" || kind === "ora_esatta") return "clock";
+  if (kind === "time_signal" || kind === "time" || kind === "ora_esatta") return "clock";
+  // Ticket #247410: un evento Regia di tipo "jingle" con dentro una canzone
+  // teneva l'orologio sul LedWall per tutto il brano. Orologio solo se breve.
+  if (kind === "jingle") return Number(current?.duration_sec || 0) > 0 && Number(current.duration_sec) >= 40 ? "music" : "clock";
   return isPlaying ? "music" : "standby";
 }
 

@@ -974,8 +974,31 @@ async def admin_broadcast_command(cmd_type: str = Form(...)):
             {"$set": {"force_next_jingle": True}},
             upsert=True,
         )
-    logger.info(f"Broadcast command #{seq}: {cmd_type}")
-    return {"ok": True, "command_seq": seq, "type": cmd_type}
+    # Ticket #247410: la diretta è il flusso unico del server (station_clock);
+    # prima skip/jingle agivano solo sul vecchio player nel browser, quindi in
+    # onda non cambiava nulla. Pause/Resume restano locali agli ascoltatori.
+    live = None
+    try:
+        if cmd_type == "skip":
+            clock = await _clock_advance(force=True)
+            _, cur = _clock_now_offset(clock)
+            live = {"current_id": (cur or {}).get("id")}
+        elif cmd_type == "jingle_now":
+            async with _clock_lock:
+                clock = await db.station_clock.find_one({"_id": "clock"}) or {}
+                queue = list(clock.get("queue") or [])
+                queued = {q.get("id") for q in queue} | {(clock.get("current") or {}).get("id")}
+                jg = await _clock_pick_dj_jingle(exclude_ids=queued)
+                if jg and clock:
+                    ok = await _clock_cas(clock, {"queue": [jg] + queue,
+                                                  "updated_at": datetime.now(timezone.utc).isoformat()})
+                    live = {"jingle_queued": jg.get("title") if ok else None}
+                else:
+                    live = {"jingle_queued": None}
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Broadcast command {cmd_type}: live stream action failed: {e}")
+    logger.info(f"Broadcast command #{seq}: {cmd_type} live={live}")
+    return {"ok": True, "command_seq": seq, "type": cmd_type, "live": live}
 
 
 
@@ -1566,6 +1589,7 @@ async def admin_tracks_upload(
     # restava a 0 e il player/HLS ripiegavano su un fallback fisso di 180s,
     # causando tagli a metà brano, silenzi fino a 180s e seek nel punto sbagliato.
     probed_duration_sec = 0.0
+    probed_duration_sec_raw = 0.0
     try:
         import tempfile as _tempfile
         with _tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as _tf:
@@ -1623,12 +1647,25 @@ async def admin_tracks_upload(
                 "include_in_rotation": kind not in ("loop", "fx"),
                 "tags": merged_tags,
                 "updated_at": now,
+                # Ticket #247410: la durata del NUOVO file non veniva salvata in
+                # sostituzione, quindi il clock tagliava il brano corretto alla
+                # durata del vecchio file (stesso punto di taglio di prima).
+                **({"duration_sec": round(probed_duration_sec, 3),
+                    "real_duration_sec": round(probed_duration_sec_raw, 3)}
+                   if probed_duration_sec > 0 else {}),
                 **({"bpm": detected_bpm, "bpm_source": "server"} if detected_bpm else {}),
             }},
         )
         # Update the title on any segment currently in the playback queue that
         # references this track, so the new name shows up in the player at the
         # very next poll instead of only on the next generation cycle.
+        # Ticket #247410: stesso nome file → la copia locale in cache
+        # (/api/suno_audio la serve per prima) era ancora il VECCHIO audio.
+        try:
+            if local_path.exists():
+                local_path.unlink()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"Replace: stale local cache not removed {local_path}: {e}")
         seg_res = await db.segments.update_many(
             {"music_audio_url": audio_url, "kind": {"$in": ["music"]}},
             {"$set": {"title": f"♪ {title} — {artist}"}},
@@ -6537,7 +6574,13 @@ async def admin_generate_permanent_time_signals(
     generated, skipped, failed, results = [], [], [], []
     for h in wanted:
         if not force:
-            st = await _ts_hour_status(await db.time_signal_permanent.find_one({"_id": h}))
+            _ts_doc = await db.time_signal_permanent.find_one({"_id": h})
+            st = await _ts_hour_status(_ts_doc)
+            # Ticket #247410: un file creato prima del controllo audio (campo
+            # `validated` assente) risultava "già pronto" e non veniva mai
+            # rigenerato — le ore 8-23 restavano con il vecchio audio rotto.
+            if st["ok"] and not (_ts_doc or {}).get("validated"):
+                st = {**st, "ok": False, "reason": "legacy_unvalidated"}
             if st["ok"]:
                 skipped.append(h)
                 results.append({"hour": h, "status": "skipped_existing"})
@@ -6671,6 +6714,21 @@ async def _timeline_pick_due() -> Optional[dict]:
             # Mai l'audio_url congelato: potrebbe essere il file di un'altra ora. Nessun audio → evento saltato.
             doc["audio_url"] = None
             logger.error(f"[time-signal] {doc.get('id')}: nessun audio valido per l'ora corrente → evento saltato")
+    # Ticket #247410: un brano della libreria inserito in Regia andava in onda
+    # con la durata salvata NELL'EVENTO (default 30s del form, o quella del
+    # file prima di una ricarica/ricalcolo) e veniva troncato lì. Se l'audio
+    # è un file della libreria, vale la sua durata reale attuale.
+    if doc.get("kind") not in ("ora_esatta", "time_signal", "ad_break") and doc.get("audio_url"):
+        try:
+            _lib = await db.tracks.find_one(
+                {"audio_url": doc["audio_url"], "duration_sec": {"$gt": 0}},
+                {"_id": 0, "duration_sec": 1},
+            )
+            if _lib and abs(float(_lib["duration_sec"]) - float(doc.get("duration_sec") or 0)) > 1:
+                logger.info(f"[timeline] {doc.get('id')}: durata evento {doc.get('duration_sec')}s → file {_lib['duration_sec']}s")
+                doc["duration_sec"] = float(_lib["duration_sec"])
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[timeline] library duration lookup failed: {e}")
     # Costruisce l'entry compatibile con la queue del clock
     entry = {
         "id": doc.get("id") or f"tl-{uuid.uuid4().hex[:10]}",
