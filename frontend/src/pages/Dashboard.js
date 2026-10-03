@@ -2237,6 +2237,36 @@ function RotationRulesPanel() {
   const [fx, setFx] = useState(0);
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
+  // Ticket #247410: "FX di transizione" (station.state.transition_fx_track_id)
+  // esisteva solo via API (GET/PATCH /admin/transition-fx) — nessun controllo
+  // in Regia. Un file FX di prova è rimasto impostato come transizione attiva
+  // e ha iniziato a suonare ad ogni cambio segmento (incluso dopo ogni
+  // segnale orario) senza che l'utente avesse un modo per vederlo o spegnerlo.
+  const [txFxActive, setTxFxActive] = useState(null);
+  const [txFxOptions, setTxFxOptions] = useState([]);
+  const [txFxSel, setTxFxSel] = useState("");
+  const [txFxSaving, setTxFxSaving] = useState(false);
+
+  const loadTransitionFx = () => {
+    api.get("/admin/transition-fx").then(r => {
+      setTxFxActive(r.data?.active || null);
+      setTxFxOptions(r.data?.available || []);
+      setTxFxSel(r.data?.active_id || "");
+    }).catch(() => {});
+  };
+
+  const saveTransitionFx = async (trackId) => {
+    setTxFxSaving(true);
+    try {
+      await api.patch("/admin/transition-fx", { track_id: trackId || null });
+      toast.success(trackId ? "FX di transizione impostato" : "FX di transizione disattivato");
+      loadTransitionFx();
+    } catch (e) {
+      toast.error("Errore");
+    } finally {
+      setTxFxSaving(false);
+    }
+  };
 
   useEffect(() => {
     api.get("/admin/rotation-rules")
@@ -2246,6 +2276,7 @@ function RotationRulesPanel() {
         setFx(r.data?.fx_every_n_songs ?? 0);
         setLoaded(true);
       });
+    loadTransitionFx();
   }, []);
 
   const save = async () => {
@@ -2323,6 +2354,37 @@ function RotationRulesPanel() {
         >
           {saving ? "Salvo…" : "Applica al palinsesto"}
         </button>
+      </div>
+
+      <div className="mt-6 pt-4 border-t border-white/10">
+        <label className="label-mono block mb-2">FX di transizione (ad ogni cambio segmento)</label>
+        {txFxActive && (
+          <div className="text-xs text-amber-300 font-mono mb-2">
+            Attivo ora: {txFxActive.title} ({txFxActive.duration_sec}s)
+          </div>
+        )}
+        <div className="flex gap-2">
+          <select
+            data-testid="transition-fx-select"
+            value={txFxSel}
+            onChange={(e) => setTxFxSel(e.target.value)}
+            className="flex-1 bg-zinc-900 border border-white/10 rounded px-2 py-2 text-xs font-mono"
+          >
+            <option value="">— Nessuno (disattivato) —</option>
+            {txFxOptions.map(o => (
+              <option key={o.id} value={o.id}>{o.title} ({o.duration_sec}s)</option>
+            ))}
+          </select>
+          <button
+            data-testid="transition-fx-save"
+            onClick={() => saveTransitionFx(txFxSel)}
+            disabled={txFxSaving}
+            className="btn-outline px-3 py-2 text-xs disabled:opacity-40"
+          >
+            {txFxSaving ? "…" : "Applica"}
+          </button>
+        </div>
+        <div className="text-xs text-zinc-500 mt-1">Vuoto = nessun FX automatico tra i segmenti.</div>
       </div>
     </section>
   );
