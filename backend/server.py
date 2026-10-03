@@ -7209,16 +7209,28 @@ async def _rrule_materialize_due(window_sec: int = 90):
     """Materializza in `timeline_events` (status=pending) le occorrenze dei
     template rrule che scoccano entro `window_sec` da adesso. Idempotente:
     se un'occorrenza (parent_id + scheduled_at) esiste già, non la duplica.
-    Chiamato da `_timeline_pick_due` in cima al soft-sync check."""
+    Chiamato da `_timeline_pick_due` in cima al soft-sync check.
+
+    Ticket #247410: prima guardava SOLO in avanti da "adesso" — se il pod si
+    riavviava (redeploy, sleep) esattamente durante la finestra dei 90s di
+    un'occorrenza oraria, quella non veniva mai materializzata: non "saltata
+    con un record", proprio MAI CREATA. Risultato: ore intere di segnale
+    orario sparite senza traccia (successo con piu' redeploy di fila). Ora
+    guarda indietro fino alla stessa soglia di 2h gia' usata da
+    _timeline_pick_due per decidere cosa e' ancora "recuperabile" — cosi'
+    un'occorrenza mancata per un riavvio viene materializzata appena il
+    server torna su, invece di sparire per sempre.
+    """
     try:
         now = datetime.now(timezone.utc)
+        from_dt = now - timedelta(hours=2)
         to_dt = now + timedelta(seconds=window_sec)
         templates = await db.timeline_events.find(
             {"status": "template", "rrule": {"$ne": None}},
             {"_id": 0},
         ).to_list(200)
         for tpl in templates:
-            occurrences = _rrule_expand(tpl.get("rrule") or {}, now, to_dt)
+            occurrences = _rrule_expand(tpl.get("rrule") or {}, from_dt, to_dt)
             excluded = set(tpl.get("excluded_occurrences") or [])
             for occ in occurrences:
                 occ_iso = occ.isoformat()
