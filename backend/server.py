@@ -6647,6 +6647,26 @@ async def _timeline_pick_due() -> Optional[dict]:
                 _rd = await _probe_tts_duration(_live_au)
                 if _rd:
                     doc["duration_sec"] = round(_rd, 3)  # v13.40 · padding via _pad_short (era int(round)+1)
+                else:
+                    # Ticket #247410: il probe fallisce a freddo subito dopo un
+                    # restart del pod (cache locale vuota, popolata solo al
+                    # primo fetch HTTP) o se ffprobe non è disponibile — senza
+                    # questo fallback l'evento restava con la durata generica
+                    # del template (spesso i 30s sotto), mentre l'audio reale
+                    # dura ~2-3s. Risultato: lo slot dichiarato dura ~27s in
+                    # più del parlato vero, cioè esattamente "mezza parola poi
+                    # tanto silenzio". Usa la durata già validata sul record
+                    # permanente di quest'ora, se c'è, invece di indovinare.
+                    try:
+                        from zoneinfo import ZoneInfo as _ZoneInfo
+                        _hr_now = datetime.now(_ZoneInfo("Europe/Rome")).hour
+                        _perm_dur = await db.time_signal_permanent.find_one(
+                            {"_id": _hr_now}, {"duration_sec": 1}
+                        )
+                        if _perm_dur and _perm_dur.get("duration_sec"):
+                            doc["duration_sec"] = _perm_dur["duration_sec"]
+                    except Exception:
+                        pass
         else:
             # Mai l'audio_url congelato: potrebbe essere il file di un'altra ora. Nessun audio → evento saltato.
             doc["audio_url"] = None
