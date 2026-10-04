@@ -6591,7 +6591,16 @@ async def admin_generate_permanent_time_signals(
         if dry_run:
             results.append({"hour": h, "status": "would_regenerate", "because": prior})
             continue
-        text = f"Sono le {h:02d}:00 su R-A.I. Radio!"
+        # Ticket #247410: dati reali (decine di campioni, jingle e segnali
+        # orari) mostrano che il player perde in modo consistente 0.3-3.7s
+        # dall'INIZIO di ogni elemento breve, anche per ascoltatori gia'
+        # connessi (non solo al primo join, dove EXT-X-START gia' aiuta) —
+        # probabile seek di live-sync di hls.js che riagguanta il live-edge
+        # atterrando dentro il segmento appena iniziato. Senza audio reale da
+        # ri-encodare (ffmpeg non disponibile in questo ambiente), la difesa
+        # e' una breve frase di testa "sacrificabile" nello script stesso:
+        # se viene mangiata, si perde "Segnale orario" e non l'ora vera e propria.
+        text = f"Segnale orario. Sono le {h:02d}:00 su R-A.I. Radio!"
         r = await _generate_time_signal_hour(h, text, voice_key, dj_id, allow_local_only)
         if not r["ok"]:
             logger.error(f"[time-signal-permanent] hour={h} NON rigenerata ({r['reason']}) → documento esistente invariato")
