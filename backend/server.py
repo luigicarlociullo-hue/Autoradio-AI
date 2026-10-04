@@ -6493,11 +6493,13 @@ async def _validate_audio_bytes(data: bytes) -> dict:
             pass
 
 
-async def _generate_time_signal_hour(h: int, text: str, voice_key: str, dj_id: Optional[str], allow_local_only: bool) -> dict:
+async def _generate_time_signal_hour(h: int, text: str, voice_key: str, dj_id: Optional[str], allow_local_only: bool, tag: Optional[str] = None) -> dict:
     """Genera UN segnale orario permanente. Ritorna {ok, url, v, storage_verified} oppure {ok: False, reason, ...}.
     Mai Bark/wav; niente kill-switch (click esplicito admin). Il file nuovo ha un nome NUOVO (hash del contenuto):
     non sovrascrive mai un file esistente, quindi un tentativo fallito non può rovinare un'ora già buona.
-    Sequenza: sintesi -> validazione bytes -> upload -> re-fetch -> validazione dei bytes ri-scaricati."""
+    Sequenza: sintesi -> validazione bytes -> upload -> re-fetch -> validazione dei bytes ri-scaricati.
+    v13.48 · `tag` (es. "tsh09", "tsm03") per le clip-parte ORA/MINUTO; default f"ts{h:02d}"."""
+    tag = tag or f"ts{h:02d}"
     try:
         audio, provider = await elevenlabs_service.synth_bytes(text, voice_key, kind="time_signal", dj_id=dj_id)
     except Exception as e:
@@ -6509,7 +6511,7 @@ async def _generate_time_signal_hour(h: int, text: str, voice_key: str, dj_id: O
     if not v0["ok"]:
         return {"ok": False, "reason": f"audio_invalid:{v0['reason']}", "bytes": v0["bytes"],
                 "duration_sec": v0["duration_sec"], "max_volume_db": v0["max_volume_db"]}
-    name = f"tts_ts{h:02d}_{hashlib.sha256(audio).hexdigest()[:16]}.mp3"
+    name = f"tts_{tag}_{hashlib.sha256(audio).hexdigest()[:16]}.mp3"
     key, url = f"tts/{name}", f"/api/tts/{name}"
     storage_on = object_storage.is_enabled()
     if not storage_on and not allow_local_only:
@@ -6629,6 +6631,136 @@ async def admin_generate_permanent_time_signals(
             "failed": failed, "results": results}
 
 
+# ----------------------- v13.48 · SEGNALE ORARIO CON MINUTI (clip-parte) -----------------------
+# 24 clip ORA ("Segnale orario. Sono le nove") + 60 clip MINUTO ("e tre minuti, su R-A.I.
+# Radio..."), stessa pipeline dei permanenti (sintesi → validazione → storage → re-fetch).
+# Collezione `time_signal_parts`, _id = "h09" | "m03". All'onda: ORA come audio dell'evento,
+# MINUTO come primo follow_up (concatenamento zero-gap già esistente). L'automatismo orario
+# (`time_signal_permanent`) resta INVARIATO: i minuti valgono solo per gli eventi Timeline/rrule.
+_IT_HOUR_WORDS = ["zero", "una", "due", "tre", "quattro", "cinque", "sei", "sette", "otto", "nove", "dieci", "undici",
+                  "dodici", "tredici", "quattordici", "quindici", "sedici", "diciassette", "diciotto", "diciannove",
+                  "venti", "ventuno", "ventidue", "ventitré"]
+_IT_UNITS = ["", "uno", "due", "tre", "quattro", "cinque", "sei", "sette", "otto", "nove"]
+_IT_TENS = ["", "dieci", "venti", "trenta", "quaranta", "cinquanta"]
+_IT_TEENS = ["dieci", "undici", "dodici", "tredici", "quattordici", "quindici", "sedici", "diciassette", "diciotto", "diciannove"]
+_TS_SIGNOFF = "su R-A.I. Radio, sincronizzata con l'orologio atomico di Singapore!"
+
+
+def _it_minute_words(m: int) -> str:
+    if m < 10:
+        return _IT_UNITS[m]
+    if m < 20:
+        return _IT_TEENS[m - 10]
+    t, u = divmod(m, 10)
+    base = _IT_TENS[t]
+    if u in (1, 8):
+        base = base[:-1]  # ventuno, ventotto, trentuno…
+    return base + _IT_UNITS[u]
+
+
+def _ts_part_text(part: str) -> str:
+    kind, n = part[0], int(part[1:])
+    if kind == "h":
+        if n == 0:
+            return "Segnale orario. È mezzanotte"
+        return "Segnale orario. È l'una" if n == 1 else f"Segnale orario. Sono le {_IT_HOUR_WORDS[n]}"
+    if n == 0:
+        return f"in punto, {_TS_SIGNOFF}"
+    if n == 1:
+        return f"e un minuto, {_TS_SIGNOFF}"
+    return f"e {_it_minute_words(n)} minuti, {_TS_SIGNOFF}"
+
+
+_TS_ALL_PARTS = [f"h{h:02d}" for h in range(24)] + [f"m{m:02d}" for m in range(60)]
+
+
+async def _ts_parts_ready() -> dict:
+    """Mappa part_id → doc valido (validated=True, url mp3) dalla collezione time_signal_parts."""
+    out = {}
+    async for d in db.time_signal_parts.find({"validated": True, "speech_audio_url": {"$regex": r"^/api/tts/.+\.mp3$"}}, {"_id": 1, "speech_audio_url": 1, "duration_sec": 1, "script": 1}):
+        out[d["_id"]] = d
+    return out
+
+
+async def _resolve_time_signal_with_minutes() -> Optional[dict]:
+    """Ora+minuto CORRENTI (Europe/Rome). Ritorna {hour_url, hour_dur, minute: {...follow_up}} o None se
+    manca una delle due clip (→ il chiamante ripiega sul permanente orario)."""
+    try:
+        from zoneinfo import ZoneInfo
+        _now = datetime.now(ZoneInfo("Europe/Rome"))
+    except Exception:
+        _now = datetime.now(timezone.utc)
+    hp, mp = f"h{_now.hour:02d}", f"m{_now.minute:02d}"
+    parts = await _ts_parts_ready()
+    hd, md = parts.get(hp), parts.get(mp)
+    if not (hd and md):
+        logger.info(f"[time-signal] clip-parte mancanti ({hp}={'ok' if hd else 'NO'}, {mp}={'ok' if md else 'NO'}) → fallback orario")
+        return None
+    return {
+        "hour_url": hd["speech_audio_url"],
+        "hour_dur": int(round(float(hd.get("duration_sec") or 3))) + 1,
+        "minute": {"id": f"tsmin-{_now.hour:02d}{_now.minute:02d}", "title": f"Segnale orario · {_now.hour:02d}:{_now.minute:02d}",
+                   "artist": "R-A.I. Radio", "audio_url": md["speech_audio_url"],
+                   "duration_sec": int(round(float(md.get("duration_sec") or 3))) + 1, "video_url": None},
+        "label": f"{_now.hour:02d}:{_now.minute:02d}",
+    }
+
+
+@api_router.get("/admin/time-signal/parts-status")
+async def admin_time_signal_parts_status():
+    parts = await _ts_parts_ready()
+    hours = [p for p in parts if p.startswith("h")]; minutes = [p for p in parts if p.startswith("m")]
+    return {"hours_ready": len(hours), "minutes_ready": len(minutes), "total_ready": len(parts), "total_expected": 84,
+            "complete": len(hours) == 24 and len(minutes) == 60,
+            "missing": [p for p in _TS_ALL_PARTS if p not in parts]}
+
+
+@api_router.post("/admin/time-signal/generate-parts")
+async def admin_generate_time_signal_parts(
+    force: bool = False,
+    voice_key: str = "nova",
+    dj_id: Optional[str] = None,
+    which: str = "all",          # all | hours | minutes
+    dry_run: bool = False,
+    allow_local_only: bool = False,
+):
+    """Genera le 84 clip-parte (24 ORA + 60 MINUTO), testo FISSO, stessa pipeline dei permanenti.
+    Senza `force` le clip già valide non vengono toccate. Non modifica `time_signal_permanent`."""
+    dj_name = None
+    if dj_id:
+        dj_doc = await db.djs.find_one({"id": dj_id}, {"_id": 0, "voice_key": 1, "name": 1})
+        if dj_doc:
+            voice_key = dj_doc.get("voice_key") or voice_key
+            dj_name = dj_doc.get("name")
+    wanted = [p for p in _TS_ALL_PARTS if which == "all" or (which == "hours" and p[0] == "h") or (which == "minutes" and p[0] == "m")]
+    ready = await _ts_parts_ready()
+    generated, skipped, failed, results = [], [], [], []
+    for part in wanted:
+        if not force and part in ready:
+            skipped.append(part); continue
+        text = _ts_part_text(part)
+        if dry_run:
+            results.append({"part": part, "status": "would_generate", "text": text}); continue
+        r = await _generate_time_signal_hour(int(part[1:]), text, voice_key, dj_id, allow_local_only, tag=f"ts{part}")
+        if not r["ok"]:
+            logger.error(f"[time-signal-parts] {part} NON generata ({r['reason']})")
+            failed.append(part); results.append({"part": part, "status": "failed", **{k: v for k, v in r.items() if k != "ok"}}); continue
+        v = r["v"]
+        await db.time_signal_parts.update_one(
+            {"_id": part},
+            {"$set": {"part": part, "script": text, "speech_audio_url": r["url"], "voice_key": voice_key, "dj_id": dj_id, "dj_name": dj_name,
+                      "created_at": now_iso(), "validated": True, "validated_at": now_iso(), "storage_verified": r["storage_verified"],
+                      "provider": r["provider"], "bytes": v["bytes"], "duration_sec": v["duration_sec"], "max_volume_db": v["max_volume_db"]},
+             "$unset": {"validation_reason": ""}},
+            upsert=True,
+        )
+        generated.append(part)
+        results.append({"part": part, "status": "generated", "url": r["url"], "duration_sec": v["duration_sec"]})
+    return {"ok": not failed, "dry_run": dry_run, "generated": generated, "skipped_existing": skipped, "failed": failed,
+            "results": results, "sample_texts": {"h09": _ts_part_text("h09"), "m00": _ts_part_text("m00"), "m03": _ts_part_text("m03"), "m21": _ts_part_text("m21")}}
+
+
+
 async def _timeline_pick_due() -> Optional[dict]:
     """Ritorna un evento timeline maturo (scheduled_at <= now) e lo marca
     come `consumed` atomicamente. Ignora eventi troppo vecchi (>2h).
@@ -6691,7 +6823,16 @@ async def _timeline_pick_due() -> Optional[dict]:
     # resta disponibile anche per l'eventuale segnale orario automatico.
     # v13.33 · Estesa anche a kind=time_signal (inclusi i figli rrule): il
     # template congela l'audio alla creazione, qui si ri-risolve sull'ora live.
-    if doc.get("kind") in ("ora_esatta", "time_signal"):
+    if doc.get("kind") in ("ora_esatta", "time_signal") and (_tsm := await _resolve_time_signal_with_minutes()):
+        # v13.48 · Ora + MINUTI correnti (clip-parte): ORA come audio dell'evento, MINUTO come
+        # primo follow_up (concatenamento zero-gap già esistente). Durate dai record validati.
+        doc["audio_url"] = _tsm["hour_url"]
+        doc["duration_sec"] = _tsm["hour_dur"]
+        doc["follow_ups"] = [_tsm["minute"]] + list(doc.get("follow_ups") or [])
+        doc["time_signal_label"] = _tsm["label"]
+        logger.info(f"[time-signal] evento {doc.get('id')} → ora+minuti {_tsm['label']}")
+    elif doc.get("kind") in ("ora_esatta", "time_signal"):
+        # fallback INVARIATO: permanente dell'ora piena
         _live_au = await _resolve_current_hour_time_signal()
         if _live_au:
             doc["audio_url"] = _live_au

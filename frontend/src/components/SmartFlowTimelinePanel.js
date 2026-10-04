@@ -120,6 +120,26 @@ export default function SmartFlowTimelinePanel() {
     } catch { toast.error("Errore generazione segnali orari"); }
     finally { setPermTsBusy(false); }
   };
+  // v13.48 · Clip-parte ORA (24) + MINUTO (60) per il segnale orario con minuti (solo eventi Timeline/rrule)
+  const [partsBusy, setPartsBusy] = useState(false);
+  const [partsStatus, setPartsStatus] = useState(null);
+  const loadPartsStatus = async () => { try { const r = await api.get("/admin/time-signal/parts-status"); setPartsStatus(r.data); } catch {} };
+  const generateTimeSignalParts = async (force) => {
+    if (!window.confirm(force
+      ? "Rigenerare TUTTE le 84 clip ora+minuti (24 ORA + 60 MINUTO)? Costo: 84 sintesi brevi."
+      : "Generare le clip ora+minuti mancanti (una tantum, max 84 sintesi brevi)? Le clip già valide non verranno toccate.")) return;
+    setPartsBusy(true);
+    try {
+      const params = { force: !!force };
+      if (form.dj_id) params.dj_id = form.dj_id;
+      const r = await api.post("/admin/time-signal/generate-parts", null, { params });
+      const { generated = [], skipped_existing = [], failed = [] } = r.data || {};
+      toast.success(`Clip ora+minuti: ${generated.length} generate, ${skipped_existing.length} già pronte${failed.length ? `, ${failed.length} fallite` : ""}`);
+      loadPartsStatus();
+    } catch { toast.error("Errore generazione clip ora+minuti"); }
+    finally { setPartsBusy(false); }
+  };
+  useEffect(() => { loadPartsStatus(); }, []);
   // v13.22 · Config globale di Regia (soggetto default + video default)
   const [regiaCfg, setRegiaCfg] = useState({ default_subject: "", ledwall_default_video_url: "" });
   const [regiaBusy, setRegiaBusy] = useState(false);
@@ -673,6 +693,27 @@ export default function SmartFlowTimelinePanel() {
                 >
                   🔁 Rigenera (cambio voce/testo)
                 </button>
+              </div>
+              {/* v13.48 · Segnale orario CON MINUTI (clip-parte) — solo per gli eventi programmati */}
+              <div className="mt-2 rounded p-2" style={{ background: "rgba(0,229,255,0.04)", border: "1px dashed rgba(0,229,255,0.3)" }} data-testid="ts-parts-box">
+                <div className="text-[10px] font-mono text-cyan-200 mb-1">
+                  🕰️ Ora esatta CON MINUTI (es. “Sono le nove” + “e tre minuti, su R-A.I. Radio…”) · 24 clip ORA + 60 clip MINUTO, concatenate all'onda.
+                  {partsStatus && (
+                    <span data-testid="ts-parts-status" className="ml-2" style={{ color: partsStatus.complete ? "#80FFB4" : "#FFB84D" }}>
+                      {partsStatus.complete ? "● 84/84 pronte" : `○ ${partsStatus.total_ready}/84 pronte → fallback all'ora piena finché incomplete`}
+                    </span>
+                  )}
+                </div>
+                <div className="flex gap-2">
+                  <button type="button" onClick={() => generateTimeSignalParts(false)} disabled={partsBusy} data-testid="timeline-generate-ts-parts"
+                    className="px-3 py-1.5 rounded text-xs font-bold" style={{ background: "rgba(0,229,255,0.2)", border: "1px solid rgba(0,229,255,0.5)", color: "#fff" }}>
+                    {partsBusy ? "Genero…" : "🕰️ Genera clip ORA+MINUTI (84)"}
+                  </button>
+                  <button type="button" onClick={() => generateTimeSignalParts(true)} disabled={partsBusy} data-testid="timeline-regenerate-ts-parts"
+                    className="px-3 py-1.5 rounded text-xs font-bold" style={{ background: "rgba(255,45,149,0.2)", border: "1px solid rgba(255,45,149,0.5)", color: "#fff" }}>
+                    🔁 Rigenera tutte
+                  </button>
+                </div>
               </div>
             </div>
           )}
