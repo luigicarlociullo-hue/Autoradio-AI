@@ -6644,6 +6644,11 @@ _IT_UNITS = ["", "uno", "due", "tre", "quattro", "cinque", "sei", "sette", "otto
 _IT_TENS = ["", "dieci", "venti", "trenta", "quaranta", "cinquanta"]
 _IT_TEENS = ["dieci", "undici", "dodici", "tredici", "quattordici", "quindici", "sedici", "diciassette", "diciotto", "diciannove"]
 _TS_SIGNOFF = "su R-A.I. Radio, sincronizzata con l'orologio atomico di Singapore!"
+# Ticket #247410: le 24 clip ORA duravano 1.4-2.1s totali — troppo poco perche' la frase di
+# testa "Segnale orario." da sola assorba la perdita nota di 0.3-3.7s dall'inizio (vedi commento
+# sopra su _generate_time_signal_hour). Risultato reale: ore "ventuno" diventava un frammento
+# incomprensibile. Lead-in piu' lungo = margine reale anche nel caso peggiore.
+_TS_HOUR_LEADIN = "Un attimo di attenzione, qui è R-A.I. Radio con il consueto appuntamento."
 
 
 def _it_minute_words(m: int) -> str:
@@ -6662,8 +6667,9 @@ def _ts_part_text(part: str) -> str:
     kind, n = part[0], int(part[1:])
     if kind == "h":
         if n == 0:
-            return "Segnale orario. È mezzanotte"
-        return "Segnale orario. È l'una" if n == 1 else f"Segnale orario. Sono le {_IT_HOUR_WORDS[n]}"
+            return f"{_TS_HOUR_LEADIN} Segnale orario. È mezzanotte"
+        core = "Segnale orario. È l'una" if n == 1 else f"Segnale orario. Sono le {_IT_HOUR_WORDS[n]}"
+        return f"{_TS_HOUR_LEADIN} {core}"
     if n == 0:
         return f"in punto, {_TS_SIGNOFF}"
     if n == 1:
