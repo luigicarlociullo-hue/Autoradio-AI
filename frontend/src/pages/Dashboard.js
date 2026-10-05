@@ -34,7 +34,9 @@ export default function Dashboard() {
   const [tgStatus, setTgStatus] = useState({ enabled: false });
   const [adPlays, setAdPlays] = useState({}); // { campaign_id: plays payload }
   const [busy, setBusy] = useState(false);
-  const [newDj, setNewDj] = useState({ name: "", personality: "", voice_key: "female-1", llm_provider: "openai", llm_model: "gpt-5.2", accent_color: "#22d3ee" });
+  const [newDj, setNewDj] = useState({ name: "", personality: "", voice_key: "female-1", llm_provider: "openai", llm_model: "gpt-5.2", accent_color: "#22d3ee", eleven_voice_id: "" });
+  const [djVoiceEdits, setDjVoiceEdits] = useState({}); // { [dj.id]: draft eleven_voice_id string }
+  const [djVoiceSaving, setDjVoiceSaving] = useState({}); // { [dj.id]: bool }
 
   useEffect(() => {
     if (user) return;
@@ -117,12 +119,27 @@ export default function Dashboard() {
       const d = await endpoints.createDj(newDj);
       setDjs(p => [...p, d]);
       toast.success(`DJ ${d.name} aggiunto`);
-      setNewDj({ name: "", personality: "", voice_key: "female-1", llm_provider: "openai", llm_model: "gpt-5.2", accent_color: "#22d3ee" });
+      setNewDj({ name: "", personality: "", voice_key: "female-1", llm_provider: "openai", llm_model: "gpt-5.2", accent_color: "#22d3ee", eleven_voice_id: "" });
     } catch { toast.error("Errore"); }
   };
 
   const deleteDj = async (id) => {
     await endpoints.deleteDj(id); setDjs(p => p.filter(x => x.id !== id)); toast.success("DJ rimosso");
+  };
+
+  // Ticket #247410: il backend supporta gia' una voce ElevenLabs custom (clonata)
+  // per DJ, ma non esisteva alcun modo per impostarla su un DJ gia' esistente —
+  // un cliente con un abbonamento ElevenLabs Pro non aveva modo di usare la
+  // propria voce clonata da nessuna parte nell'app.
+  const saveDjVoiceId = async (dj) => {
+    const value = (djVoiceEdits[dj.id] ?? dj.eleven_voice_id ?? "").trim();
+    setDjVoiceSaving(p => ({ ...p, [dj.id]: true }));
+    try {
+      const updated = await endpoints.djPatch(dj.id, { eleven_voice_id: value });
+      setDjs(p => p.map(x => x.id === dj.id ? updated : x));
+      toast.success(value ? `Voce ElevenLabs impostata per ${dj.name}` : `Voce ElevenLabs rimossa per ${dj.name}`);
+    } catch { toast.error("Errore salvataggio voce ElevenLabs"); }
+    finally { setDjVoiceSaving(p => ({ ...p, [dj.id]: false })); }
   };
 
   return (
@@ -472,6 +489,26 @@ export default function Dashboard() {
                   <div className="font-display font-semibold" style={{ color: dj.accent_color }}>{dj.name}</div>
                   <div className="font-mono text-xs text-cyan-400 uppercase">{dj.llm_provider} · {dj.llm_model}</div>
                   <div className="text-xs text-zinc-500 mt-1 line-clamp-2">{dj.personality}</div>
+                  <div className="flex items-center gap-1 mt-2">
+                    <input
+                      type="text"
+                      placeholder="ID voce ElevenLabs custom (opzionale)"
+                      value={djVoiceEdits[dj.id] ?? dj.eleven_voice_id ?? ""}
+                      onChange={e => setDjVoiceEdits(p => ({ ...p, [dj.id]: e.target.value }))}
+                      className="flex-1 min-w-0 bg-[#0F0F14] border border-white/10 rounded px-2 py-1 text-xs font-mono focusable"
+                      data-testid={`dj-eleven-voice-id-${dj.id}`}
+                      title="ID voce ElevenLabs clonata (da elevenlabs.io, sezione Voices) — se impostato, usato al posto della voce generica"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => saveDjVoiceId(dj)}
+                      disabled={!!djVoiceSaving[dj.id]}
+                      className="shrink-0 px-2 py-1 rounded text-xs font-bold bg-cyan-500/20 border border-cyan-500/40 hover:bg-cyan-500/30"
+                      data-testid={`dj-eleven-voice-save-${dj.id}`}
+                    >
+                      {djVoiceSaving[dj.id] ? "…" : "Salva"}
+                    </button>
+                  </div>
                 </div>
                 <button onClick={() => deleteDj(dj.id)} className="text-zinc-500 hover:text-pink-500 transition-colors duration-200" title="Rimuovi DJ" data-testid={`delete-dj-${dj.id}`}>
                   <Trash2 className="w-4 h-4" />
@@ -496,6 +533,14 @@ export default function Dashboard() {
               </select>
             </div>
             <textarea placeholder="Personalità (es. energica, ironica, nostalgica…)" value={newDj.personality} onChange={e => setNewDj({ ...newDj, personality: e.target.value })} rows={2} className="w-full bg-[#0F0F14] border border-white/10 rounded px-3 py-2 text-sm focusable" data-testid="new-dj-personality" />
+            <input
+              type="text"
+              placeholder="ID voce ElevenLabs custom (opzionale, da elevenlabs.io)"
+              value={newDj.eleven_voice_id}
+              onChange={e => setNewDj({ ...newDj, eleven_voice_id: e.target.value })}
+              className="w-full bg-[#0F0F14] border border-white/10 rounded px-3 py-2 text-sm font-mono focusable"
+              data-testid="new-dj-eleven-voice-id"
+            />
             <div className="grid grid-cols-2 gap-2">
               <select value={newDj.llm_provider} onChange={e => {
                 const p = e.target.value;

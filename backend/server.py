@@ -285,6 +285,12 @@ class DJPersona(BaseModel):
     accent_color: str = "#FF1493"
     # Club Night (v12.11+): 1 = 22-00, 2 = 00-02, 3 = 02-04. Null = DJ diurno normale.
     night_slot: Optional[int] = None
+    # Ticket #247410: voce ElevenLabs CUSTOM (clonata) per questo DJ — se valorizzata,
+    # synth_bytes() la usa al posto del voice_id generico mappato da voice_key. Il
+    # backend la leggeva gia' (elevenlabs_service.py), ma non esisteva alcun campo
+    # per impostarla: un cliente con un abbonamento ElevenLabs Pro non aveva modo
+    # di usare la propria voce clonata da nessuna parte nell'app.
+    eleven_voice_id: Optional[str] = None
     created_at: str = Field(default_factory=now_iso)
 
 
@@ -297,6 +303,7 @@ class DJCreate(BaseModel):
     avatar_url: Optional[str] = None
     accent_color: str = "#FF1493"
     night_slot: Optional[int] = None
+    eleven_voice_id: Optional[str] = None
 
 
 class Track(BaseModel):
@@ -835,7 +842,7 @@ async def patch_dj(dj_id: str, payload: dict):
     """Aggiorna campi liberi del DJ (usato per assegnare night_slot, cambiare
     personality, ecc.). Ritorna il DJ aggiornato."""
     allowed = {"name", "personality", "voice_key", "llm_provider", "llm_model",
-               "avatar_url", "accent_color", "night_slot"}
+               "avatar_url", "accent_color", "night_slot", "eleven_voice_id"}
     updates = {k: v for k, v in payload.items() if k in allowed}
     if "night_slot" in updates:
         v = updates["night_slot"]
@@ -848,6 +855,9 @@ async def patch_dj(dj_id: str, payload: dict):
                     updates["night_slot"] = None
             except Exception:
                 updates["night_slot"] = None
+    if "eleven_voice_id" in updates:
+        v = (updates["eleven_voice_id"] or "").strip()
+        updates["eleven_voice_id"] = v or None
     if not updates:
         raise HTTPException(400, "No valid fields to update")
     r = await db.djs.update_one({"id": dj_id}, {"$set": updates})
