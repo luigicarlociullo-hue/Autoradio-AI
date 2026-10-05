@@ -200,6 +200,15 @@ export default function SyncLivePlayer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status]);
 
+  // Ticket #247410: il Pause admin, come lo Skip, agiva solo sul vecchio
+  // radioEngine — chi ascoltava in Sync Live non si fermava mai davvero.
+  useEffect(() => {
+    const onPause = () => { stopSync(); };
+    window.addEventListener("rai:sync:pause", onPause);
+    return () => window.removeEventListener("rai:sync:pause", onPause);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const startSync = async (force = false) => {
     if (status === "playing" && !force) return;
     setStatus("loading");

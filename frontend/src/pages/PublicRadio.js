@@ -310,10 +310,16 @@ export default function PublicRadio() {
         case "pause":
           stopFlag.current = true;
           try { radioEngine.stopAll(); } catch (e) {}
+          try { window.dispatchEvent(new CustomEvent("rai:sync:pause")); } catch (e) {}
           setIsPlaying(false);
           break;
         case "resume":
           toast.info("L'admin ha inviato PLAY — clicca Ascolta ora per riprendere.");
+          break;
+        case "jingle_now":
+          // Il backend inserisce il jingle con lo stesso meccanismo di force-advance
+          // dello Skip: serve lo stesso resync forzato per chi e' gia' in Sync Live.
+          try { window.dispatchEvent(new CustomEvent("rai:sync:skip")); } catch (e) {}
           break;
         default: break;
       }
