@@ -6493,6 +6493,59 @@ async def _validate_audio_bytes(data: bytes) -> dict:
             pass
 
 
+async def _prepend_silence_bytes(audio: bytes, lead_sec: float = 2.5) -> bytes:
+    """Ticket #247410 (follow-up): antepone `lead_sec` di silenzio VERO (non parlato
+    sacrificabile) a una clip TTS, cosi' la perdita nota di 0.3-3.7s dall'inizio di un
+    item breve (hls.js live-edge catch-up, vedi _generate_time_signal_hour) consuma
+    silenzio invece di mordere il parlato reale. Decode+concat+reencode (mai concat
+    bytewise: alcuni provider TTS emettono un tag ID3 che il protocollo "concat:"
+    concatenerebbe come se fosse audio). Silenzio generato alla STESSA sample_rate/
+    canali della sorgente (provider diversi usano rate diversi: 24kHz OpenAI, 44.1kHz
+    ElevenLabs) per evitare resample inutili. In caso di qualunque errore ritorna i
+    bytes originali invariati: mai bloccare una generazione per questo step opzionale."""
+    import tempfile
+    if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+        return audio
+    fd_in, src_path = tempfile.mkstemp(prefix="silin_", suffix=".mp3")
+    fd_out, out_path = tempfile.mkstemp(prefix="silout_", suffix=".mp3")
+    os.close(fd_out)
+    try:
+        with os.fdopen(fd_in, "wb") as f:
+            f.write(audio)
+        rc, probe_out, _ = await _run_capture(
+            "ffprobe", "-v", "error", "-select_streams", "a:0",
+            "-show_entries", "stream=sample_rate,channels", "-of", "csv=p=0", src_path,
+        )
+        if rc != 0 or not probe_out.strip():
+            return audio
+        ar_s, ac_s = (probe_out.strip().split(",") + ["", ""])[:2]
+        ar = int(ar_s) if ar_s.isdigit() else 24000
+        channels = int(ac_s) if ac_s.isdigit() else 1
+        cl = "stereo" if channels >= 2 else "mono"
+        rc, _, err = await _run_capture(
+            "ffmpeg", "-y", "-f", "lavfi", "-i", f"anullsrc=r={ar}:cl={cl}:d={lead_sec}",
+            "-i", src_path, "-filter_complex", "[0:a][1:a]concat=n=2:v=0:a=1[out]",
+            "-map", "[out]", "-c:a", "libmp3lame", "-b:a", "128k", out_path,
+            timeout=20.0,
+        )
+        if rc != 0:
+            logger.warning(f"[silence-pad] ffmpeg concat fallito, uso audio originale: {err[:200]}")
+            return audio
+        padded = Path(out_path).read_bytes()
+        if not padded:
+            return audio
+        return padded
+    except Exception as e:
+        logger.warning(f"[silence-pad] errore, uso audio originale: {e}")
+        return audio
+    finally:
+        for p in (src_path, out_path):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+
+
 async def _generate_time_signal_hour(h: int, text: str, voice_key: str, dj_id: Optional[str], allow_local_only: bool, tag: Optional[str] = None) -> dict:
     """Genera UN segnale orario permanente. Ritorna {ok, url, v, storage_verified} oppure {ok: False, reason, ...}.
     Mai Bark/wav; niente kill-switch (click esplicito admin). Il file nuovo ha un nome NUOVO (hash del contenuto):
@@ -6507,6 +6560,9 @@ async def _generate_time_signal_hour(h: int, text: str, voice_key: str, dj_id: O
         return {"ok": False, "reason": f"tts_error: {str(e)[:160]}"}
     if not audio:
         return {"ok": False, "reason": "tts_returned_nothing"}
+    # Ticket #247410 (follow-up): silenzio vero in testa, strutturale, non piu' dipendente
+    # dalla lunghezza del testo di lead-in (vedi _prepend_silence_bytes).
+    audio = await _prepend_silence_bytes(audio, lead_sec=2.5)
     v0 = await _validate_audio_bytes(audio)
     if not v0["ok"]:
         return {"ok": False, "reason": f"audio_invalid:{v0['reason']}", "bytes": v0["bytes"],
