@@ -187,8 +187,21 @@ export default function SyncLivePlayer() {
     return () => clearInterval(nowPollRef.current);
   }, []);
 
-  const startSync = async () => {
-    if (status === "playing") return;
+  // Ticket #247410: lo Skip admin avanza il clock lato server (station_clock)
+  // ma, se gia' in ascolto, hls.js continua a suonare dal buffer gia'
+  // scaricato del brano VECCHIO fino a esaurirlo — lo Skip non si sentiva
+  // mai finche' quel buffer non finiva da solo. Un resync forzato (nuova
+  // manifest fetch, EXT-X-START = posizione live AGGIORNATA) rende lo Skip
+  // immediato per chi e' gia' connesso in Sync Live.
+  useEffect(() => {
+    const onSkip = () => { startSync(true).catch(() => {}); };
+    window.addEventListener("rai:sync:skip", onSkip);
+    return () => window.removeEventListener("rai:sync:skip", onSkip);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status]);
+
+  const startSync = async (force = false) => {
+    if (status === "playing" && !force) return;
     setStatus("loading");
     const hlsUrl = `${process.env.REACT_APP_BACKEND_URL}/api/stream/live.m3u8`;
     const audio = audioRef.current;

@@ -305,6 +305,7 @@ export default function PublicRadio() {
       switch (cmd.type) {
         case "skip":
           try { radioEngine.stopAll(); } catch (e) {}
+          try { window.dispatchEvent(new CustomEvent("rai:sync:skip")); } catch (e) {}
           break;
         case "pause":
           stopFlag.current = true;
