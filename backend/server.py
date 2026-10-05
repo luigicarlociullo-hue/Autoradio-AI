@@ -6649,6 +6649,10 @@ _TS_SIGNOFF = "su R-A.I. Radio, sincronizzata con l'orologio atomico di Singapor
 # sopra su _generate_time_signal_hour). Risultato reale: ore "ventuno" diventava un frammento
 # incomprensibile. Lead-in piu' lungo = margine reale anche nel caso peggiore.
 _TS_HOUR_LEADIN = "Un attimo di attenzione, qui è R-A.I. Radio con il consueto appuntamento."
+# Stesso problema dei minuti: "e N minuti..." partiva da byte 0 con zero protezione (nessun
+# lead-in prima del numero) — testo diverso da quello dell'ora per non ripetere la stessa
+# frase due volte di fila nello stesso annuncio concatenato.
+_TS_MIN_LEADIN = "Restate sintonizzati, qui è sempre R-A.I. Radio, la vostra radio intelligente."
 
 
 def _it_minute_words(m: int) -> str:
@@ -6671,10 +6675,10 @@ def _ts_part_text(part: str) -> str:
         core = "Segnale orario. È l'una" if n == 1 else f"Segnale orario. Sono le {_IT_HOUR_WORDS[n]}"
         return f"{_TS_HOUR_LEADIN} {core}"
     if n == 0:
-        return f"in punto, {_TS_SIGNOFF}"
+        return f"{_TS_MIN_LEADIN} In punto, {_TS_SIGNOFF}"
     if n == 1:
-        return f"e un minuto, {_TS_SIGNOFF}"
-    return f"e {_it_minute_words(n)} minuti, {_TS_SIGNOFF}"
+        return f"{_TS_MIN_LEADIN} E un minuto, {_TS_SIGNOFF}"
+    return f"{_TS_MIN_LEADIN} E {_it_minute_words(n)} minuti, {_TS_SIGNOFF}"
 
 
 _TS_ALL_PARTS = [f"h{h:02d}" for h in range(24)] + [f"m{m:02d}" for m in range(60)]
