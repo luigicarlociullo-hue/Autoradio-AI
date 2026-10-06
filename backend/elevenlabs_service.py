@@ -229,7 +229,8 @@ async def _synth_elevenlabs(text: str, voice_key: str, kind: str = "", dj_id: st
         return None
 
 
-async def synth_bytes(text: str, voice_key: str, kind: str = "", dj_id: str | None = None) -> tuple:
+async def synth_bytes(text: str, voice_key: str, kind: str = "", dj_id: str | None = None,
+                      require_elevenlabs: bool = False) -> tuple:
     """(mp3 bytes, provider) oppure (None, None). NIENTE cache, NIENTE scrittura su disco, NIENTE lettura del
     kill-switch `ai_openai_talk`: serve alla generazione ESPLICITA dell'admin di asset permanenti (segnali orari),
     che deve funzionare anche con l'interruttore OFF. Il parlato live continua a passare da `synth_speech` (gated).
@@ -240,6 +241,10 @@ async def synth_bytes(text: str, voice_key: str, kind: str = "", dj_id: str | No
     audio = await _synth_elevenlabs(text, voice_key, kind=kind, dj_id=dj_id)
     if audio:
         return audio, "elevenlabs"
+    # Ticket #247410: per i segnali orari niente ripiego silenzioso su OpenAI (24kHz mono,
+    # voce diversa): meglio un errore esplicito in regia che un file scadente in onda.
+    if require_elevenlabs:
+        return None, None
     audio = await _synth_openai(text, voice_key, ignore_talk_switch=True)
     if audio:
         return audio, "openai-tts-1-hd"

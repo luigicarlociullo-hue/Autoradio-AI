@@ -6659,7 +6659,7 @@ async def _prepend_silence_bytes(audio: bytes, lead_sec: float = 2.5) -> bytes:
         rc, _, err = await _run_capture(
             "ffmpeg", "-y", "-f", "lavfi", "-i", f"anullsrc=r={ar}:cl={cl}:d={lead_sec}",
             "-i", src_path, "-filter_complex", "[0:a][1:a]concat=n=2:v=0:a=1[out]",
-            "-map", "[out]", "-c:a", "libmp3lame", "-b:a", "128k", out_path,
+            "-map", "[out]", "-ar", "44100", "-c:a", "libmp3lame", "-b:a", "192k", out_path,
             timeout=20.0,
         )
         if rc != 0:
@@ -6688,15 +6688,20 @@ async def _generate_time_signal_hour(h: int, text: str, voice_key: str, dj_id: O
     v13.48 · `tag` (es. "tsh09", "tsm03") per le clip-parte ORA/MINUTO; default f"ts{h:02d}"."""
     tag = tag or f"ts{h:02d}"
     try:
-        audio, provider = await elevenlabs_service.synth_bytes(text, voice_key, kind="time_signal", dj_id=dj_id)
+        audio, provider = await elevenlabs_service.synth_bytes(text, voice_key, kind="time_signal", dj_id=dj_id,
+                                                               require_elevenlabs=True)
     except Exception as e:
         logger.warning(f"[time-signal-permanent] hour={h} synth failed: {e}")
         return {"ok": False, "reason": f"tts_error: {str(e)[:160]}"}
     if not audio:
-        return {"ok": False, "reason": "tts_returned_nothing"}
+        return {"ok": False, "reason": "elevenlabs_failed (controlla chiave/crediti/voce ElevenLabs; nessun ripiego OpenAI)"}
     # Ticket #247410 (follow-up): silenzio vero in testa, strutturale, non piu' dipendente
     # dalla lunghezza del testo di lead-in (vedi _prepend_silence_bytes).
-    audio = await _prepend_silence_bytes(audio, lead_sec=2.5)
+    # Ticket #247410: la clip MINUTO va in onda come follow-up subito dopo la clip ORA ed e'
+    # sempre gia' in finestra/pre-caricata: 2.5s di silenzio li' erano un buco a meta' frase
+    # ("Sono le nove ... e tre minuti"). Il silenzio protettivo resta solo dove serve.
+    if not tag.startswith("tsm"):
+        audio = await _prepend_silence_bytes(audio, lead_sec=2.5)
     v0 = await _validate_audio_bytes(audio)
     if not v0["ok"]:
         return {"ok": False, "reason": f"audio_invalid:{v0['reason']}", "bytes": v0["bytes"],
