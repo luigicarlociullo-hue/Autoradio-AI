@@ -5980,26 +5980,29 @@ async def hls_live_playlist(request: Request):
         return Response(content=empty, media_type="application/vnd.apple.mpegurl",
                         headers={"Cache-Control": "no-store", "Access-Control-Allow-Origin": "*"})
 
-    # Ticket #247410: quando il CORRENTE e' breve (jingle/segnale orario), non
-    # trascinare nella finestra un brano lungo piu' avanti in coda solo perche'
-    # rientra nei "prossimi 4" di default — gonfierebbe TARGETDURATION (sotto)
-    # anche se cio' che sta ANDANDO IN ONDA ORA e' breve, vanificando la
-    # correzione proprio nel caso Jingle->Canzone (confermato dal cliente: con
-    # la sola correzione TARGETDURATION, Canzone->Canzone e Canzone->Jingle
-    # sono ok, Jingle->Canzone no — perche' la canzone lunga in coda dopo il
-    # jingle teneva comunque alto il valore dichiarato). Il brano lungo
+    # Ticket #247410: non trascinare nella finestra un elemento sproporzionatamente
+    # piu' lungo del corrente solo perche' rientra nei "prossimi 4" di default —
+    # gonfierebbe TARGETDURATION (sotto) anche se cio' che sta ANDANDO IN ONDA ORA
+    # e' breve, vanificando la correzione nel caso Jingle->Canzone. v2: la soglia
+    # fissa _SHORT_ITEM_LOG_SEC (40s) copriva solo i jingle "Short" — i jingle
+    # "Long" reali vanno da 41.5 a 152s+ (nessun campo "kind" semantico disponibile
+    # qui per distinguerli da una canzone per tipo, solo la durata), quindi
+    # restavano scoperti e il cliente continuava a sentire Jingle->Canzone tagliata.
+    # Soglia relativa al corrente invece che fissa: un elemento entra in finestra
+    # solo se non supera 3x il massimo osservato finora (che cresce man mano che
+    # si includono elementi comparabili) — copre jingle corti E lunghi allo stesso
+    # modo, senza bisogno di sapere cosa sia davvero un "jingle". Il brano escluso
     # comparira' comunque, appena sara' lui il corrente (prossimo giro/poll).
-    _cur_raw_dur = float(cur.get("duration_sec") or 0)
     _queue_tail = (clock.get("queue") or [])[:4]
-    if _cur_raw_dur and _cur_raw_dur < _SHORT_ITEM_LOG_SEC:
-        entries = [cur]
-        for _t in _queue_tail:
-            _t_dur = float(_t.get("real_duration_sec") or _t.get("duration_sec") or 0)
-            if _t_dur and _t_dur >= _SHORT_ITEM_LOG_SEC:
-                break
-            entries.append(_t)
-    else:
-        entries = [cur] + _queue_tail
+    entries = [cur]
+    _running_max_dur = float(cur.get("duration_sec") or 0) or 1.0
+    for _t in _queue_tail:
+        _t_dur = float(_t.get("real_duration_sec") or _t.get("duration_sec") or 0)
+        if _t_dur and _t_dur > _running_max_dur * 3:
+            break
+        entries.append(_t)
+        if _t_dur > _running_max_dur:
+            _running_max_dur = _t_dur
     # v13.40 · Finestra scorrevole live: MEDIA-SEQUENCE = numero progressivo
     # del current (prima fisso a 0 mentre il primo segmento cambiava → hls.js
     # riconosceva come "segmento 0" un file diverso). Ogni segmento dopo il
