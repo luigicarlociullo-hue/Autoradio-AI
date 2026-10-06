@@ -6062,6 +6062,22 @@ async def hls_live_playlist(request: Request):
     # PLAYLIST-TYPE:EVENT: una playlist EVENT non può rimuovere segmenti in testa.
     seq = int(clock.get("seq") or 0)
 
+    # Ticket #247410: la canzone appena finita resta in testa alla finestra per
+    # _HLS_PREV_GRACE_SEC dopo la sua fine teorica. Prima la finestra era SOLO
+    # corrente + prossimi: al cambio Canzone->Jingle la canzone usciva subito
+    # dalla playlist e ogni ascoltatore anche solo pochi secondi indietro (download
+    # del file, buffering) veniva spostato da hls.js direttamente sul jingle,
+    # sentendo la canzone "uccisa di netto". Non conta per TARGETDURATION: la
+    # cadenza di refresh resta quella di cio' che e' in onda ora.
+    _prev_entry = None
+    _prev = clock.get("previous") or None
+    if _prev and int(_prev.get("seq") or -1) == seq - 1:
+        _prev_dur = float(_prev.get("real_duration_sec") or _prev.get("duration_sec") or 0)
+        _prev_end = _clock_entry_end(_prev)
+        if _prev_dur > 0 and _prev_end and \
+                (datetime.now(timezone.utc) - _prev_end).total_seconds() < _HLS_PREV_GRACE_SEC:
+            _prev_entry = (_prev, _prev_dur)
+
     # Ticket #247410: prima passata per risolvere le entry valide e le loro
     # durate REALI, cosi' TARGETDURATION (sotto) riflette cosa c'e' davvero
     # in questa playlist invece di un 300 fisso. Quel 300 fisso sottostimava
@@ -6096,20 +6112,26 @@ async def hls_live_playlist(request: Request):
     else:
         target_duration = 10
 
+    # Con la canzone precedente in testa, sequenze e offset di partenza si
+    # spostano di uno/della sua durata: EXT-X-START resta sul punto live del CORRENTE.
+    _first_seq = seq - 1 if _prev_entry else seq
+    _start_offset = offset + (_prev_entry[1] if _prev_entry else 0.0)
     lines = [
         "#EXTM3U",
         "#EXT-X-VERSION:3",
         f"#EXT-X-TARGETDURATION:{target_duration}",
-        f"#EXT-X-MEDIA-SEQUENCE:{seq}",
-        f"#EXT-X-DISCONTINUITY-SEQUENCE:{seq}",
-        f"#EXT-X-START:TIME-OFFSET={offset:.3f},PRECISE=YES",
+        f"#EXT-X-MEDIA-SEQUENCE:{_first_seq}",
+        f"#EXT-X-DISCONTINUITY-SEQUENCE:{_first_seq}",
+        f"#EXT-X-START:TIME-OFFSET={_start_offset:.3f},PRECISE=YES",
     ]
-    # Iniziale program-date-time = quando il current è iniziato per davvero
+    # Iniziale program-date-time = quando il primo elemento in finestra è iniziato per davvero
     running_dt = None
     try:
-        running_dt = datetime.fromisoformat((cur.get("started_at") or "").replace("Z", "+00:00"))
+        running_dt = datetime.fromisoformat(((_prev_entry[0] if _prev_entry else cur).get("started_at") or "").replace("Z", "+00:00"))
     except Exception:
         running_dt = datetime.now(timezone.utc)
+    if _prev_entry:
+        resolved = [_prev_entry] + resolved
 
     for i, (t, dur) in enumerate(resolved):
         title = (t.get("title") or "R-A.I.").replace(",", " ")
@@ -8602,6 +8624,7 @@ _PLAY_LOG_TTL_SEC = 14 * 24 * 3600
 _play_log_tasks: set = set()
 _first_offset_seen = _collections.OrderedDict()
 _SHORT_ITEM_LOG_SEC = 40
+_HLS_PREV_GRACE_SEC = 45   # Ticket #247410: per quanto la canzone finita resta in testa alla playlist live
 
 
 def _play_log_kind(e: dict) -> str:
@@ -8871,6 +8894,15 @@ async def _clock_promote_inner(force: bool, state: dict) -> dict:
             })
         if fu_entries:
             q = fu_entries + (q or [])
+        # Ticket #247410: conserva l'elemento appena finito (con il suo seq) cosi'
+        # la playlist HLS puo' tenerlo in finestra per qualche secondo: gli
+        # ascoltatori sono sempre un po' indietro rispetto al clock del server e,
+        # se il brano sparisce dalla playlist all'istante, hls.js salta in avanti
+        # al prossimo elemento troncando la coda della canzone. Uno Skip forzato
+        # invece deve tagliare davvero, quindi li' non lo conserviamo.
+        _old_cur = clock.get("current")
+        clock["previous"] = (dict(_old_cur, seq=int(clock.get("seq") or 0))
+                             if _old_cur and not _forced_now else None)
         clock["current"] = promo
         clock["queue"] = q
         _promoted += 1
@@ -8895,6 +8927,7 @@ async def _clock_promote_inner(force: bool, state: dict) -> dict:
         # erano) invece di perdere l'evento Timeline già consumato.
         for _attempt in range(4):
             if await _clock_cas(clock, {"current": clock.get("current"), "queue": clock.get("queue") or [],
+                                        "previous": clock.get("previous"),
                                         "seq": int(clock.get("seq") or 0), "updated_at": clock["updated_at"],
                                         "claim_by": None, "claim_until": None}):   # scrittura finale = rilascio del claim
                 state["released"] = True
