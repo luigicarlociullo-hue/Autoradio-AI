@@ -790,10 +790,10 @@ export default function PublicRadio() {
             </div>
 
             {/* elementi tecnici nascosti dalla home (restano nel codice) */}
-            {/* Ticket #247410: ripristinato su richiesta esplicita del cliente —
-                era stato disattivato durante un redesign non collegato a questo
-                ticket, non per un bug. */}
-            <LiveBrainTicker current={effectiveCurrent} />
+            {/* Ticket #247410: rimosso su decisione del cliente — era solo decorativo
+                (frasi tecniche casuali). Resta solo il Live Brain reale, piu' in basso,
+                ora con lo stesso verde "vecchio monitor". Il componente resta nel codice. */}
+            {false && <LiveBrainTicker current={effectiveCurrent} />}
             {false && <CueThinking current={effectiveCurrent} />}
           </div>
 

@@ -81,8 +81,9 @@ export default function LiveBrain({ current, segments = [] }) {
       <div
         className="text-[11px] leading-relaxed"
         style={{
-          color: "#7FD8FF",
-          textShadow: "0 0 4px rgba(0,229,255,0.6)",
+          // Ticket #247410: verde "vecchio monitor" (stesso del vecchio ticker decorativo), su richiesta del cliente
+          color: "#39FF14",
+          textShadow: "0 0 4px rgba(57,255,20,0.6)",
           minHeight: 96,
         }}
       >
@@ -91,7 +92,7 @@ export default function LiveBrain({ current, segments = [] }) {
           return (
             <div key={i} className="truncate" style={{ opacity: isLatest ? 1 : 0.55 + (i / lines.length) * 0.35 }}>
               {ln}
-              {isLatest && <span className="inline-block w-1.5 h-3 align-middle ml-1 bg-cyan-300 animate-pulse" />}
+              {isLatest && <span className="inline-block w-1.5 h-3 align-middle ml-1 bg-[#39FF14] animate-pulse" />}
             </div>
           );
         })}
