@@ -344,8 +344,9 @@ class Track(BaseModel):
     #   Se entrambi False vale "both" (retro-compat). Default: entrambi True.
     daypart_day: bool = True              # eleggibile per rotazione diurna
     daypart_night: bool = True            # eleggibile per rotazione notturna
-    # v13.44 · MATRICE TEMPORALE UNIVERSALE: always (24h) | day (06-22) | night (22-06)
-    broadcast_slot: Literal["always", "day", "night"] = "always"
+    # v13.44 · MATRICE TEMPORALE UNIVERSALE · v13.49 · 6 fasce:
+    #   always 24h | morning 06-11 | afternoon 11-19 | day 06-19 | evening 19-22 | night 22-04
+    broadcast_slot: Literal["always", "morning", "afternoon", "day", "evening", "night"] = "always"
     is_billboard: bool = False            # v13.44 · spot "billboard" (upload libero, senza contratto)
     # v12.14 · Archivio Pro + Beat Detection
     # NOTE: this is intentionally a SEPARATE field from `genre` above — `genre`
@@ -1451,14 +1452,55 @@ async def admin_assets_zip_download(token: str):
 # ----------------------- Admin: Upload MP3 (Master Plan #1) -----------------------
 @api_router.patch("/admin/tracks/{track_id}/broadcast-slot")
 async def admin_track_broadcast_slot(track_id: str, payload: dict):
-    """v13.44 · MATRICE TEMPORALE: slot in always (24h) | day (06-22) | night (22-06)."""
+    """v13.49 · MATRICE TEMPORALE a 6 fasce (vedi BROADCAST_SLOTS)."""
     slot = (payload.get("slot") or "").strip().lower()
-    if slot not in ("always", "day", "night"):
-        raise HTTPException(400, "slot deve essere always|day|night")
+    if slot not in BROADCAST_SLOTS:
+        raise HTTPException(400, "slot deve essere uno di: " + "|".join(BROADCAST_SLOTS))
     r = await db.tracks.update_one({"id": track_id}, {"$set": {"broadcast_slot": slot, "updated_at": now_iso()}})
     if r.matched_count == 0:
         raise HTTPException(404, "traccia non trovata")
     return {"ok": True, "id": track_id, "broadcast_slot": slot}
+
+
+BROADCAST_SLOTS = ("always", "morning", "afternoon", "day", "evening", "night")
+TRACK_KIND_FLAGS = ("is_jingle", "is_anthem", "is_loop", "is_spot", "is_fx")
+
+
+def _broadcast_slots_active(hour: int) -> list:
+    """Fasce attive per l'ora locale (Europe/Rome). always 24h · morning 06-11 ·
+    afternoon 11-19 · day 06-19 · evening 19-22 · night 22-04."""
+    out = ["always"]
+    if 6 <= hour < 11: out.append("morning")
+    if 11 <= hour < 19: out.append("afternoon")
+    if 6 <= hour < 19: out.append("day")
+    if 19 <= hour < 22: out.append("evening")
+    if hour >= 22 or hour < 4: out.append("night")
+    return out
+
+
+@api_router.patch("/admin/tracks/{track_id}/meta")
+async def admin_track_meta(track_id: str, payload: dict):
+    """v13.49 · Archivio Controllo Totale: modifica nome / artista / categoria
+    (song|jingle|anthem|loop|spot|fx). Solo metadati, nessun impatto sull'audio."""
+    upd: dict = {}
+    title = (payload.get("title") or "").strip()
+    artist = (payload.get("artist") or "").strip()
+    kind = (payload.get("kind") or "").strip().lower()
+    if title: upd["title"] = title[:200]
+    if artist: upd["artist"] = artist[:120]
+    if kind:
+        if kind not in ("song", "jingle", "anthem", "loop", "spot", "fx"):
+            raise HTTPException(400, "kind deve essere song|jingle|anthem|loop|spot|fx")
+        for f in TRACK_KIND_FLAGS:
+            upd[f] = (f == f"is_{kind}")
+        upd["kind"] = kind
+    if not upd:
+        raise HTTPException(400, "nessun campo da aggiornare")
+    upd["updated_at"] = now_iso()
+    r = await db.tracks.update_one({"id": track_id}, {"$set": upd})
+    if r.matched_count == 0:
+        raise HTTPException(404, "traccia non trovata")
+    return {"ok": True, "id": track_id, **upd}
 
 
 
@@ -8323,9 +8365,8 @@ async def _clock_pick_track(exclude_ids: Optional[set] = None) -> Optional[dict]
     except Exception:
         now_local = datetime.now(timezone.utc)
     is_night = (now_local.hour >= 22 or now_local.hour < 4)
-    # v13.44 · MATRICE TEMPORALE UNIVERSALE (broadcast_slot): GIORNO 06-22 / NOTTE 22-06 / SEMPRE
-    _slot_now = "night" if (now_local.hour >= 22 or now_local.hour < 6) else "day"
-    _slot_q = {"$or": [{"broadcast_slot": {"$exists": False}}, {"broadcast_slot": "always"}, {"broadcast_slot": _slot_now}]}
+    # v13.49 · MATRICE TEMPORALE a 6 fasce (always/morning/afternoon/day/evening/night)
+    _slot_q = {"$or": [{"broadcast_slot": {"$exists": False}}, {"broadcast_slot": {"$in": _broadcast_slots_active(now_local.hour)}}]}
     dp = ({"$or": [{"daypart_night": {"$ne": False}}, {"daypart_night": {"$exists": False}}]}
           if is_night else
           {"$or": [{"daypart_day": {"$ne": False}}, {"daypart_day": {"$exists": False}}]})

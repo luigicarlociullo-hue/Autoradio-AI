@@ -220,18 +220,21 @@ export const ASSET_CATEGORIES = [
 export const assetLabel = (t) => `${t.artist || ""} — ${t.title || t.id}`.replace(/^ — /, "");
 export const sortAssets = (arr) => [...arr].sort((a, b) => assetLabel(a).localeCompare(assetLabel(b), "it", { sensitivity: "base" }));
 
-export function MagazzinoUniversale() {
-  const [tab, setTab] = useState("audio"); // audio | video | trash | voice
+// v13.49 · embedded=true → montato dentro "Archivio Brani · Controllo Totale":
+// la lista MP3 è già lì, qui restano solo Upload / Cestino / Vocali.
+export function MagazzinoUniversale({ embedded = false }) {
+  const [tab, setTab] = useState(embedded ? "video" : "audio"); // audio | video | trash | voice
   // v13.44 · Cassetti + Search & Filter + slot temporale
   const [cat, setCat] = useState("all");
   const [q, setQ] = useState("");
   const [slotBusy, setSlotBusy] = useState(null);
+  const SLOT_LABELS = { morning: "MATTINA 06-11", afternoon: "POMERIGGIO 11-19", day: "GIORNO 06-19", evening: "SERA 19-22", night: "NOTTE 22-04", always: "SEMPRE 24h" };
   const setSlot = async (t, slot) => {
     setSlotBusy(t.id + slot);
     try {
       await api.patch(`/admin/tracks/${t.id}/broadcast-slot`, { slot });
       setTracks((arr) => arr.map((x) => (x.id === t.id ? { ...x, broadcast_slot: slot } : x)));
-      toast.success(`${t.title}: ${slot === "day" ? "GIORNO 06-22" : slot === "night" ? "NOTTE 22-06" : "SEMPRE 24h"}`);
+      toast.success(`${t.title}: ${SLOT_LABELS[slot] || slot}`);
     } catch { toast.error("Errore slot"); }
     finally { setSlotBusy(null); }
   };
@@ -343,23 +346,23 @@ export function MagazzinoUniversale() {
     { k: "video", label: `📤 Upload MP3/MP4 (${videos.length})`, color: "#FFB84D" },
     { k: "trash", label: `🗑️ Cestino (${trash.length})`, color: "#FF6BAA" },
     { k: "voice", label: `🎙️ Vocali (${voice.length})`, color: "#D080FF" },
-  ];
+  ].filter((t) => !(embedded && t.k === "audio"));
 
   return (
     <section
-      className="lg:col-span-4 rounded-xl p-5"
+      className={embedded ? "" : "lg:col-span-4 rounded-xl p-5"}
       data-testid="magazzino-universale"
-      style={{
+      style={embedded ? undefined : {
         background: "linear-gradient(180deg, rgba(0,229,255,0.04), rgba(10,0,25,0.9))",
         border: "1px solid rgba(0,229,255,0.28)",
         backdropFilter: "blur(10px)",
       }}
     >
       <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-        <div>
+        {!embedded && <div>
           <div className="label-mono" style={{ color: "#00E5FF" }}>📚 MAGAZZINO UNIVERSALE</div>
           <div className="font-display font-black text-xl text-white mt-0.5">Tutte le risorse della radio</div>
-        </div>
+        </div>}
         <div className="flex gap-1 flex-wrap">
           {tabs.map((t) => (
             <button
@@ -439,7 +442,7 @@ export function MagazzinoUniversale() {
                 </div>
               </div>
               <div className="flex gap-1 shrink-0" data-testid={`slot-group-${t.id}`} title="Matrice temporale: quando questo file può andare in onda">
-                {[["day", "☀ GIORNO", "#FFB84D"], ["night", "☾ NOTTE", "#C89AFF"], ["always", "∞ SEMPRE", "#80FFB4"]].map(([k, label, col]) => {
+                {[["morning", "MATTINA", "#FFD36B"], ["afternoon", "POMERIGGIO", "#FFB84D"], ["day", "GIORNO", "#FF8A3D"], ["evening", "SERA", "#FF6BAA"], ["night", "☾ NOTTE", "#C89AFF"], ["always", "∞ SEMPRE", "#80FFB4"]].map(([k, label, col]) => {
                   const on = (t.broadcast_slot || "always") === k;
                   return (
                     <button key={k} type="button" onClick={() => setSlot(t, k)} disabled={slotBusy === t.id + k} data-testid={`slot-${k}-${t.id}`}

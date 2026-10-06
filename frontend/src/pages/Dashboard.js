@@ -13,7 +13,8 @@ import PowerPlayMonitor from "@/components/PowerPlayMonitor";
 import ElasticQueuePreview from "@/components/ElasticQueuePreview";
 import NightControlCenter from "@/components/NightControlCenter";
 import AdManagerPanel from "@/components/AdManagerPanel";
-import { GoLivePanel, LedWallMiniPreview, MagazzinoUniversale } from "@/components/CommandCenter2Panels";
+import { GoLivePanel, LedWallMiniPreview } from "@/components/CommandCenter2Panels";
+import ArchivioControlloTotale from "@/components/ArchivioControlloTotale";
 import { toast } from "sonner";
 
 const STUDIO_BG = "https://images.unsplash.com/photo-1781865202636-0adef1d06cce?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDQ2MzR8MHwxfHNlYXJjaHwzfHxmdXR1cmlzdGljJTIwcmFkaW8lMjBzdHVkaW8lMjBuaWdodHxlbnwwfHx8fDE3ODM4MDAwMjl8MA&ixlib=rb-4.1.0&q=85";
@@ -202,14 +203,21 @@ export default function Dashboard() {
               </div>
             </section>
 
-            {/* 2 · WAREHOUSE & ASSETS — magazzino a larghezza piena + cassetti upload */}
-            <section data-testid="band-warehouse" className="space-y-4">
-              <BandHeader icon="📚" title="WAREHOUSE & ASSETS" subtitle="Unified Asset Center · cassetti Ora Esatta / Spot / Basi / FX · Bulk ZIP" color="#D080FF" />
+            {/* 2 · ARCHIVIO BRANI · CONTROLLO TOTALE — v13.49 fusione Magazzino + Archivio Brani */}
+            <section data-testid="band-archivio" className="space-y-4">
+              <BandHeader icon="🎚️" title="ARCHIVIO BRANI · CONTROLLO TOTALE" subtitle="ON/OFF · 6 fasce orarie · modifica con approvazione · eliminazione confermata · ZIP · Upload · Cestino · Vocali" color="#00E5FF" />
               <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-                <MagazzinoUniversale />
+                <ArchivioControlloTotale TrackModal={TrackModal} />
+              </div>
+            </section>
+
+            {/* 3 · WAREHOUSE & ASSETS — Ad Manager · Regia Audio · Cestino
+                (MagazzinoUniversale e TrackManagerPanel restano nel codice, ora fusi nella sezione sopra) */}
+            <section data-testid="band-warehouse" className="space-y-4">
+              <BandHeader icon="📚" title="WAREHOUSE & ASSETS" subtitle="Ad Manager · Regia Audio · Cestino" color="#D080FF" />
+              <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
                 <AdManagerPanel />
                 <RegiaAudioPanel />
-                <TrackManagerPanel />
                 <TrashPanel />
               </div>
             </section>
@@ -1267,6 +1275,8 @@ function DbSyncPanel() {
 //   • Pulsante AGGIUNGI NUOVO: apre modal file + nome + tipo (Song/Jingle).
 //   • Pulsante SOSTITUISCI su ogni riga: apre modal file + nuovo nome (obbligatorio).
 //     Sostituzione atomica lato server.
+// v13.49 · Non più montato: fuso in ArchivioControlloTotale. Conservato intatto.
+// eslint-disable-next-line no-unused-vars
 function TrackManagerPanel() {
   const [tracks, setTracks] = useState([]);
   const [search, setSearch] = useState("");
