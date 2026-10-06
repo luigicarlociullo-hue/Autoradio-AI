@@ -39,7 +39,11 @@ function drawRaiMark(ctx, W, H, dpr, t, beat, opts = {}) {
   const { alpha = 0.42, big = false, hue = 190 } = opts;
   const r = big ? Math.min(W, H) * 0.30 : Math.max(16 * dpr, Math.min(W, H) * 0.075);
   const x = big ? W / 2 : W - r - 14 * dpr;
-  const y = big ? H / 2 : H - r - 14 * dpr;
+  // Ticket #247410: il testo "R-AI" sotto la sfera finiva quasi del tutto fuori
+  // dal canvas (margine di soli ~10dpr dal fondo) ed era illeggibile/tagliato.
+  // Riserviamo spazio anche per l'altezza del testo, non solo per la sfera.
+  const textH = big ? 0 : Math.max(9, r * 0.42) * 1.3;
+  const y = big ? H / 2 : H - r - 14 * dpr - textH;
   const a = alpha * (0.75 + 0.25 * beat);
   ctx.save();
   ctx.globalAlpha = a;
