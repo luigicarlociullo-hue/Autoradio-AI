@@ -5995,14 +5995,23 @@ async def hls_live_playlist(request: Request):
     # comparira' comunque, appena sara' lui il corrente (prossimo giro/poll).
     _queue_tail = (clock.get("queue") or [])[:4]
     entries = [cur]
-    _running_max_dur = float(cur.get("duration_sec") or 0) or 1.0
-    for _t in _queue_tail:
+    # Ticket #247410: soglia ancorata alla durata del CORRENTE, mai fatta salire
+    # da un elemento gia' incluso - altrimenti il primo elemento sproporzionato
+    # (incluso apposta, vedi sotto) alzava il tetto cosi' tanto che anche il
+    # 2°-4° elemento rientravano quasi sempre, vanificando la finestra stretta.
+    _base_dur = float(cur.get("duration_sec") or 0) or 1.0
+    for _idx, _t in enumerate(_queue_tail):
         _t_dur = float(_t.get("real_duration_sec") or _t.get("duration_sec") or 0)
-        if _t_dur and _t_dur > _running_max_dur * 3:
+        # Il PRIMO prossimo elemento entra sempre, sproporzionato o no - altrimenti
+        # un elemento breve (segnale orario, jingle corto) non da' mai al player un
+        # vero pre-fetch di cosa viene subito dopo, e quella transizione specifica
+        # parte in ritardo/con poco volume iniziale (deve prima scoprire il nuovo
+        # elemento via poll, poi scaricarlo). Dal secondo elemento in poi vale
+        # ancora la soglia relativa, confrontata col CORRENTE non con quello appena
+        # incluso.
+        if _idx > 0 and _t_dur and _t_dur > _base_dur * 3:
             break
         entries.append(_t)
-        if _t_dur > _running_max_dur:
-            _running_max_dur = _t_dur
     # v13.40 · Finestra scorrevole live: MEDIA-SEQUENCE = numero progressivo
     # del current (prima fisso a 0 mentre il primo segmento cambiava → hls.js
     # riconosceva come "segmento 0" un file diverso). Ogni segmento dopo il
