@@ -6733,16 +6733,14 @@ _IT_HOUR_WORDS = ["zero", "una", "due", "tre", "quattro", "cinque", "sei", "sett
 _IT_UNITS = ["", "uno", "due", "tre", "quattro", "cinque", "sei", "sette", "otto", "nove"]
 _IT_TENS = ["", "dieci", "venti", "trenta", "quaranta", "cinquanta"]
 _IT_TEENS = ["dieci", "undici", "dodici", "tredici", "quattordici", "quindici", "sedici", "diciassette", "diciotto", "diciannove"]
-_TS_SIGNOFF = "su R-A.I. Radio, sincronizzata con l'orologio atomico di Singapore!"
-# Ticket #247410: le 24 clip ORA duravano 1.4-2.1s totali — troppo poco perche' la frase di
-# testa "Segnale orario." da sola assorba la perdita nota di 0.3-3.7s dall'inizio (vedi commento
-# sopra su _generate_time_signal_hour). Risultato reale: ore "ventuno" diventava un frammento
-# incomprensibile. Lead-in piu' lungo = margine reale anche nel caso peggiore.
-_TS_HOUR_LEADIN = "Un attimo di attenzione, qui è R-A.I. Radio con il consueto appuntamento."
-# Stesso problema dei minuti: "e N minuti..." partiva da byte 0 con zero protezione (nessun
-# lead-in prima del numero) — testo diverso da quello dell'ora per non ripetere la stessa
-# frase due volte di fila nello stesso annuncio concatenato.
-_TS_MIN_LEADIN = "Restate sintonizzati, qui è sempre R-A.I. Radio, la vostra radio intelligente."
+# Ticket #247410: su richiesta esplicita del cliente, il testo finisce su "è offerto da" cosi'
+# può concatenare i propri spot sponsor subito dopo (follow_up aggiuntivo, gia' supportato dalla
+# stessa meccanica zero-gap). Rimossi i lead-in parlati ("Un attimo di attenzione..."/"Restate
+# sintonizzati..."): servivano a proteggere le clip brevi dalla perdita nota di avvio del player
+# live, ma quella perdita e' stata risolta alla radice (TARGETDURATION honesto, vedi
+# hls_live_playlist) e la protezione residua la da' comunque _prepend_silence_bytes (silenzio
+# vero, non parlato) gia' agganciato in _generate_time_signal_hour.
+_TS_SIGNOFF = "su R-A.I., il segnale orario sincronizzato con l'orologio atomico di Singapore è offerto da"
 
 
 def _it_minute_words(m: int) -> str:
@@ -6761,14 +6759,13 @@ def _ts_part_text(part: str) -> str:
     kind, n = part[0], int(part[1:])
     if kind == "h":
         if n == 0:
-            return f"{_TS_HOUR_LEADIN} Segnale orario. È mezzanotte"
-        core = "Segnale orario. È l'una" if n == 1 else f"Segnale orario. Sono le {_IT_HOUR_WORDS[n]}"
-        return f"{_TS_HOUR_LEADIN} {core}"
+            return "Segnale orario. È mezzanotte"
+        return "Segnale orario. È l'una" if n == 1 else f"Segnale orario. Sono le {_IT_HOUR_WORDS[n]}"
     if n == 0:
-        return f"{_TS_MIN_LEADIN} In punto, {_TS_SIGNOFF}"
+        return f"in punto {_TS_SIGNOFF}"
     if n == 1:
-        return f"{_TS_MIN_LEADIN} E un minuto, {_TS_SIGNOFF}"
-    return f"{_TS_MIN_LEADIN} E {_it_minute_words(n)} minuti, {_TS_SIGNOFF}"
+        return f"e un minuto {_TS_SIGNOFF}"
+    return f"e {_it_minute_words(n)} minuti {_TS_SIGNOFF}"
 
 
 _TS_ALL_PARTS = [f"h{h:02d}" for h in range(24)] + [f"m{m:02d}" for m in range(60)]
