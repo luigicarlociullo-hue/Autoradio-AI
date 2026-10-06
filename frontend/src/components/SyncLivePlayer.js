@@ -209,6 +209,20 @@ export default function SyncLivePlayer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Ticket #247410: il player legacy (avviabile solo dai controlli media del
+  // SO - lock screen, Bluetooth/autoradio) non sa che SyncLivePlayer esiste.
+  // Se parte mentre siamo gia' in diretta qui, i due motori suonano insieme
+  // leggermente sfasati (eco raddoppiato). Ci fermiamo noi appena il legacy
+  // annuncia di essere partito.
+  useEffect(() => {
+    const onLegacyPlay = () => {
+      if (status === "playing" || status === "loading") stopSync();
+    };
+    window.addEventListener("rai:legacy:play", onLegacyPlay);
+    return () => window.removeEventListener("rai:legacy:play", onLegacyPlay);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status]);
+
   const startSync = async (force = false) => {
     if (status === "playing" && !force) return;
     setStatus("loading");

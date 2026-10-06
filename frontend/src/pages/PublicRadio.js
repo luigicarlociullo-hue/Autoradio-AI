@@ -299,6 +299,25 @@ export default function PublicRadio() {
     radioEngine.setMediaPlaybackState(isPlaying ? "playing" : "paused");
   }, [isPlaying]);
 
+  // Ticket #247410: il player legacy (radioEngine, avviabile solo dai controlli
+  // media del SO - lock screen, Bluetooth/autoradio) e SyncLivePlayer (bottone
+  // in pagina) sono due motori audio del tutto indipendenti, senza alcun
+  // coordinamento. Se uno parte mentre l'altro e' gia' attivo, suonano insieme
+  // leggermente sfasati: un vero e proprio eco raddoppiato, non un artefatto
+  // del decoder. Qui il legacy si ferma da solo appena SyncLivePlayer parte.
+  useEffect(() => {
+    const onSyncPlay = (ev) => {
+      if (ev?.detail?.playing && isPlaying) {
+        stopFlag.current = true;
+        try { radioEngine.stopAll(); } catch (e) {}
+        setIsPlaying(false);
+        setIsPreparing(false);
+      }
+    };
+    window.addEventListener("rai:sync:play", onSyncPlay);
+    return () => window.removeEventListener("rai:sync:play", onSyncPlay);
+  }, [isPlaying]);
+
   useEffect(() => {
     const applyCommand = (cmd) => {
       if (!cmd) return;
@@ -587,6 +606,9 @@ export default function PublicRadio() {
     if (!station.is_live) {
       await endpoints.toggle();
     }
+    // Ticket #247410: avvisa SyncLivePlayer (se gia' attivo) di fermarsi -
+    // stesso coordinamento visto sopra, nell'altra direzione.
+    try { window.dispatchEvent(new CustomEvent("rai:legacy:play")); } catch (e) {}
     radioEngine.ensureAudioCtx();
     try { window.speechSynthesis.getVoices(); } catch(e) {}
     loop();
