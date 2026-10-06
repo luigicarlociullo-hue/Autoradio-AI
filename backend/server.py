@@ -5988,10 +5988,45 @@ async def hls_live_playlist(request: Request):
     # porta via uno: DISCONTINUITY-SEQUENCE avanza di pari passo. Niente più
     # PLAYLIST-TYPE:EVENT: una playlist EVENT non può rimuovere segmenti in testa.
     seq = int(clock.get("seq") or 0)
+
+    # Ticket #247410: prima passata per risolvere le entry valide e le loro
+    # durate REALI, cosi' TARGETDURATION (sotto) riflette cosa c'e' davvero
+    # in questa playlist invece di un 300 fisso. Quel 300 fisso sottostimava
+    # drammaticamente la frequenza di refresh richiesta quando l'item CORRENTE
+    # e' un jingle/segnale orario di pochi secondi: hls.js (come qualunque
+    # client HLS conforme) usa TARGETDURATION per decidere ogni quanto
+    # ricontrollare la live playlist. Con 300s dichiarati ma un segmento
+    # corrente di 2-10s, il client ricontrolla troppo raramente: quando
+    # finalmente lo fa, l'item breve e' gia' finito da un pezzo, la finestra
+    # (SOLO corrente + prossimi 4, zero overlap col passato) non contiene piu'
+    # nulla che il player avesse gia' bufferizzato, e deve risincronizzarsi su
+    # EXT-X-START — cioe' l'offset live di QUALUNQUE cosa sia corrente in
+    # quel momento, breve o lunga. Risultato: ogni traccia (non solo i
+    # contenuti brevi) puo' partire gia' a meta'.
+    resolved = []
+    for t in entries:
+        _raw_dur = t.get("duration_sec")
+        dur = float(t.get("real_duration_sec") or _raw_dur or 0)  # v13.41 · EXTINF usa la durata reale, non paddata
+        if dur <= 0:
+            # v13.45 · niente 180s inventati: salta l'entry e rilancia il probe.
+            logger.warning(
+                f"[hls_live_playlist] skip track id={t.get('id')} title={t.get('title')!r} "
+                f"(duration_sec={_raw_dur!r}) — reprobe schedulato"
+            )
+            _schedule_reprobe(t.get("id"))
+            continue
+        resolved.append((t, dur))
+
+    if resolved:
+        import math as _math
+        target_duration = max(1, _math.ceil(max(dur for _, dur in resolved)))
+    else:
+        target_duration = 10
+
     lines = [
         "#EXTM3U",
         "#EXT-X-VERSION:3",
-        "#EXT-X-TARGETDURATION:300",
+        f"#EXT-X-TARGETDURATION:{target_duration}",
         f"#EXT-X-MEDIA-SEQUENCE:{seq}",
         f"#EXT-X-DISCONTINUITY-SEQUENCE:{seq}",
         f"#EXT-X-START:TIME-OFFSET={offset:.3f},PRECISE=YES",
@@ -6003,17 +6038,7 @@ async def hls_live_playlist(request: Request):
     except Exception:
         running_dt = datetime.now(timezone.utc)
 
-    for i, t in enumerate(entries):
-        _raw_dur = t.get("duration_sec")
-        dur = float(t.get("real_duration_sec") or _raw_dur or 0)  # v13.41 · EXTINF usa la durata reale, non paddata
-        if dur <= 0:
-            # v13.45 · niente 180s inventati: salta l'entry e rilancia il probe.
-            logger.warning(
-                f"[hls_live_playlist] skip track id={t.get('id')} title={t.get('title')!r} "
-                f"(duration_sec={_raw_dur!r}) — reprobe schedulato"
-            )
-            _schedule_reprobe(t.get("id"))
-            continue
+    for i, (t, dur) in enumerate(resolved):
         title = (t.get("title") or "R-A.I.").replace(",", " ")
         artist = (t.get("artist") or "R-A.I.").replace(",", " ")
         url = t.get("audio_url") or ""
@@ -6031,7 +6056,6 @@ async def hls_live_playlist(request: Request):
         lines.append(f"#EXTINF:{dur:.3f},{artist} - {title}")
         lines.append(url)
         running_dt = running_dt + timedelta(seconds=dur)
-        _ = i
     lines.append("")
     playlist = "\n".join(lines)
     # v13.16 · OTTIMIZZAZIONE PER MIGLIAIA DI CLIENT
