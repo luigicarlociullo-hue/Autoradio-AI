@@ -5980,7 +5980,26 @@ async def hls_live_playlist(request: Request):
         return Response(content=empty, media_type="application/vnd.apple.mpegurl",
                         headers={"Cache-Control": "no-store", "Access-Control-Allow-Origin": "*"})
 
-    entries = [cur] + [t for t in (clock.get("queue") or [])[:4]]
+    # Ticket #247410: quando il CORRENTE e' breve (jingle/segnale orario), non
+    # trascinare nella finestra un brano lungo piu' avanti in coda solo perche'
+    # rientra nei "prossimi 4" di default — gonfierebbe TARGETDURATION (sotto)
+    # anche se cio' che sta ANDANDO IN ONDA ORA e' breve, vanificando la
+    # correzione proprio nel caso Jingle->Canzone (confermato dal cliente: con
+    # la sola correzione TARGETDURATION, Canzone->Canzone e Canzone->Jingle
+    # sono ok, Jingle->Canzone no — perche' la canzone lunga in coda dopo il
+    # jingle teneva comunque alto il valore dichiarato). Il brano lungo
+    # comparira' comunque, appena sara' lui il corrente (prossimo giro/poll).
+    _cur_raw_dur = float(cur.get("duration_sec") or 0)
+    _queue_tail = (clock.get("queue") or [])[:4]
+    if _cur_raw_dur and _cur_raw_dur < _SHORT_ITEM_LOG_SEC:
+        entries = [cur]
+        for _t in _queue_tail:
+            _t_dur = float(_t.get("real_duration_sec") or _t.get("duration_sec") or 0)
+            if _t_dur and _t_dur >= _SHORT_ITEM_LOG_SEC:
+                break
+            entries.append(_t)
+    else:
+        entries = [cur] + _queue_tail
     # v13.40 · Finestra scorrevole live: MEDIA-SEQUENCE = numero progressivo
     # del current (prima fisso a 0 mentre il primo segmento cambiava → hls.js
     # riconosceva come "segmento 0" un file diverso). Ogni segmento dopo il
