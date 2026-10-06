@@ -6310,6 +6310,11 @@ def _sanitize_follow_ups(raw) -> list:
             "artist": (item.get("artist") or "").strip()[:120] or None,
             "duration_sec": max(1, dur),
             "video_url": (item.get("video_url") or "").strip() or None,
+            # Ticket #247410: senza 'kind' il LedWall (detectMode) non riconosce il
+            # minuto del segnale orario come prosecuzione dello stesso evento e
+            # ricade su standby/music per la sua durata - l'orologio sparisce a
+            # meta' annuncio per poi ripresentarsi all'evento successivo.
+            "kind": (item.get("kind") or None),
         })
     return out
 
@@ -6820,7 +6825,8 @@ async def _resolve_time_signal_with_minutes() -> Optional[dict]:
         "hour_dur": int(round(float(hd.get("duration_sec") or 3))) + 1,
         "minute": {"id": f"tsmin-{_now.hour:02d}{_now.minute:02d}", "title": f"Segnale orario · {_now.hour:02d}:{_now.minute:02d}",
                    "artist": "R-A.I. Radio", "audio_url": md["speech_audio_url"],
-                   "duration_sec": int(round(float(md.get("duration_sec") or 3))) + 1, "video_url": None},
+                   "duration_sec": int(round(float(md.get("duration_sec") or 3))) + 1, "video_url": None,
+                   "kind": "time_signal"},
         "label": f"{_now.hour:02d}:{_now.minute:02d}",
     }
 
