@@ -116,7 +116,8 @@ async def _synth_openai(text: str, voice_key: str, ignore_talk_switch: bool = Fa
         return None
 
 
-async def _synth_elevenlabs(text: str, voice_key: str, kind: str = "", dj_id: str | None = None) -> bytes | None:
+async def _synth_elevenlabs(text: str, voice_key: str, kind: str = "", dj_id: str | None = None,
+                           force: bool = False) -> bytes | None:
     """ElevenLabs primario (eleven_multilingual_v2). Ritorna bytes mp3 o None.
 
     Il parametro `kind` abilita il routing "smart" (default v12.11):
@@ -126,46 +127,56 @@ async def _synth_elevenlabs(text: str, voice_key: str, kind: str = "", dj_id: st
         il fallback OpenAI TTS-1-HD entra in azione — molto più economico.
       - Se station.tts_provider == 'elevenlabs': usa sempre ElevenLabs.
       - Se station.tts_provider == 'openai': usa sempre OpenAI (return None).
+
+    `force=True` (Ticket #247410): salta SOLO il gate FM_MODE/tts_provider qui
+    sotto, per la generazione ESPLICITA di asset una tantum (es. segnali
+    orari via synth_bytes(require_elevenlabs=True)), zero impatto sui costi
+    del parlato live continuo (DJ talk/news/etc., che non passano force=True
+    e restano sul routing economy/FM_MODE di sempre). Il kill-switch env e la
+    mancanza della API key restano sempre validi anche con force=True.
     """
     # KILL SWITCH (env, permanente): TTS_DISABLE_ELEVENLABS=true blocca sempre.
     if os.environ.get("TTS_DISABLE_ELEVENLABS", "").strip().lower() in ("1", "true", "yes"):
         logger.info("[TTS] ElevenLabs disabled by env kill-switch")
         return None
-    # FM_MODE MASTER (v13.1): il toggle "FM MODE" nella Regia ha priorità
-    # assoluta su qualsiasi altra impostazione TTS:
-    #   • FM_MODE ON  → sempre ElevenLabs HD (radio vera, alta espressività)
-    #   • FM_MODE OFF → sempre OpenAI TTS (economy, default)
-    fm_mode = None
-    provider_mode = "smart"  # default v12.11+ = smart routing (fallback se fm_mode assente)
-    try:
-        from motor.motor_asyncio import AsyncIOMotorClient
-        _mongo_url = os.environ.get("MONGO_URL")
-        _db_name = os.environ.get("DB_NAME")
-        if _mongo_url and _db_name:
-            _client = AsyncIOMotorClient(_mongo_url)
-            _st = await _client[_db_name].station.find_one({"_id": "state"}, {"tts_provider": 1, "fm_mode": 1})
-            _client.close()
-            if _st:
-                fm_mode = bool(_st.get("fm_mode"))
-                if _st.get("tts_provider"):
-                    provider_mode = str(_st.get("tts_provider")).lower()
-    except Exception:
-        pass
+    if not force:
+        # FM_MODE MASTER (v13.1): il toggle "FM MODE" nella Regia ha priorità
+        # assoluta su qualsiasi altra impostazione TTS:
+        #   • FM_MODE ON  → sempre ElevenLabs HD (radio vera, alta espressività)
+        #   • FM_MODE OFF → sempre OpenAI TTS (economy, default)
+        fm_mode = None
+        provider_mode = "smart"  # default v12.11+ = smart routing (fallback se fm_mode assente)
+        try:
+            from motor.motor_asyncio import AsyncIOMotorClient
+            _mongo_url = os.environ.get("MONGO_URL")
+            _db_name = os.environ.get("DB_NAME")
+            if _mongo_url and _db_name:
+                _client = AsyncIOMotorClient(_mongo_url)
+                _st = await _client[_db_name].station.find_one({"_id": "state"}, {"tts_provider": 1, "fm_mode": 1})
+                _client.close()
+                if _st:
+                    fm_mode = bool(_st.get("fm_mode"))
+                    if _st.get("tts_provider"):
+                        provider_mode = str(_st.get("tts_provider")).lower()
+        except Exception:
+            pass
 
-    # FM_MODE override forte
-    if fm_mode is True:
-        provider_mode = "elevenlabs"
-    elif fm_mode is False:
-        provider_mode = "openai"
+        # FM_MODE override forte
+        if fm_mode is True:
+            provider_mode = "elevenlabs"
+        elif fm_mode is False:
+            provider_mode = "openai"
 
-    if provider_mode == "openai":
-        logger.info("[TTS] ElevenLabs disabled by admin toggle (openai)")
-        return None
-    if provider_mode == "smart" and (kind or "").lower() != "answer":
-        # Riserva ElevenLabs solo alle risposte in diretta agli ascoltatori.
-        logger.info(f"[TTS] smart-mode: kind='{kind}' → OpenAI (ElevenLabs solo per 'answer')")
-        return None
-    # provider_mode == 'elevenlabs' oppure smart+answer → prosegui con ElevenLabs
+        if provider_mode == "openai":
+            logger.info("[TTS] ElevenLabs disabled by admin toggle (openai)")
+            return None
+        if provider_mode == "smart" and (kind or "").lower() != "answer":
+            # Riserva ElevenLabs solo alle risposte in diretta agli ascoltatori.
+            logger.info(f"[TTS] smart-mode: kind='{kind}' → OpenAI (ElevenLabs solo per 'answer')")
+            return None
+    else:
+        logger.info(f"[TTS] force=True (asset esplicito, kind='{kind}') — bypass gate FM_MODE/tts_provider")
+    # provider_mode == 'elevenlabs' oppure smart+answer oppure force=True → prosegui con ElevenLabs
     if not ELEVENLABS_API_KEY:
         return None
     # v13.18 · Per-DJ override: se un record `djs` con lo stesso voice_key ha
@@ -238,7 +249,7 @@ async def synth_bytes(text: str, voice_key: str, kind: str = "", dj_id: str | No
     text = (text or "").strip()
     if not text:
         return None, None
-    audio = await _synth_elevenlabs(text, voice_key, kind=kind, dj_id=dj_id)
+    audio = await _synth_elevenlabs(text, voice_key, kind=kind, dj_id=dj_id, force=require_elevenlabs)
     if audio:
         return audio, "elevenlabs"
     # Ticket #247410: per i segnali orari niente ripiego silenzioso su OpenAI (24kHz mono,
