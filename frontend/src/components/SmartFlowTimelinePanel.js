@@ -139,6 +139,23 @@ export default function SmartFlowTimelinePanel() {
     } catch { toast.error("Errore generazione clip ora+minuti"); }
     finally { setPartsBusy(false); }
   };
+  // Ticket #247410: carica la cartella "Time" registrata dal cliente (HRSxx / HRSxx_O / MINxx).
+  // Dopo il caricamento il segnale orario usa SOLO questi file: generazione vocale disattivata.
+  const uploadTimeFolder = async (fileList) => {
+    const files = Array.from(fileList || []).filter((f) => /\.(mp3|wav|m4a|aac|ogg|flac)$/i.test(f.name));
+    if (!files.length) { toast.error("Nessun file audio trovato nella selezione"); return; }
+    setPartsBusy(true);
+    try {
+      const fd = new FormData();
+      files.forEach((f) => fd.append("files", f, f.name));
+      const r = await api.post("/admin/time-signal/upload-parts", fd, { headers: { "Content-Type": "multipart/form-data" } });
+      const { mapped = [], ignored = [], failed = [] } = r.data || {};
+      toast.success(`Cartella Time: ${mapped.length} file caricati${ignored.length ? `, ${ignored.length} ignorati` : ""}${failed.length ? `, ${failed.length} non validi` : ""}`);
+      if (failed.length) toast.error(`Non validi: ${failed.map((f) => f.file).join(", ")}`);
+      loadPartsStatus();
+    } catch { toast.error("Errore caricamento cartella Time"); }
+    finally { setPartsBusy(false); }
+  };
   useEffect(() => { loadPartsStatus(); }, []);
   // v13.22 · Config globale di Regia (soggetto default + video default)
   const [regiaCfg, setRegiaCfg] = useState({ default_subject: "", ledwall_default_video_url: "" });
@@ -703,6 +720,31 @@ export default function SmartFlowTimelinePanel() {
                       {partsStatus.complete ? "● 84/84 pronte" : `○ ${partsStatus.total_ready}/84 pronte → fallback all'ora piena finché incomplete`}
                     </span>
                   )}
+                </div>
+                {/* Ticket #247410: file registrati dal cliente al posto della voce sintetica */}
+                <div className="mb-2 rounded p-2" style={{ background: "rgba(57,255,20,0.05)", border: "1px solid rgba(57,255,20,0.35)" }} data-testid="ts-upload-box">
+                  <div className="text-[10px] font-mono mb-1" style={{ color: "#39FF14" }}>
+                    📁 Usa i TUOI file: carica la cartella Time (HRS00…HRS23 = ora, HRS00_O…HRS23_O = ora in punto, MIN01…MIN59 = minuti).
+                    {partsStatus && (
+                      <span className="ml-2" data-testid="ts-upload-status">
+                        {partsStatus.source === "upload"
+                          ? `● Attivo: ${partsStatus.hours_ready}/24 ore · ${partsStatus.on_the_hour_ready || 0}/24 in punto · ${partsStatus.minutes_ready} minuti — voce sintetica disattivata, zero crediti`
+                          : "○ Non attivo (in uso la voce sintetica)"}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex gap-2 flex-wrap">
+                    <label className="px-3 py-1.5 rounded text-xs font-bold cursor-pointer" style={{ background: "rgba(57,255,20,0.2)", border: "1px solid rgba(57,255,20,0.5)", color: "#fff" }} data-testid="ts-upload-folder">
+                      {partsBusy ? "Carico…" : "📁 Carica cartella Time"}
+                      <input type="file" webkitdirectory="" directory="" multiple hidden disabled={partsBusy}
+                        onChange={(e) => { uploadTimeFolder(e.target.files); e.target.value = ""; }} />
+                    </label>
+                    <label className="px-3 py-1.5 rounded text-xs font-bold cursor-pointer" style={{ background: "rgba(57,255,20,0.1)", border: "1px solid rgba(57,255,20,0.35)", color: "#fff" }} data-testid="ts-upload-files">
+                      🎵 Carica singoli file
+                      <input type="file" accept="audio/*" multiple hidden disabled={partsBusy}
+                        onChange={(e) => { uploadTimeFolder(e.target.files); e.target.value = ""; }} />
+                    </label>
+                  </div>
                 </div>
                 <div className="flex gap-2">
                   <button type="button" onClick={() => generateTimeSignalParts(false)} disabled={partsBusy} data-testid="timeline-generate-ts-parts"

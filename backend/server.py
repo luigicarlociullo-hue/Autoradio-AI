@@ -6759,6 +6759,7 @@ async def admin_generate_permanent_time_signals(
     sul parlato live) -> validazione -> upload su Object Storage (errore se fallisce; se lo storage è spento serve
     `allow_local_only=true`) -> re-fetch -> validazione dei bytes ri-scaricati. `validated=True` solo se tutto passa. Un
     tentativo fallito non modifica MAI il documento esistente né sovrascrive il suo file."""
+    await _ts_tts_blocked()
     try:
         wanted = _parse_hours_spec(hours)
     except ValueError as e:
@@ -6885,9 +6886,18 @@ async def _ts_parts_ready() -> dict:
     return out
 
 
+async def _ts_source() -> str:
+    """Ticket #247410: "upload" = segnale orario dai file registrati dal cliente (cartella Time),
+    nessuna sintesi TTS. Default "tts" (comportamento precedente)."""
+    st = await db.station.find_one({"_id": "state"}, {"time_signal_source": 1}) or {}
+    return st.get("time_signal_source") or "tts"
+
+
 async def _resolve_time_signal_with_minutes() -> Optional[dict]:
-    """Ora+minuto CORRENTI (Europe/Rome). Ritorna {hour_url, hour_dur, minute: {...follow_up}} o None se
-    manca una delle due clip (→ il chiamante ripiega sul permanente orario)."""
+    """Ora+minuto CORRENTI (Europe/Rome). Ritorna {hour_url, hour_dur, minute: {...follow_up} | None} o None se
+    manca una delle due clip (→ il chiamante ripiega sul permanente orario).
+    Ticket #247410: con i file caricati dal cliente, al minuto 00 va in onda SOLO la clip "in punto"
+    (HRSxx_O → hoXX) e se manca la clip minuto va in onda la sola ora: mai ripiego sul TTS."""
     try:
         from zoneinfo import ZoneInfo
         _now = datetime.now(ZoneInfo("Europe/Rome"))
@@ -6896,9 +6906,16 @@ async def _resolve_time_signal_with_minutes() -> Optional[dict]:
     hp, mp = f"h{_now.hour:02d}", f"m{_now.minute:02d}"
     parts = await _ts_parts_ready()
     hd, md = parts.get(hp), parts.get(mp)
-    if not (hd and md):
+    if _now.minute == 0 and parts.get(f"ho{_now.hour:02d}"):
+        hd, md = parts[f"ho{_now.hour:02d}"], None
+    elif hd and not md and await _ts_source() == "upload":
+        md = None
+    elif not (hd and md):
         logger.info(f"[time-signal] clip-parte mancanti ({hp}={'ok' if hd else 'NO'}, {mp}={'ok' if md else 'NO'}) → fallback orario")
         return None
+    if not md:
+        return {"hour_url": hd["speech_audio_url"], "hour_dur": int(round(float(hd.get("duration_sec") or 3))) + 1,
+                "minute": None, "label": f"{_now.hour:02d}:{_now.minute:02d}"}
     return {
         "hour_url": hd["speech_audio_url"],
         "hour_dur": int(round(float(hd.get("duration_sec") or 3))) + 1,
@@ -6913,10 +6930,127 @@ async def _resolve_time_signal_with_minutes() -> Optional[dict]:
 @api_router.get("/admin/time-signal/parts-status")
 async def admin_time_signal_parts_status():
     parts = await _ts_parts_ready()
-    hours = [p for p in parts if p.startswith("h")]; minutes = [p for p in parts if p.startswith("m")]
-    return {"hours_ready": len(hours), "minutes_ready": len(minutes), "total_ready": len(parts), "total_expected": 84,
+    hours = [p for p in parts if p.startswith("h") and not p.startswith("ho")]; minutes = [p for p in parts if p.startswith("m")]
+    on_hour = [p for p in parts if p.startswith("ho")]
+    return {"hours_ready": len(hours), "minutes_ready": len(minutes), "on_the_hour_ready": len(on_hour),
+            "total_ready": len(hours) + len(minutes), "total_expected": 84,
             "complete": len(hours) == 24 and len(minutes) == 60,
+            "source": await _ts_source(),
             "missing": [p for p in _TS_ALL_PARTS if p not in parts]}
+
+
+# Ticket #247410: il cliente ha registrato con la propria voce tutti i file del segnale orario
+# (cartella "Time": HRS00..HRS23, HRS00_O..HRS23_O "in punto", MIN01..MIN59). Caricandoli qui
+# finiscono negli stessi slot delle clip-parte (hXX / hoXX / mXX) e il segnale orario smette di
+# usare il TTS: zero crediti ElevenLabs / chiave universale.
+_TS_UPLOAD_RE = re.compile(r"^(?:HRS(\d{2})(_O)?|MIN(\d{2}))$", re.IGNORECASE)
+
+
+def _ts_upload_part(filename: str) -> Optional[str]:
+    stem = Path(filename or "").name.rsplit(".", 1)[0].strip()
+    m = _TS_UPLOAD_RE.match(stem)
+    if not m:
+        return None
+    if m.group(1) is not None:
+        hh = int(m.group(1))
+        return None if hh > 23 else (f"ho{hh:02d}" if m.group(2) else f"h{hh:02d}")
+    mm = int(m.group(3))
+    return None if mm > 59 else f"m{mm:02d}"
+
+
+async def _ts_to_mp3(data: bytes, filename: str) -> Optional[bytes]:
+    """MP3 resta INTATTO (nessuna ricodifica: e' la registrazione del cliente). Altri formati
+    (wav, m4a, ...) vengono convertiti in mp3 44.1kHz/192k."""
+    if filename.lower().endswith(".mp3"):
+        return data
+    import tempfile
+    suffix = "." + filename.rsplit(".", 1)[-1] if "." in filename else ".bin"
+    fd_in, src = tempfile.mkstemp(prefix="tsup_", suffix=suffix)
+    fd_out, out = tempfile.mkstemp(prefix="tsup_", suffix=".mp3")
+    os.close(fd_out)
+    try:
+        with os.fdopen(fd_in, "wb") as f:
+            f.write(data)
+        rc, _, err = await _run_capture("ffmpeg", "-y", "-i", src, "-ar", "44100", "-c:a", "libmp3lame", "-b:a", "192k", out, timeout=30.0)
+        if rc != 0:
+            logger.warning(f"[ts-upload] conversione fallita {filename}: {err[:200]}")
+            return None
+        return Path(out).read_bytes() or None
+    finally:
+        for x in (src, out):
+            try:
+                os.remove(x)
+            except OSError:
+                pass
+
+
+async def _ts_store_upload(part: str, audio: bytes) -> dict:
+    """Stessa pipeline di storage delle clip generate (Object Storage + verifica + cache locale)."""
+    v0 = await _validate_audio_bytes(audio)
+    if not v0["ok"]:
+        return {"ok": False, "reason": f"audio_invalid:{v0['reason']}"}
+    name = f"tts_tsup_{part}_{hashlib.sha256(audio).hexdigest()[:16]}.mp3"
+    key, url = f"tts/{name}", f"/api/tts/{name}"
+    local = elevenlabs_service.TTS_DIR / name
+    storage_on = object_storage.is_enabled()
+    if storage_on:
+        if not await object_storage.put_mp3(key, audio):
+            return {"ok": False, "reason": "upload_failed"}
+        back = await object_storage.get_bytes(key)
+        if back != audio:
+            return {"ok": False, "reason": "refetch_mismatch"}
+    local.write_bytes(audio)
+    return {"ok": True, "url": url, "v": v0, "storage_verified": storage_on}
+
+
+@api_router.post("/admin/time-signal/upload-parts")
+async def admin_upload_time_signal_parts(files: List[UploadFile] = File(...)):
+    """Carica la cartella "Time" del cliente. Nomi riconosciuti: HRSxx → ora, HRSxx_O → ora "in punto"
+    (usata da sola al minuto 00), MINxx → minuto. Altri file ignorati (riportati nella risposta).
+    Dopo il caricamento il segnale orario usa SOLO questi file (time_signal_source = "upload")."""
+    mapped, ignored, failed = [], [], []
+    for uf in files:
+        fname = Path(uf.filename or "").name
+        part = _ts_upload_part(fname)
+        if not part:
+            ignored.append(fname); continue
+        data = await uf.read()
+        audio = await _ts_to_mp3(data, fname) if data else None
+        if not audio:
+            failed.append({"file": fname, "part": part, "reason": "lettura/conversione fallita"}); continue
+        r = await _ts_store_upload(part, audio)
+        if not r["ok"]:
+            failed.append({"file": fname, "part": part, "reason": r["reason"]}); continue
+        v = r["v"]
+        await db.time_signal_parts.update_one(
+            {"_id": part},
+            {"$set": {"part": part, "script": None, "source_filename": fname, "speech_audio_url": r["url"],
+                      "provider": "upload", "created_at": now_iso(), "validated": True, "validated_at": now_iso(),
+                      "storage_verified": r["storage_verified"], "bytes": v["bytes"], "duration_sec": v["duration_sec"],
+                      "max_volume_db": v["max_volume_db"]},
+             "$unset": {"validation_reason": "", "voice_key": "", "dj_id": "", "dj_name": ""}},
+            upsert=True,
+        )
+        mapped.append({"file": fname, "part": part, "duration_sec": v["duration_sec"]})
+    if mapped:
+        await db.station.update_one({"_id": "state"}, {"$set": {"time_signal_source": "upload"}}, upsert=True)
+    logger.info(f"[ts-upload] {len(mapped)} file caricati, {len(ignored)} ignorati, {len(failed)} falliti")
+    return {"ok": not failed, "mapped": mapped, "ignored": ignored, "failed": failed,
+            "status": await admin_time_signal_parts_status()}
+
+
+@api_router.post("/admin/time-signal/source")
+async def admin_set_time_signal_source(source: str = Form(...)):
+    """Ticket #247410: "upload" (file del cliente, TTS disattivato) | "tts" (generazione vocale)."""
+    if source not in ("upload", "tts"):
+        raise HTTPException(400, "source deve essere 'upload' o 'tts'")
+    await db.station.update_one({"_id": "state"}, {"$set": {"time_signal_source": source}}, upsert=True)
+    return {"ok": True, "source": source}
+
+
+async def _ts_tts_blocked():
+    if await _ts_source() == "upload":
+        raise HTTPException(409, "Segnale orario impostato sui file caricati (cartella Time): generazione vocale disattivata, nessun credito consumato.")
 
 
 @api_router.post("/admin/time-signal/generate-parts")
@@ -6930,6 +7064,7 @@ async def admin_generate_time_signal_parts(
 ):
     """Genera le 84 clip-parte (24 ORA + 60 MINUTO), testo FISSO, stessa pipeline dei permanenti.
     Senza `force` le clip già valide non vengono toccate. Non modifica `time_signal_permanent`."""
+    await _ts_tts_blocked()
     dj_name = None
     if dj_id:
         dj_doc = await db.djs.find_one({"id": dj_id}, {"_id": 0, "voice_key": 1, "name": 1})
@@ -6963,6 +7098,28 @@ async def admin_generate_time_signal_parts(
     return {"ok": not failed, "dry_run": dry_run, "generated": generated, "skipped_existing": skipped, "failed": failed,
             "results": results, "sample_texts": {"h09": _ts_part_text("h09"), "m00": _ts_part_text("m00"), "m03": _ts_part_text("m03"), "m21": _ts_part_text("m21")}}
 
+
+
+_TS_GUARD_SEC = 600
+
+
+async def _ts_guard_skip(doc: dict) -> Optional[str]:
+    """None = va in onda; altrimenti il motivo per cui il segnale orario viene saltato."""
+    now = datetime.now(timezone.utc)
+    try:
+        sched = datetime.fromisoformat((doc.get("scheduled_at") or "").replace("Z", "+00:00"))
+        if sched.tzinfo is None:
+            sched = sched.replace(tzinfo=timezone.utc)
+        if (now - sched).total_seconds() > _TS_GUARD_SEC:
+            return "stale (scaduto da oltre 10 minuti)"
+    except Exception:
+        pass
+    await db.station.update_one({"_id": "ts_guard"}, {"$setOnInsert": {"last_aired_at": "1970-01-01T00:00:00+00:00"}}, upsert=True)
+    r = await db.station.update_one(
+        {"_id": "ts_guard", "last_aired_at": {"$lt": (now - timedelta(seconds=_TS_GUARD_SEC)).isoformat()}},
+        {"$set": {"last_aired_at": now.isoformat(), "last_event_id": doc.get("id")}},
+    )
+    return None if r.modified_count else "duplicate (un segnale orario e' gia' andato in onda negli ultimi 10 minuti)"
 
 
 async def _timeline_pick_due() -> Optional[dict]:
@@ -7016,6 +7173,18 @@ async def _timeline_pick_due() -> Optional[dict]:
                 logger.warning(f"[timeline] recurrence clone failed: {e}")
     except Exception:
         pass
+    # Ticket #247410: il segnale orario partiva "due o tre volte uno dopo l'altro". Piu' percorsi
+    # possono rendere maturo un evento orario nello stesso momento (Ora Esatta con ricorrenza
+    # oraria clonata, template rrule, eventi creati a mano in Regia) e il backfill rrule dopo un
+    # riavvio rimaterializza fino a 2h di occorrenze passate: ognuna andava in onda in fila,
+    # risolta sull'ora/minuto CORRENTI. Ora: un segnale orario scaduto da piu' di 10 minuti non va
+    # piu' in onda, e ne va in onda al massimo uno ogni 10 minuti qualunque sia la sorgente.
+    if doc.get("kind") in ("ora_esatta", "time_signal"):
+        _skip = await _ts_guard_skip(doc)
+        if _skip:
+            await db.timeline_events.update_one({"id": doc.get("id")}, {"$set": {"skip_reason": _skip}})
+            logger.warning(f"[time-signal] {doc.get('id')} @ {doc.get('scheduled_at')} NON in onda: {_skip}")
+            return await _timeline_pick_due()
     # v13.28 · FIX (Ora Esatta annuncia l'ora sbagliata, ticket #247410):
     # `audio_url` veniva congelato al momento dell'arm (o clonato verbatim
     # a ogni ricorrenza oraria, vedi sopra) pescando la cache più recente
@@ -7032,9 +7201,13 @@ async def _timeline_pick_due() -> Optional[dict]:
         # primo follow_up (concatenamento zero-gap già esistente). Durate dai record validati.
         doc["audio_url"] = _tsm["hour_url"]
         doc["duration_sec"] = _tsm["hour_dur"]
-        doc["follow_ups"] = [_tsm["minute"]] + list(doc.get("follow_ups") or [])
+        doc["follow_ups"] = ([_tsm["minute"]] if _tsm["minute"] else []) + list(doc.get("follow_ups") or [])
         doc["time_signal_label"] = _tsm["label"]
         logger.info(f"[time-signal] evento {doc.get('id')} → ora+minuti {_tsm['label']}")
+    elif doc.get("kind") in ("ora_esatta", "time_signal") and await _ts_source() == "upload":
+        # Ticket #247410: file del cliente mancanti per quest'ora → evento saltato, MAI il TTS.
+        doc["audio_url"] = None
+        logger.error(f"[time-signal] {doc.get('id')}: file caricato mancante per l'ora corrente → evento saltato (no TTS)")
     elif doc.get("kind") in ("ora_esatta", "time_signal"):
         # fallback INVARIATO: permanente dell'ora piena
         _live_au = await _resolve_current_hour_time_signal()
@@ -11548,7 +11721,7 @@ async def _time_signal_pregenerator():
                 _ai_ts = await _get_ai_controls()
             except Exception:
                 _ai_ts = {}
-            if not _ai_ts.get("ai_openai_talk"):
+            if not _ai_ts.get("ai_openai_talk") or await _ts_source() == "upload":
                 await asyncio.sleep(30)
                 continue
             from zoneinfo import ZoneInfo
