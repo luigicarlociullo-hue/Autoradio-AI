@@ -329,7 +329,7 @@ function newsRgb(hex) {
   const c = hexToRgb(hex);
   return c ? `${c.r},${c.g},${c.b}` : "57,255,20";
 }
-function LedWallNewsTicker({ wallW, wallH, effect }) {
+function LedWallNewsTicker({ wallW, wallH, fullWidth = false }) {
   const [news, setNews] = useState({ items: [], version: "", settings: readNewsSettingsCache() });
   const trackRef = useRef(null);
   const [duration, setDuration] = useState(30);
@@ -358,7 +358,7 @@ function LedWallNewsTicker({ wallW, wallH, effect }) {
   }, [news.version, wallW, speed]);
   if (!news.items.length) return null;
   const r = Math.max(16, Math.min(wallW, wallH) * 0.075);
-  const rightReserve = effect === "logo" ? 0 : Math.round(2 * r + 28);
+  const rightReserve = fullWidth ? 0 : Math.round(2 * r + 28);
   const color = news.settings.color || NEWS_DEFAULTS.color;
   const rgb = newsRgb(color);
   const text = news.items.map((i) => i.text).join("   •   ");
@@ -466,6 +466,9 @@ export default function LedWall({
   // quindi anche l'orologio atomico disegnato li' dentro durante time_signal
   // /jingle. Stessa detezione del draw loop, va nascosto in questi casi.
   const isClockMode = detectMode(current, effectivePlaying) === "clock";
+  // v13.52 · in standby (motori spenti) il watermark R-AI non viene disegnato:
+  // la banda news va bordo a bordo, come con l'effetto "logo".
+  const isStandbyMode = detectMode(current, effectivePlaying) === "standby";
 
   useEffect(() => {
     let alive = true;
@@ -1023,7 +1026,7 @@ export default function LedWall({
         }}
       />
       {/* L3 · v13.50 · LED WALL NEWS — sempre sopra tutto, mai sopra il marchio R-AI */}
-      <LedWallNewsTicker wallW={wallSize.w} wallH={wallSize.h} effect={effect} />
+      <LedWallNewsTicker wallW={wallSize.w} wallH={wallSize.h} fullWidth={effect === "logo" || isStandbyMode} />
     </div>
   );
 }

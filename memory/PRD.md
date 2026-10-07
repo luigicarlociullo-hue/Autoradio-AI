@@ -776,3 +776,6 @@ Vedi turni precedenti in questa sessione:
 - Backend: `station.state.ledwall_news_settings` {speed ∈ 40/55/70/100/140 px/s, color #RRGGBB}; `PUT /api/admin/ledwall/news/settings`; `GET /admin/ledwall/news` espone settings/speeds/defaults.
 - Regia (LedWallNewsPanel): controlli VELOCITÀ −/+ (×0.6…×2.0) e COLORE TESTO (color picker + ↺ verde neon). Scelta utente: controlli solo in Regia, non sulla barra pubblica del LedWall.
 - Verifica: py_compile/ruff ok, webpack ok (solo warning preesistenti), curl su settings (200/400/401).
+
+## v13.52 · LED WALL NEWS · full-width anche in standby (2026-10-07)
+- LedWall.js: `isStandbyMode` (detectMode === "standby", motori spenti → watermark non disegnato) → banda bordo a bordo come con effetto "logo" (`fullWidth` prop). Altri casi invariati.
