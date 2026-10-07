@@ -770,3 +770,9 @@ Vedi turni precedenti in questa sessione:
 - Backend: collezione `ledwall_news` {id,text,order,active,source manual|ai,created_at,updated_at}. Pubblico `GET /api/ledwall/news`; Regia `GET/POST /api/admin/ledwall/news`, `PATCH/DELETE /{id}`, `PUT /reorder`, `GET /token?regenerate=`; ingest esterno `POST /api/ledwall/news/ingest` con header `X-LedWall-Token` (token salvato in `station.state.ledwall_news_token`). Nessuna IA collegata.
 - Regia: `components/LedWallNewsPanel.js` nella banda LIVE COMMAND (sotto Go Live / Mini Preview): input, Aggiungi con conferma, lista con ▲▼, ON/OFF, elimina con conferma, badge fonte, box Endpoint esterno (URL/token mascherato/copia/rigenera con conferma).
 - Verifica: py_compile/ruff ok, webpack ok (solo warning preesistenti), curl completo su tutti gli endpoint (add/reorder/toggle/delete/ingest 401/200/unauth 401). Dati di test rimossi.
+
+## v13.51 · LED WALL NEWS · banda 56px, full-width in "logo", velocità+colore da Regia (2026-10-07)
+- LedWall.js: banda 56px, testo 24px; con `effect==="logo"` niente spazio riservato al watermark (bordo a bordo); altri effetti invariati. Velocità/colore letti da `GET /api/ledwall/news.settings` (inclusi nella `version`) e cachati in localStorage `rai:ledwall:news:settings`. Helper rinominato `newsRgb` (riusa `hexToRgb` già esistente nel file).
+- Backend: `station.state.ledwall_news_settings` {speed ∈ 40/55/70/100/140 px/s, color #RRGGBB}; `PUT /api/admin/ledwall/news/settings`; `GET /admin/ledwall/news` espone settings/speeds/defaults.
+- Regia (LedWallNewsPanel): controlli VELOCITÀ −/+ (×0.6…×2.0) e COLORE TESTO (color picker + ↺ verde neon). Scelta utente: controlli solo in Regia, non sulla barra pubblica del LedWall.
+- Verifica: py_compile/ruff ok, webpack ok (solo warning preesistenti), curl su settings (200/400/401).

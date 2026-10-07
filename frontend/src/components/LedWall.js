@@ -316,31 +316,51 @@ function detectMode(current, isPlaying) {
 
 // v13.50 · LED WALL NEWS — banda ticker fissa in basso (stile TG), sopra ogni
 // effetto/video/orologio. Si ferma prima dello spazio riservato al marchio R-AI
-// (stesso calcolo di drawRaiMark). Sparisce quando la coda è vuota.
-const NEWS_SPEED_PX_S = 70;
-function LedWallNewsTicker({ wallW, wallH }) {
-  const [news, setNews] = useState({ items: [], version: "" });
+// (stesso calcolo di drawRaiMark); v13.51: con effetto "logo" (marchio grande al
+// centro, nessun watermark) va bordo a bordo. Sparisce quando la coda è vuota.
+// Velocità/colore arrivano dalla Regia via endpoint e sono cachati in localStorage.
+const NEWS_DEFAULTS = { speed: 70, color: "#39FF14" };
+const NEWS_LS_KEY = "rai:ledwall:news:settings";
+const NEWS_BAND_H = 56;
+function readNewsSettingsCache() {
+  try { return { ...NEWS_DEFAULTS, ...(JSON.parse(localStorage.getItem(NEWS_LS_KEY) || "{}")) }; } catch { return NEWS_DEFAULTS; }
+}
+function newsRgb(hex) {
+  const c = hexToRgb(hex);
+  return c ? `${c.r},${c.g},${c.b}` : "57,255,20";
+}
+function LedWallNewsTicker({ wallW, wallH, effect }) {
+  const [news, setNews] = useState({ items: [], version: "", settings: readNewsSettingsCache() });
   const trackRef = useRef(null);
   const [duration, setDuration] = useState(30);
   useEffect(() => {
     let alive = true, lastVersion = "";
     const poll = () => fetch(`${process.env.REACT_APP_BACKEND_URL}/api/ledwall/news`)
       .then((r) => (r.ok ? r.json() : null))
-      .then((d) => { if (alive && d && d.version !== lastVersion) { lastVersion = d.version; setNews({ items: d.items || [], version: d.version }); } })
+      .then((d) => {
+        if (!alive || !d || d.version === lastVersion) return;
+        lastVersion = d.version;
+        const settings = { ...NEWS_DEFAULTS, ...(d.settings || {}) };
+        try { localStorage.setItem(NEWS_LS_KEY, JSON.stringify(settings)); } catch {}
+        setNews({ items: d.items || [], version: d.version, settings });
+      })
       .catch(() => {});
     poll();
     const iv = setInterval(poll, 15000);
     return () => { alive = false; clearInterval(iv); };
   }, []);
+  const speed = Number(news.settings.speed) || NEWS_DEFAULTS.speed;
   useEffect(() => {
     const el = trackRef.current;
     if (!el) return;
     const half = el.scrollWidth / 2;
-    setDuration(Math.max(8, half / NEWS_SPEED_PX_S));
-  }, [news.version, wallW]);
+    setDuration(Math.max(6, half / speed));
+  }, [news.version, wallW, speed]);
   if (!news.items.length) return null;
   const r = Math.max(16, Math.min(wallW, wallH) * 0.075);
-  const rightReserve = Math.round(2 * r + 28);
+  const rightReserve = effect === "logo" ? 0 : Math.round(2 * r + 28);
+  const color = news.settings.color || NEWS_DEFAULTS.color;
+  const rgb = newsRgb(color);
   const text = news.items.map((i) => i.text).join("   •   ");
   return (
     <div
@@ -348,10 +368,10 @@ function LedWallNewsTicker({ wallW, wallH }) {
       aria-live="off"
       className="absolute left-0 bottom-0 z-40 overflow-hidden pointer-events-none"
       style={{
-        right: rightReserve, height: 32,
+        right: rightReserve, height: NEWS_BAND_H,
         background: "rgba(2,6,10,0.82)",
-        borderTop: "1px solid rgba(57,255,20,0.35)",
-        boxShadow: "0 -2px 14px rgba(57,255,20,0.12)",
+        borderTop: `1px solid rgba(${rgb},0.35)`,
+        boxShadow: `0 -2px 14px rgba(${rgb},0.12)`,
       }}
     >
       <div
@@ -361,8 +381,8 @@ function LedWallNewsTicker({ wallW, wallH }) {
         className="absolute top-0 left-0 h-full flex items-center whitespace-nowrap"
         style={{
           fontFamily: '"JetBrains Mono","Fira Code","Space Mono",ui-monospace,monospace',
-          fontSize: 14, fontWeight: 600, letterSpacing: "0.04em",
-          color: "#39FF14", textShadow: "0 0 6px rgba(57,255,20,0.75), 0 0 14px rgba(57,255,20,0.35)",
+          fontSize: 24, fontWeight: 600, letterSpacing: "0.04em",
+          color, textShadow: `0 0 8px rgba(${rgb},0.75), 0 0 18px rgba(${rgb},0.35)`,
           animation: `ledNewsScroll ${duration}s linear infinite`,
           willChange: "transform",
         }}
@@ -1003,7 +1023,7 @@ export default function LedWall({
         }}
       />
       {/* L3 · v13.50 · LED WALL NEWS — sempre sopra tutto, mai sopra il marchio R-AI */}
-      <LedWallNewsTicker wallW={wallSize.w} wallH={wallSize.h} />
+      <LedWallNewsTicker wallW={wallSize.w} wallH={wallSize.h} effect={effect} />
     </div>
   );
 }

@@ -63,14 +63,55 @@ function EndpointBox() {
   );
 }
 
+const DEFAULT_SETTINGS = { speed: 70, color: "#39FF14" };
+const SPEEDS_FALLBACK = [40, 55, 70, 100, 140];
+
+function TickerSettings({ settings, speeds, onSave, busy }) {
+  const s = { ...DEFAULT_SETTINGS, ...(settings || {}) };
+  const list = speeds?.length ? speeds : SPEEDS_FALLBACK;
+  const idx = Math.max(0, list.indexOf(Number(s.speed)));
+  const step = (d) => { const j = Math.min(list.length - 1, Math.max(0, idx + d)); if (j !== idx) onSave({ speed: list[j] }); };
+  return (
+    <div className="rounded-lg p-3 mt-3 flex flex-wrap items-center gap-x-6 gap-y-2" data-testid="lwn-settings" style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(57,255,20,0.2)" }}>
+      <div className="flex items-center gap-2" data-testid="lwn-speed">
+        <span className="label-mono text-zinc-400">VELOCITÀ</span>
+        <button type="button" onClick={() => step(-1)} disabled={busy || idx === 0} data-testid="lwn-speed-minus"
+          className="w-7 h-7 rounded border border-white/15 text-white font-black hover:bg-white/10 disabled:opacity-25">−</button>
+        <span className="font-mono text-sm w-16 text-center" style={{ color: GREEN }} data-testid="lwn-speed-value">×{(Number(s.speed) / DEFAULT_SETTINGS.speed).toFixed(1)}</span>
+        <button type="button" onClick={() => step(1)} disabled={busy || idx === list.length - 1} data-testid="lwn-speed-plus"
+          className="w-7 h-7 rounded border border-white/15 text-white font-black hover:bg-white/10 disabled:opacity-25">+</button>
+        <span className="text-[10px] font-mono text-zinc-500">{s.speed} px/s</span>
+      </div>
+      <div className="flex items-center gap-2" data-testid="lwn-color">
+        <span className="label-mono text-zinc-400">COLORE TESTO</span>
+        <input type="color" value={s.color} disabled={busy} data-testid="lwn-color-picker"
+          onChange={(e) => onSave({ color: e.target.value.toUpperCase() })}
+          className="w-8 h-7 rounded border border-white/15 bg-transparent cursor-pointer p-0" title="Colore delle lettere della banda" />
+        <span className="font-mono text-xs" style={{ color: s.color, textShadow: `0 0 6px ${s.color}` }} data-testid="lwn-color-value">{s.color}</span>
+        {s.color !== DEFAULT_SETTINGS.color && (
+          <button type="button" onClick={() => onSave({ color: DEFAULT_SETTINGS.color })} disabled={busy} data-testid="lwn-color-reset"
+            className="px-1.5 py-0.5 rounded text-[10px] border border-white/15 text-zinc-300 hover:bg-white/10">↺ verde neon</button>
+        )}
+      </div>
+      <span className="text-[10px] font-mono text-zinc-500">Si applica al LED Wall pubblico entro ~15s · salvato nel database.</span>
+    </div>
+  );
+}
+
 export default function LedWallNewsPanel() {
   const [items, setItems] = useState([]);
+  const [settings, setSettings] = useState(DEFAULT_SETTINGS);
+  const [speeds, setSpeeds] = useState(SPEEDS_FALLBACK);
   const [text, setText] = useState("");
   const [confirmAdd, setConfirmAdd] = useState(false);
   const [deleting, setDeleting] = useState(null);
   const [busy, setBusy] = useState(false);
 
-  const load = useCallback(() => api.get("/admin/ledwall/news").then((r) => setItems(r.data?.items || [])).catch(() => {}), []);
+  const load = useCallback(() => api.get("/admin/ledwall/news").then((r) => {
+    setItems(r.data?.items || []);
+    if (r.data?.settings) setSettings(r.data.settings);
+    if (r.data?.speeds?.length) setSpeeds(r.data.speeds);
+  }).catch(() => {}), []);
   useEffect(() => { load(); const iv = setInterval(load, 20000); return () => clearInterval(iv); }, [load]);
 
   const run = async (fn, ok) => {
@@ -79,6 +120,7 @@ export default function LedWallNewsPanel() {
     catch (e) { toast.error(e?.response?.data?.detail || "Errore"); }
     finally { setBusy(false); }
   };
+  const saveSettings = (patch) => run(async () => { const r = await api.put("/admin/ledwall/news/settings", patch); setSettings(r.data.settings); });
   const add = () => run(async () => { await api.post("/admin/ledwall/news", { text: text.trim() }); setText(""); setConfirmAdd(false); }, "Aggiunto alla coda LED Wall");
   const move = (idx, dir) => {
     const j = idx + dir;
@@ -111,6 +153,8 @@ export default function LedWallNewsPanel() {
           <Plus className="w-4 h-4" /> Aggiungi</button>
       </div>
       <div className="text-[10px] font-mono text-zinc-500 mt-1 text-right">{text.length}/400</div>
+
+      <TickerSettings settings={settings} speeds={speeds} onSave={saveSettings} busy={busy} />
 
       <div className="mt-3 space-y-1.5 max-h-[320px] overflow-y-auto pr-1" data-testid="lwn-list">
         {items.length === 0 && <div className="text-zinc-500 text-sm py-6 text-center" data-testid="lwn-empty">Coda vuota · la banda non viene mostrata.</div>}

@@ -9192,8 +9192,18 @@ def _clock_now_offset(clock: dict) -> tuple[float, dict]:
 LEDWALL_NEWS_PROJ = {"_id": 0, "id": 1, "text": 1, "order": 1, "active": 1, "source": 1, "created_at": 1, "updated_at": 1}
 
 
-def _ledwall_news_version(items: list) -> str:
+LEDWALL_NEWS_SPEEDS = (40, 55, 70, 100, 140)
+LEDWALL_NEWS_DEFAULTS = {"speed": 70, "color": "#39FF14"}
+
+
+async def _ledwall_news_settings() -> dict:
+    st = await db.station.find_one({"_id": "state"}, {"ledwall_news_settings": 1}) or {}
+    return {**LEDWALL_NEWS_DEFAULTS, **(st.get("ledwall_news_settings") or {})}
+
+
+def _ledwall_news_version(items: list, settings: Optional[dict] = None) -> str:
     raw = "|".join(f"{i['id']}:{i.get('updated_at','')}:{i.get('order',0)}:{int(bool(i.get('active')))}" for i in items)
+    raw += f"#{(settings or {}).get('speed')}:{(settings or {}).get('color')}"
     return hashlib.sha1(raw.encode()).hexdigest()[:12]
 
 
@@ -9218,7 +9228,30 @@ async def _ledwall_news_insert(text: str, source: str) -> dict:
 @api_router.get("/ledwall/news")
 async def ledwall_news_public():
     items = [i for i in await _ledwall_news_all() if i.get("active", True)]
-    return {"items": [{"id": i["id"], "text": i["text"]} for i in items], "version": _ledwall_news_version(items)}
+    settings = await _ledwall_news_settings()
+    return {"items": [{"id": i["id"], "text": i["text"]} for i in items], "settings": settings,
+            "version": _ledwall_news_version(items, settings)}
+
+
+@api_router.put("/admin/ledwall/news/settings")
+async def admin_ledwall_news_settings(payload: dict):
+    """Velocità (px/s, uno dei LEDWALL_NEWS_SPEEDS) e colore testo (#rrggbb) del ticker."""
+    cur = await _ledwall_news_settings()
+    if "speed" in payload:
+        try:
+            sp = int(payload["speed"])
+        except (TypeError, ValueError):
+            raise HTTPException(400, "speed non valida")
+        if sp not in LEDWALL_NEWS_SPEEDS:
+            raise HTTPException(400, "speed deve essere una di: " + ",".join(map(str, LEDWALL_NEWS_SPEEDS)))
+        cur["speed"] = sp
+    if "color" in payload:
+        col = (payload.get("color") or "").strip().upper()
+        if not re.fullmatch(r"#[0-9A-F]{6}", col):
+            raise HTTPException(400, "color deve essere #RRGGBB")
+        cur["color"] = col
+    await db.station.update_one({"_id": "state"}, {"$set": {"ledwall_news_settings": cur}}, upsert=True)
+    return {"ok": True, "settings": cur}
 
 
 @api_router.post("/ledwall/news/ingest")
@@ -9236,7 +9269,9 @@ async def ledwall_news_ingest(payload: dict, x_ledwall_token: Optional[str] = He
 @api_router.get("/admin/ledwall/news")
 async def admin_ledwall_news_list():
     items = await _ledwall_news_all()
-    return {"items": items, "version": _ledwall_news_version(items)}
+    settings = await _ledwall_news_settings()
+    return {"items": items, "settings": settings, "speeds": list(LEDWALL_NEWS_SPEEDS),
+            "defaults": LEDWALL_NEWS_DEFAULTS, "version": _ledwall_news_version(items, settings)}
 
 
 @api_router.post("/admin/ledwall/news")
