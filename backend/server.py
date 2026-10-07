@@ -247,7 +247,7 @@ async def download_and_save_suno_audio(audio_url: str, track_id: str) -> Optiona
                 await db.tracks.update_one(
                     {"id": track_id},
                     {"$set": {
-                        "duration_sec": round(real_duration + 0.4, 3),
+                        "duration_sec": round(real_duration, 3),
                         "real_duration_sec": round(real_duration, 3),
                     }},
                 )
@@ -1653,7 +1653,7 @@ async def admin_tracks_upload(
             if norm and norm.get("normalized_bytes"):
                 data = norm["normalized_bytes"]
                 probed_duration_sec_raw = float(norm.get("duration_sec") or 0.0)
-                probed_duration_sec = probed_duration_sec_raw + 0.4  # safety margin
+                probed_duration_sec = probed_duration_sec_raw  # Ticket #247410: durata reale, nessun margine
         finally:
             try:
                 Path(_raw_tmp_path).unlink()
@@ -6348,7 +6348,8 @@ async def chat_generate_avatar(payload: dict):
 # ============================================================================
 _CLOCK_QUEUE_LOOKAHEAD = 8   # numero di brani in coda dopo il current
 _SHORT_AUDIO_SEC = 45        # v13.40 · sotto questa durata = jingle/spot/evento breve
-_SHORT_AUDIO_PAD_SEC = 1.5   # v13.40 · coda di sicurezza anti-troncamento sui file brevi
+_SHORT_AUDIO_PAD_SEC = 0.0   # Ticket #247410: era 1.5s. Con HLS il player suona i file uno dopo l'altro alla loro
+                             # durata REALE: ogni secondo di padding sul clock diventava deriva (buchi + salti).
 
 
 def _pad_short(dur: float) -> float:
@@ -6914,14 +6915,15 @@ async def _resolve_time_signal_with_minutes() -> Optional[dict]:
         logger.info(f"[time-signal] clip-parte mancanti ({hp}={'ok' if hd else 'NO'}, {mp}={'ok' if md else 'NO'}) → fallback orario")
         return None
     if not md:
-        return {"hour_url": hd["speech_audio_url"], "hour_dur": int(round(float(hd.get("duration_sec") or 3))) + 1,
+        return {"hour_url": hd["speech_audio_url"], "hour_dur": round(float(hd.get("duration_sec") or 3), 3),
                 "minute": None, "label": f"{_now.hour:02d}:{_now.minute:02d}"}
     return {
         "hour_url": hd["speech_audio_url"],
-        "hour_dur": int(round(float(hd.get("duration_sec") or 3))) + 1,
+        "hour_dur": round(float(hd.get("duration_sec") or 3), 3),
         "minute": {"id": f"tsmin-{_now.hour:02d}{_now.minute:02d}", "title": f"Segnale orario · {_now.hour:02d}:{_now.minute:02d}",
                    "artist": "R-A.I. Radio", "audio_url": md["speech_audio_url"],
-                   "duration_sec": int(round(float(md.get("duration_sec") or 3))) + 1, "video_url": None,
+                   "duration_sec": round(float(md.get("duration_sec") or 3), 3),
+                   "real_duration_sec": round(float(md.get("duration_sec") or 3), 3), "video_url": None,
                    "kind": "time_signal"},
         "label": f"{_now.hour:02d}:{_now.minute:02d}",
     }
@@ -7201,6 +7203,7 @@ async def _timeline_pick_due() -> Optional[dict]:
         # primo follow_up (concatenamento zero-gap già esistente). Durate dai record validati.
         doc["audio_url"] = _tsm["hour_url"]
         doc["duration_sec"] = _tsm["hour_dur"]
+        doc["real_duration_sec"] = _tsm["hour_dur"]
         doc["follow_ups"] = ([_tsm["minute"]] if _tsm["minute"] else []) + list(doc.get("follow_ups") or [])
         doc["time_signal_label"] = _tsm["label"]
         logger.info(f"[time-signal] evento {doc.get('id')} → ora+minuti {_tsm['label']}")
@@ -8229,17 +8232,18 @@ async def admin_audio_reprobe_durations(limit: int = 500, track_id: Optional[str
                 unreadable += 1
                 continue
             real_raw = float(d)
-            real = real_raw + 2.0  # v13.36 · safety margin (was 0.4s, too thin for VBR MP3)
+            real = real_raw  # Ticket #247410: niente margine (+2.0s causava deriva clock/audio, vedi _SHORT_AUDIO_PAD_SEC)
             if source == "local":
                 probed_local += 1
             else:
                 probed_storage += 1
-            # Aggiorna solo se scostamento >0.5s per non thrashare il DB
-            if abs(real - float(t.get("duration_sec") or 0)) < 0.5:
+            # Aggiorna solo se scostamento >0.05s per non thrashare il DB (Ticket #247410: era 0.5s,
+            # lasciava durate intere arrotondate fino a mezzo secondo sbagliate)
+            if abs(real - float(t.get("duration_sec") or 0)) < 0.05:
                 continue
             await db.tracks.update_one(
                 {"id": tid},
-                {"$set": {"duration_sec": round(real), "real_duration_sec": round(real_raw, 3),
+                {"$set": {"duration_sec": round(real, 3), "real_duration_sec": round(real_raw, 3),
                           "duration_probed_at": now_iso()}},
             )
             updated += 1
@@ -8284,7 +8288,7 @@ async def admin_audio_normalize_one(track_id: str):
     except Exception as e:
         raise HTTPException(500, f"Scrittura file fallita: {e}")
     real_raw = float(result["duration_sec"])
-    real = real_raw + 2.0  # v13.36 · aligned with reprobe margin (was 0.4s)
+    real = real_raw  # Ticket #247410: niente margine, durata reale
     await db.tracks.update_one(
         {"id": track_id},
         {"$set": {"duration_sec": round(real, 3), "real_duration_sec": round(real_raw, 3),
@@ -8803,6 +8807,20 @@ _PLAY_LOG_TTL_SEC = 14 * 24 * 3600
 _play_log_tasks: set = set()
 _first_offset_seen = _collections.OrderedDict()
 _SHORT_ITEM_LOG_SEC = 40
+def _with_true_duration(e: dict) -> dict:
+    """Ticket #247410: il clock deve avanzare alla durata REALE del file, la stessa che il player
+    HLS suona. 187/193 brani avevano duration_sec ~2s piu' lunga del file (margini di sicurezza):
+    l'ascoltatore finiva il file prima che il server pubblicasse l'elemento successivo -> vuoto,
+    poi hls.js si riallineava saltando -> inizi mancanti / code tagliate."""
+    try:
+        r = float(e.get("real_duration_sec") or 0)
+        if r > 0:
+            e["duration_sec"] = round(r, 3)
+    except Exception:
+        pass
+    return e
+
+
 _HLS_PREV_GRACE_SEC = 45   # Ticket #247410: per quanto la canzone finita resta in testa alla playlist live
 
 
@@ -9082,7 +9100,7 @@ async def _clock_promote_inner(force: bool, state: dict) -> dict:
         _old_cur = clock.get("current")
         clock["previous"] = (dict(_old_cur, seq=int(clock.get("seq") or 0))
                              if _old_cur and not _forced_now else None)
-        clock["current"] = promo
+        clock["current"] = _with_true_duration(promo)
         clock["queue"] = q
         _promoted += 1
         _last_reason = _reason
@@ -9629,7 +9647,7 @@ async def _video_advance(force: bool = False) -> dict:
             break
         promo = dict(promo)
         promo["started_at"] = now.isoformat()
-        clock["current"] = promo
+        clock["current"] = _with_true_duration(promo)
         clock["queue"] = q
         changed = True
         try:
@@ -9810,7 +9828,7 @@ async def admin_media_upload(
             "bpm": detected_bpm,
             "bpm_source": ("server" if detected_bpm else None),
             # v13.41 · Fix ticket #247410: stesso margine anti-troncamento del path Suno/admin-single
-            "duration_sec": round(real_duration + 0.4, 3) if real_duration and real_duration > 0 else 30,
+            "duration_sec": round(real_duration, 3) if real_duration and real_duration > 0 else 30,
             "real_duration_sec": round(real_duration, 3) if real_duration and real_duration > 0 else None,
             "genre": "Custom",
             "mood": "Neutral",
@@ -11499,12 +11517,39 @@ async def health():
     return {"ok": True, "pod": POD_ID, "sha": BUILD_SHA}
 
 
+async def _startup_fix_durations():
+    """Ticket #247410: una passata dopo l'avvio per riportare duration_sec alla durata reale
+    (rimuove i +2.0s / +0.4s salvati dalle versioni precedenti). Idempotente."""
+    await asyncio.sleep(45)
+    try:
+        r = await admin_audio_reprobe_durations(limit=2000)
+        logger.info(f"[durations] correzione all'avvio completata: {r}")
+        # Gli elementi gia' in coda portano ancora la durata vecchia: riallineali alla libreria.
+        async with _clock_lock:
+            clock = await db.station_clock.find_one({"_id": "clock"}) or {}
+            queue = list(clock.get("queue") or [])
+            fixed = 0
+            for q in queue:
+                if q.get("is_timeline") or q.get("is_follow_up") or not q.get("id"):
+                    continue
+                t = await db.tracks.find_one({"id": q["id"]}, {"_id": 0, "real_duration_sec": 1})
+                rd = float((t or {}).get("real_duration_sec") or 0)
+                if rd > 0 and abs(rd - float(q.get("duration_sec") or 0)) > 0.05:
+                    q["duration_sec"] = round(rd, 3); q["real_duration_sec"] = round(rd, 3); fixed += 1
+            if fixed and clock:
+                ok = await _clock_cas(clock, {"queue": queue})
+                logger.info(f"[durations] coda riallineata: {fixed} elementi (cas={ok})")
+    except Exception as e:
+        logger.warning(f"[durations] correzione all'avvio fallita: {e}")
+
+
 @app.on_event("startup")
 async def on_startup():
     global _STARTUP_READY
     # Registra il router API PRIMA di ogni tick di startup: tutte le rotte
     # definite sopra sono ora fisicamente aggiunte all'app.
     app.include_router(api_router)
+    asyncio.create_task(_startup_fix_durations())
     # v13.33 · Sanity check ffmpeg/ffprobe — indispensabili per reprobe,
     # normalizzazione, beatmatch, intro-detect. Logga un ERROR grosso se
     # mancano, così le operazioni "senza risultato silenzioso" si vedono
