@@ -314,6 +314,67 @@ function detectMode(current, isPlaying) {
   return isPlaying ? "music" : "standby";
 }
 
+// v13.50 · LED WALL NEWS — banda ticker fissa in basso (stile TG), sopra ogni
+// effetto/video/orologio. Si ferma prima dello spazio riservato al marchio R-AI
+// (stesso calcolo di drawRaiMark). Sparisce quando la coda è vuota.
+const NEWS_SPEED_PX_S = 70;
+function LedWallNewsTicker({ wallW, wallH }) {
+  const [news, setNews] = useState({ items: [], version: "" });
+  const trackRef = useRef(null);
+  const [duration, setDuration] = useState(30);
+  useEffect(() => {
+    let alive = true, lastVersion = "";
+    const poll = () => fetch(`${process.env.REACT_APP_BACKEND_URL}/api/ledwall/news`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (alive && d && d.version !== lastVersion) { lastVersion = d.version; setNews({ items: d.items || [], version: d.version }); } })
+      .catch(() => {});
+    poll();
+    const iv = setInterval(poll, 15000);
+    return () => { alive = false; clearInterval(iv); };
+  }, []);
+  useEffect(() => {
+    const el = trackRef.current;
+    if (!el) return;
+    const half = el.scrollWidth / 2;
+    setDuration(Math.max(8, half / NEWS_SPEED_PX_S));
+  }, [news.version, wallW]);
+  if (!news.items.length) return null;
+  const r = Math.max(16, Math.min(wallW, wallH) * 0.075);
+  const rightReserve = Math.round(2 * r + 28);
+  const text = news.items.map((i) => i.text).join("   •   ");
+  return (
+    <div
+      data-testid="ledwall-news-band"
+      aria-live="off"
+      className="absolute left-0 bottom-0 z-40 overflow-hidden pointer-events-none"
+      style={{
+        right: rightReserve, height: 32,
+        background: "rgba(2,6,10,0.82)",
+        borderTop: "1px solid rgba(57,255,20,0.35)",
+        boxShadow: "0 -2px 14px rgba(57,255,20,0.12)",
+      }}
+    >
+      <div
+        ref={trackRef}
+        key={news.version}
+        data-testid="ledwall-news-track"
+        className="absolute top-0 left-0 h-full flex items-center whitespace-nowrap"
+        style={{
+          fontFamily: '"JetBrains Mono","Fira Code","Space Mono",ui-monospace,monospace',
+          fontSize: 14, fontWeight: 600, letterSpacing: "0.04em",
+          color: "#39FF14", textShadow: "0 0 6px rgba(57,255,20,0.75), 0 0 14px rgba(57,255,20,0.35)",
+          animation: `ledNewsScroll ${duration}s linear infinite`,
+          willChange: "transform",
+        }}
+      >
+        <span className="px-6">{text}&nbsp;&nbsp;&nbsp;•&nbsp;&nbsp;&nbsp;</span>
+        <span className="px-6" aria-hidden>{text}&nbsp;&nbsp;&nbsp;•&nbsp;&nbsp;&nbsp;</span>
+      </div>
+      <style>{`@keyframes ledNewsScroll { from { transform: translateX(0); } to { transform: translateX(-50%); } }`}</style>
+    </div>
+  );
+}
+
 export default function LedWall({
   isPlaying = false,
   current = null,
@@ -328,12 +389,14 @@ export default function LedWall({
   // al centro del LedWall (riusa lo stesso logo già in alto in home, su richiesta
   // esplicita del cliente — non un'immagine/emblema disegnato ad hoc).
   const [orbSize, setOrbSize] = useState(160);
+  const [wallSize, setWallSize] = useState({ w: 800, h: 340 });
   useEffect(() => {
     if (!orbWrapRef.current) return;
     const measure = () => {
       const el = orbWrapRef.current;
       if (!el) return;
       const { width, height } = el.getBoundingClientRect();
+      setWallSize({ w: width, h: height });
       setOrbSize(Math.max(120, Math.min(520, Math.min(width, height) * 0.60)));  // v13.47 · 60% del riquadro (prima 34%)
     };
     measure();
@@ -939,6 +1002,8 @@ export default function LedWall({
           mixBlendMode: "screen",
         }}
       />
+      {/* L3 · v13.50 · LED WALL NEWS — sempre sopra tutto, mai sopra il marchio R-AI */}
+      <LedWallNewsTicker wallW={wallSize.w} wallH={wallSize.h} />
     </div>
   );
 }

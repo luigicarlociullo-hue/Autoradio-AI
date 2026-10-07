@@ -17,6 +17,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict, ValidationError, field_validator
 from typing import List, Optional, Literal
 import uuid
+import secrets
 from datetime import datetime, timezone, timedelta
 import httpx
 
@@ -9181,6 +9182,116 @@ def _clock_now_offset(clock: dict) -> tuple[float, dict]:
     except Exception:
         return 0.0, cur
     return max(0.0, (datetime.now(timezone.utc) - started).total_seconds()), cur
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# v13.50 · LED WALL NEWS — ticker testuale in basso nel LedWall.
+# Collezione `ledwall_news`: {id, text, order, active, source: manual|ai, created_at, updated_at}
+# Lettura pubblica (LedWall) · scrittura Regia (JWT) · ingest esterno con token (futura IA).
+# ═══════════════════════════════════════════════════════════════════════════
+LEDWALL_NEWS_PROJ = {"_id": 0, "id": 1, "text": 1, "order": 1, "active": 1, "source": 1, "created_at": 1, "updated_at": 1}
+
+
+def _ledwall_news_version(items: list) -> str:
+    raw = "|".join(f"{i['id']}:{i.get('updated_at','')}:{i.get('order',0)}:{int(bool(i.get('active')))}" for i in items)
+    return hashlib.sha1(raw.encode()).hexdigest()[:12]
+
+
+async def _ledwall_news_all() -> list:
+    return await db.ledwall_news.find({}, LEDWALL_NEWS_PROJ).sort([("order", 1), ("created_at", 1)]).to_list(500)
+
+
+async def _ledwall_news_insert(text: str, source: str) -> dict:
+    text = " ".join((text or "").split())
+    if not text:
+        raise HTTPException(400, "testo vuoto")
+    if len(text) > 400:
+        raise HTTPException(400, "testo troppo lungo (max 400 caratteri)")
+    last = await db.ledwall_news.find_one({}, {"_id": 0, "order": 1}, sort=[("order", -1)])
+    ts = now_iso()
+    doc = {"id": str(uuid.uuid4()), "text": text, "order": (last or {}).get("order", -1) + 1,
+           "active": True, "source": source, "created_at": ts, "updated_at": ts}
+    await db.ledwall_news.insert_one(dict(doc))
+    return doc
+
+
+@api_router.get("/ledwall/news")
+async def ledwall_news_public():
+    items = [i for i in await _ledwall_news_all() if i.get("active", True)]
+    return {"items": [{"id": i["id"], "text": i["text"]} for i in items], "version": _ledwall_news_version(items)}
+
+
+@api_router.post("/ledwall/news/ingest")
+async def ledwall_news_ingest(payload: dict, x_ledwall_token: Optional[str] = Header(None)):
+    """Inserimento da servizio esterno (futuri messaggi IA). Header: X-LedWall-Token."""
+    st = await db.station.find_one({"_id": "state"}, {"ledwall_news_token": 1}) or {}
+    tok = st.get("ledwall_news_token")
+    if not tok or not x_ledwall_token or not secrets.compare_digest(tok, x_ledwall_token):
+        raise HTTPException(401, "token LED Wall News non valido")
+    source = (payload.get("source") or "ai").strip().lower()
+    doc = await _ledwall_news_insert(payload.get("text"), source if source in ("manual", "ai") else "ai")
+    return {"ok": True, "item": doc}
+
+
+@api_router.get("/admin/ledwall/news")
+async def admin_ledwall_news_list():
+    items = await _ledwall_news_all()
+    return {"items": items, "version": _ledwall_news_version(items)}
+
+
+@api_router.post("/admin/ledwall/news")
+async def admin_ledwall_news_add(payload: dict):
+    doc = await _ledwall_news_insert(payload.get("text"), "manual")
+    return {"ok": True, "item": doc}
+
+
+@api_router.patch("/admin/ledwall/news/{item_id}")
+async def admin_ledwall_news_patch(item_id: str, payload: dict):
+    upd: dict = {}
+    if "text" in payload:
+        text = " ".join((payload.get("text") or "").split())
+        if not text or len(text) > 400:
+            raise HTTPException(400, "testo vuoto o troppo lungo (max 400)")
+        upd["text"] = text
+    if "active" in payload:
+        upd["active"] = bool(payload["active"])
+    if not upd:
+        raise HTTPException(400, "nessun campo da aggiornare")
+    upd["updated_at"] = now_iso()
+    r = await db.ledwall_news.update_one({"id": item_id}, {"$set": upd})
+    if r.matched_count == 0:
+        raise HTTPException(404, "elemento non trovato")
+    return {"ok": True, "id": item_id, **upd}
+
+
+@api_router.delete("/admin/ledwall/news/{item_id}")
+async def admin_ledwall_news_delete(item_id: str):
+    r = await db.ledwall_news.delete_one({"id": item_id})
+    if r.deleted_count == 0:
+        raise HTTPException(404, "elemento non trovato")
+    return {"ok": True, "id": item_id}
+
+
+@api_router.put("/admin/ledwall/news/reorder")
+async def admin_ledwall_news_reorder(payload: dict):
+    ids = payload.get("ids") or []
+    if not isinstance(ids, list) or not ids:
+        raise HTTPException(400, "ids mancanti")
+    ts = now_iso()
+    for idx, iid in enumerate(ids):
+        await db.ledwall_news.update_one({"id": iid}, {"$set": {"order": idx, "updated_at": ts}})
+    return {"ok": True, "count": len(ids)}
+
+
+@api_router.get("/admin/ledwall/news/token")
+async def admin_ledwall_news_token(regenerate: bool = False):
+    st = await db.station.find_one({"_id": "state"}, {"ledwall_news_token": 1}) or {}
+    tok = st.get("ledwall_news_token")
+    if regenerate or not tok:
+        tok = secrets.token_urlsafe(32)
+        await db.station.update_one({"_id": "state"}, {"$set": {"ledwall_news_token": tok}}, upsert=True)
+    return {"token": tok, "endpoint": "/api/ledwall/news/ingest", "header": "X-LedWall-Token"}
+
 
 
 @api_router.get("/stream/now")
