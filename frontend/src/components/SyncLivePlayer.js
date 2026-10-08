@@ -172,6 +172,19 @@ export default function SyncLivePlayer() {
     return () => window.removeEventListener("rai:voice-over:play", trigger);
   }, []);
 
+  // Deriva rispetto al clock del server, corretta SOLO con il playbackRate (mai con un seek):
+  // atteso = server_time - live_delay; sentito = hls.playingDate (PROGRAM-DATE-TIME del segnale
+  // che sta suonando). In ritardo di oltre 2s -> 1.04x, in anticipo -> 0.96x (si "tiene"), altrimenti 1x.
+  const driftCorrect = (d) => {
+    const hls = hlsRef.current;
+    const audio = audioRef.current;
+    if (!hls || !audio || audio.paused || !hls.playingDate || !d?.server_time) return;
+    const expected = new Date(d.server_time).getTime() - (Number(d.live_delay_sec) || 0) * 1000;
+    const drift = (expected - hls.playingDate.getTime()) / 1000;   // >0 = siamo indietro
+    if (Math.abs(drift) > 120) return;    // incoerente (cambio finestra / pod addormentato): non toccare
+    audio.playbackRate = drift > 2 ? 1.04 : drift < -2 ? 0.96 : 1;
+  };
+
   // Poll /api/stream/now ogni 5s per il display "cosa sta suonando" + coda
   useEffect(() => {
     const fetchNow = async () => {
@@ -180,6 +193,7 @@ export default function SyncLivePlayer() {
         const d = await r.json();
         setNowInfo(d.current || null);
         setNextQueue(d.next || []);
+        driftCorrect(d);
       } catch {}
     };
     fetchNow();
@@ -271,16 +285,19 @@ export default function SyncLivePlayer() {
       // hls.js
       if (Hls.isSupported()) {
         const hls = new Hls({
-          // v13.11 · Transizioni senza troncamenti — larghi buffer per coprire
-          // pipeline lenta e cambi segmento gapless. hls.js gestisce già le
-          // transizioni EXT-X-DISCONTINUITY / EXTINF senza cutoff, ma
-          // abbassiamo la aggressività del live-sync per evitare micro-salti.
-          liveSyncDurationCount: 3,
-          liveMaxLatencyDurationCount: 10,
-          maxLiveSyncPlaybackRate: 1.05,     // era 1.1 — meno pitch drift
+          // Stream timing: il server pubblica EXT-X-START gia' ~20s DIETRO al clock, quindi si parte
+          // con un buffer reale. Niente "salto in avanti per recuperare": liveMaxLatencyDuration e'
+          // enorme (hls.js non fa mai seek al live edge) e il ritardo residuo si assorbe solo con un
+          // leggero speed-up (max 1.05x) invece di saltare e mangiare inizi/code.
+          liveSyncDuration: 20,
+          liveMaxLatencyDuration: 3600,
+          maxLiveSyncPlaybackRate: 1,         // la correzione di deriva e' in driftCorrect() (rate 0.96-1.04, mai seek)
+          lowLatencyMode: false,
           enableWorker: true,
-          backBufferLength: 30,               // permette lo scrub indietro
+          backBufferLength: 60,               // tiene indietro la finestra gia' suonata
           maxBufferLength: 90,                // ~1.5 minuti di lookahead
+          maxMaxBufferLength: 120,
+          nudgeMaxRetry: 10,                  // piccoli buchi: nudge, non salto
           startPosition: -1,                  // parte da EXT-X-START (sincrono)
         });
         hlsRef.current = hls;

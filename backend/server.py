@@ -5429,8 +5429,8 @@ async def get_ledwall_state():
     # Supporta anche sentinel FX (es. "fx:effects") per un evento che vuole
     # forzare gli effetti audio-reattivi.
     from_event = False
-    clk = await db.station_clock.find_one({"_id": "clock"}, {"current": 1})
-    cur = (clk or {}).get("current") or {}
+    clk = await db.station_clock.find_one({"_id": "clock"}, {"current": 1, "queue": 1, "history": 1, "previous": 1, "seq": 1})
+    cur, _, _ = _clock_delayed_view(clk or {})   # stesso istante dell'audio ascoltato
     if cur.get("is_timeline") and cur.get("video_url"):
         _vu = cur.get("video_url") or ""
         if _vu.startswith("fx:"):
@@ -5641,6 +5641,8 @@ async def admin_timeline_create_ora_esatta(payload: dict = None):
         )
         if ts and ts.get("speech_audio_url"):
             audio_url = ts["speech_audio_url"]
+    if not audio_url and (await _resolve_time_signal_with_minutes() or await _resolve_current_hour_time_signal()):
+        audio_url = "time_signal:live"   # l'audio dell'ora reale si risolve al momento dell'onda
     if not audio_url:
         raise HTTPException(
             400,
@@ -5982,6 +5984,102 @@ def _build_hls_playlist(tracks: list, base_url: str) -> str:
     return "\n".join(lines)
 
 
+def _entry_dur(t: dict) -> float:
+    """Durata REALE di un elemento del clock (quella che il player suona davvero)."""
+    try:
+        return float(t.get("real_duration_sec") or t.get("duration_sec") or 0)
+    except Exception:
+        return 0.0
+
+
+def _clock_window_history(clock: dict, seq: int, now: datetime) -> list:
+    """Elementi gia' finiti che restano in playlist: un elemento esce solo dopo essere finito da
+    (_HLS_LIVE_DELAY_SEC + _HLS_PREV_GRACE_SEC) secondi, cioe' quando nessun ascoltatore, per quanto
+    in ritardo, puo' ancora starlo suonando. Sempre contigui al corrente (seq consecutivi) e in
+    numero sufficiente a garantire una finestra di almeno _HLS_MIN_SEGMENTS elementi."""
+    pool = {int(h.get("seq") or -1): h for h in (clock.get("history") or []) if h.get("audio_url")}
+    prev = clock.get("previous")
+    if prev and prev.get("audio_url"):
+        pool.setdefault(int(prev.get("seq") or -1), prev)
+    keep_for = _HLS_LIVE_DELAY_SEC + _HLS_PREV_GRACE_SEC
+    ahead_n = min(len(clock.get("queue") or []), _HLS_MAX_AHEAD)
+    out = []
+    want = seq - 1
+    while want in pool and len(out) < _HLS_HISTORY_KEEP:
+        h = pool[want]
+        end = _clock_entry_end(h)
+        recent = bool(end) and (now - end).total_seconds() < keep_for
+        if not recent and (len(out) + 1 + ahead_n) >= _HLS_MIN_SEGMENTS:
+            break
+        out.append(h)
+        want -= 1
+    out.reverse()
+    return out
+
+
+def _clock_delayed_view(clock: dict, now: Optional[datetime] = None) -> tuple:
+    """Cosa sente un ascoltatore che e' _HLS_LIVE_DELAY_SEC dietro al clock: (entry, offset, prossimi).
+    Display (LedWall, now-playing) e audio devono riferirsi allo stesso istante, altrimenti il
+    display anticipa l'audio di `delay` secondi."""
+    now = now or datetime.now(timezone.utc)
+    cur = (clock or {}).get("current") or {}
+    queue = list((clock or {}).get("queue") or [])
+    if not cur:
+        return cur, 0.0, queue[:5]
+    started = _parse_iso(cur.get("started_at"), now)
+    off = max(0.0, (now - started).total_seconds())
+    seq = int(clock.get("seq") or 0)
+    hist = _clock_window_history(clock, seq, now)
+    seqlist = hist + [cur] + queue
+    if off >= _HLS_LIVE_DELAY_SEC:
+        return cur, off - _HLS_LIVE_DELAY_SEC, queue[:5]
+    remaining = _HLS_LIVE_DELAY_SEC - off
+    idx = len(hist) - 1
+    while idx >= 0:
+        d = _entry_dur(hist[idx])
+        if remaining <= d:
+            return hist[idx], max(0.0, d - remaining), seqlist[idx + 1: idx + 6]
+        remaining -= d
+        idx -= 1
+    if hist:
+        return hist[0], 0.0, seqlist[1:6]
+    return cur, 0.0, queue[:5]
+
+
+@api_router.get("/live-brain/services")
+async def live_brain_services():
+    """Stato REALE dei servizi (nessun testo decorativo): ogni riga e' una verifica eseguita ora."""
+    out = []
+
+    async def _chk(name, coro):
+        t0 = time.monotonic()
+        try:
+            ok, detail = await asyncio.wait_for(coro, 3.0)
+        except Exception as e:  # noqa: BLE001
+            ok, detail = False, str(e)[:80] or type(e).__name__
+        out.append({"name": name, "ok": bool(ok), "detail": detail, "ms": int((time.monotonic() - t0) * 1000)})
+
+    async def _mongo():
+        await db.command("ping"); return True, "ping ok"
+
+    async def _clk():
+        c = await db.station_clock.find_one({"_id": "clock"}, {"current": 1, "seq": 1, "queue": 1}) or {}
+        cur = c.get("current") or {}
+        age = (datetime.now(timezone.utc) - _parse_iso(cur.get("started_at"), datetime.now(timezone.utc))).total_seconds()
+        dur = float(cur.get("duration_sec") or 0)
+        return bool(cur) and age <= dur + 30, f"seq={c.get('seq')} · coda={len(c.get('queue') or [])} · delay={int(_HLS_LIVE_DELAY_SEC)}s"
+
+    async def _storage():
+        return object_storage.is_enabled(), "bucket attivo" if object_storage.is_enabled() else "disattivato (solo disco locale)"
+
+    await _chk("MongoDB", _mongo())
+    await _chk("Clock HLS", _clk())
+    await _chk("Object Storage", _storage())
+    el_key = bool(getattr(elevenlabs_service, "ELEVENLABS_API_KEY", None))
+    out.append({"name": "ElevenLabs", "ok": el_key, "detail": "chiave configurata" if el_key else "chiave mancante", "ms": 0})
+    return {"services": out, "at": datetime.now(timezone.utc).isoformat()}
+
+
 @api_router.get("/stream/live.m3u8")
 async def hls_live_playlist(request: Request):
     """HLS Live Playlist — v13.6 TRUE BROADCASTER.
@@ -6001,14 +6099,6 @@ async def hls_live_playlist(request: Request):
 
     clock = await _clock_advance()   # self-heal
     offset, cur = _clock_now_offset(clock)
-    # Ticket #247410: short items (jingle/time_signal, duration < _SHORT_ITEM_LOG_SEC)
-    # have no legitimate need for live mid-join sync — the unconditional live-elapsed
-    # offset was serving clients straight into the middle (station_play_log showed
-    # first_offset_sec up to ~23s on items this short), eating the intro for everyone.
-    # Long tracks keep the live offset so simultaneous listeners stay in sync.
-    _cur_dur = float(cur.get("duration_sec") or 0)
-    if _cur_dur and _cur_dur < _SHORT_ITEM_LOG_SEC:
-        offset = 0.0
     proto = request.headers.get("x-forwarded-proto", "https")
     host = request.headers.get("x-forwarded-host") or request.headers.get("host") or ""
     base_url = f"{proto}://{host}"
@@ -6023,116 +6113,50 @@ async def hls_live_playlist(request: Request):
         return Response(content=empty, media_type="application/vnd.apple.mpegurl",
                         headers={"Cache-Control": "no-store", "Access-Control-Allow-Origin": "*"})
 
-    # Ticket #247410: non trascinare nella finestra un elemento sproporzionatamente
-    # piu' lungo del corrente solo perche' rientra nei "prossimi 4" di default —
-    # gonfierebbe TARGETDURATION (sotto) anche se cio' che sta ANDANDO IN ONDA ORA
-    # e' breve, vanificando la correzione nel caso Jingle->Canzone. v2: la soglia
-    # fissa _SHORT_ITEM_LOG_SEC (40s) copriva solo i jingle "Short" — i jingle
-    # "Long" reali vanno da 41.5 a 152s+ (nessun campo "kind" semantico disponibile
-    # qui per distinguerli da una canzone per tipo, solo la durata), quindi
-    # restavano scoperti e il cliente continuava a sentire Jingle->Canzone tagliata.
-    # Soglia relativa al corrente invece che fissa: un elemento entra in finestra
-    # solo se non supera 3x il massimo osservato finora (che cresce man mano che
-    # si includono elementi comparabili) — copre jingle corti E lunghi allo stesso
-    # modo, senza bisogno di sapere cosa sia davvero un "jingle". Il brano escluso
-    # comparira' comunque, appena sara' lui il corrente (prossimo giro/poll).
-    _queue_tail = (clock.get("queue") or [])[:4]
-    entries = [cur]
-    # Ticket #247410: soglia ancorata alla durata del CORRENTE, mai fatta salire
-    # da un elemento gia' incluso - altrimenti il primo elemento sproporzionato
-    # (incluso apposta, vedi sotto) alzava il tetto cosi' tanto che anche il
-    # 2°-4° elemento rientravano quasi sempre, vanificando la finestra stretta.
-    _base_dur = float(cur.get("duration_sec") or 0) or 1.0
-    for _idx, _t in enumerate(_queue_tail):
-        _t_dur = float(_t.get("real_duration_sec") or _t.get("duration_sec") or 0)
-        # Il PRIMO prossimo elemento entra sempre, sproporzionato o no - altrimenti
-        # un elemento breve (segnale orario, jingle corto) non da' mai al player un
-        # vero pre-fetch di cosa viene subito dopo, e quella transizione specifica
-        # parte in ritardo/con poco volume iniziale (deve prima scoprire il nuovo
-        # elemento via poll, poi scaricarlo). Dal secondo elemento in poi vale
-        # ancora la soglia relativa, confrontata col CORRENTE non con quello appena
-        # incluso.
-        if _idx > 0 and _t_dur and _t_dur > _base_dur * 3:
-            break
-        entries.append(_t)
-    # v13.40 · Finestra scorrevole live: MEDIA-SEQUENCE = numero progressivo
-    # del current (prima fisso a 0 mentre il primo segmento cambiava → hls.js
-    # riconosceva come "segmento 0" un file diverso). Ogni segmento dopo il
-    # primo ha un DISCONTINUITY, quindi ogni segmento uscito dalla testa ne
-    # porta via uno: DISCONTINUITY-SEQUENCE avanza di pari passo. Niente più
-    # PLAYLIST-TYPE:EVENT: una playlist EVENT non può rimuovere segmenti in testa.
     seq = int(clock.get("seq") or 0)
+    now = datetime.now(timezone.utc)
 
-    # Ticket #247410: la canzone appena finita resta in testa alla finestra per
-    # _HLS_PREV_GRACE_SEC dopo la sua fine teorica. Prima la finestra era SOLO
-    # corrente + prossimi: al cambio Canzone->Jingle la canzone usciva subito
-    # dalla playlist e ogni ascoltatore anche solo pochi secondi indietro (download
-    # del file, buffering) veniva spostato da hls.js direttamente sul jingle,
-    # sentendo la canzone "uccisa di netto". Non conta per TARGETDURATION: la
-    # cadenza di refresh resta quella di cio' che e' in onda ora.
-    _prev_entry = None
-    _prev = clock.get("previous") or None
-    if _prev and int(_prev.get("seq") or -1) == seq - 1:
-        _prev_dur = float(_prev.get("real_duration_sec") or _prev.get("duration_sec") or 0)
-        _prev_end = _clock_entry_end(_prev)
-        if _prev_dur > 0 and _prev_end and \
-                (datetime.now(timezone.utc) - _prev_end).total_seconds() < _HLS_PREV_GRACE_SEC:
-            _prev_entry = (_prev, _prev_dur)
-
-    # Ticket #247410: prima passata per risolvere le entry valide e le loro
-    # durate REALI, cosi' TARGETDURATION (sotto) riflette cosa c'e' davvero
-    # in questa playlist invece di un 300 fisso. Quel 300 fisso sottostimava
-    # drammaticamente la frequenza di refresh richiesta quando l'item CORRENTE
-    # e' un jingle/segnale orario di pochi secondi: hls.js (come qualunque
-    # client HLS conforme) usa TARGETDURATION per decidere ogni quanto
-    # ricontrollare la live playlist. Con 300s dichiarati ma un segmento
-    # corrente di 2-10s, il client ricontrolla troppo raramente: quando
-    # finalmente lo fa, l'item breve e' gia' finito da un pezzo, la finestra
-    # (SOLO corrente + prossimi 4, zero overlap col passato) non contiene piu'
-    # nulla che il player avesse gia' bufferizzato, e deve risincronizzarsi su
-    # EXT-X-START — cioe' l'offset live di QUALUNQUE cosa sia corrente in
-    # quel momento, breve o lunga. Risultato: ogni traccia (non solo i
-    # contenuti brevi) puo' partire gia' a meta'.
+    # Finestra live = [storico recente] + corrente + [prossimi]. Ogni elemento dura la sua durata
+    # REALE (real_duration_sec): e' la stessa che il clock usa per avanzare, quindi playlist e clock
+    # non possono divergere. Il player parte _HLS_LIVE_DELAY_SEC dietro al clock (EXT-X-START sotto).
+    history = _clock_window_history(clock, seq, now)
+    ahead = [t for t in (clock.get("queue") or [])[:_HLS_MAX_AHEAD]]
     resolved = []
-    for t in entries:
-        _raw_dur = t.get("duration_sec")
-        dur = float(t.get("real_duration_sec") or _raw_dur or 0)  # v13.41 · EXTINF usa la durata reale, non paddata
+    for t in history + [cur] + ahead:
+        dur = _entry_dur(t)
         if dur <= 0:
-            # v13.45 · niente 180s inventati: salta l'entry e rilancia il probe.
-            logger.warning(
-                f"[hls_live_playlist] skip track id={t.get('id')} title={t.get('title')!r} "
-                f"(duration_sec={_raw_dur!r}) — reprobe schedulato"
-            )
-            _schedule_reprobe(t.get("id"))
-            continue
+            if t is cur:
+                # il corrente non puo' mancare dalla finestra: durata nota solo dal clock
+                dur = float(cur.get("duration_sec") or 0)
+            if dur <= 0:
+                logger.warning(
+                    f"[hls_live_playlist] skip track id={t.get('id')} title={t.get('title')!r} "
+                    f"(duration_sec={t.get('duration_sec')!r}) — reprobe schedulato"
+                )
+                _schedule_reprobe(t.get("id"))
+                continue
         resolved.append((t, dur))
 
-    if resolved:
-        import math as _math
-        target_duration = max(1, _math.ceil(max(dur for _, dur in resolved)))
-    else:
-        target_duration = 10
+    n_hist = sum(1 for t, _ in resolved if t in history)
+    hist_total = sum(d for t, d in resolved[:n_hist])
+    cur_dur = next((d for t, d in resolved if t is cur), 0.0)
+    live_pos = hist_total + min(offset, cur_dur or offset)
+    # Parte DIETRO al live edge: mai a ridosso del bordo, mai oltre l'inizio della finestra.
+    start_offset = max(0.0, live_pos - _HLS_LIVE_DELAY_SEC)
 
-    # Con la canzone precedente in testa, sequenze e offset di partenza si
-    # spostano di uno/della sua durata: EXT-X-START resta sul punto live del CORRENTE.
-    _first_seq = seq - 1 if _prev_entry else seq
-    _start_offset = offset + (_prev_entry[1] if _prev_entry else 0.0)
+    import math as _math
+    target_duration = max(1, _math.ceil(max(d for _, d in resolved)))
+    first_seq = seq - n_hist
     lines = [
         "#EXTM3U",
         "#EXT-X-VERSION:3",
         f"#EXT-X-TARGETDURATION:{target_duration}",
-        f"#EXT-X-MEDIA-SEQUENCE:{_first_seq}",
-        f"#EXT-X-DISCONTINUITY-SEQUENCE:{_first_seq}",
-        f"#EXT-X-START:TIME-OFFSET={_start_offset:.3f},PRECISE=YES",
+        f"#EXT-X-MEDIA-SEQUENCE:{first_seq}",
+        f"#EXT-X-DISCONTINUITY-SEQUENCE:{first_seq}",
+        f"#EXT-X-START:TIME-OFFSET={start_offset:.3f},PRECISE=YES",
     ]
-    # Iniziale program-date-time = quando il primo elemento in finestra è iniziato per davvero
-    running_dt = None
-    try:
-        running_dt = datetime.fromisoformat(((_prev_entry[0] if _prev_entry else cur).get("started_at") or "").replace("Z", "+00:00"))
-    except Exception:
-        running_dt = datetime.now(timezone.utc)
-    if _prev_entry:
-        resolved = [_prev_entry] + resolved
+    first = resolved[0][0]
+    running_dt = _parse_iso(first.get("started_at"), now)
 
     for i, (t, dur) in enumerate(resolved):
         title = (t.get("title") or "R-A.I.").replace(",", " ")
@@ -6140,12 +6164,8 @@ async def hls_live_playlist(request: Request):
         url = t.get("audio_url") or ""
         if url.startswith("/"):
             url = f"{base_url.rstrip('/')}{url}"
-        # v13.25 · #EXT-X-DISCONTINUITY prima di OGNI segmento successivo
-        # al primo. Serve a decoder Bluetooth (auto), Chromecast e hardware
-        # HLS a resettare il decoder audio al cambio di file, evitando
-        # click/glitch al confine formato tra canzone→voce→canzone (anche
-        # con audio normalizzato, tag ID3, header MP3 e riempimenti VBR
-        # possono differire in modo che fanno inciampare il decoder).
+        # v13.25 · #EXT-X-DISCONTINUITY prima di OGNI segmento successivo al primo
+        # (reset del decoder al cambio di file: Bluetooth, Chromecast, HLS hardware).
         if i > 0:
             lines.append("#EXT-X-DISCONTINUITY")
         lines.append(f"#EXT-X-PROGRAM-DATE-TIME:{running_dt.isoformat().replace('+00:00','Z')}")
@@ -6154,10 +6174,7 @@ async def hls_live_playlist(request: Request):
         running_dt = running_dt + timedelta(seconds=dur)
     lines.append("")
     playlist = "\n".join(lines)
-    # v13.16 · OTTIMIZZAZIONE PER MIGLIAIA DI CLIENT
-    # `s-maxage=1` = CDN edge riusa la stessa m3u8 per 1s → 1000+ client → 1 backend hit
-    # `stale-while-revalidate=3` = serve la versione stale mentre revalida in background
-    # `Access-Control-Allow-Origin=*` = domini custom possono consumare il flusso
+    # v13.16 · `s-maxage=1` = CDN riusa la stessa m3u8 per 1s (1000+ client → 1 hit backend)
     return Response(content=playlist, media_type="application/vnd.apple.mpegurl",
                     headers={
                         "Cache-Control": "public, max-age=1, s-maxage=1, stale-while-revalidate=3",
@@ -6738,8 +6755,9 @@ async def _generate_time_signal_hour(h: int, text: str, voice_key: str, dj_id: O
     # Ticket #247410: la clip MINUTO va in onda come follow-up subito dopo la clip ORA ed e'
     # sempre gia' in finestra/pre-caricata: 2.5s di silenzio li' erano un buco a meta' frase
     # ("Sono le nove ... e tre minuti"). Il silenzio protettivo resta solo dove serve.
-    if not tag.startswith("tsm"):
-        audio = await _prepend_silence_bytes(audio, lead_sec=2.5)
+    # Lead-in/padding per-clip RIMOSSO: ora e minuto vengono composti in un'unica clip lato server
+    # (vedi _ts_compose_bytes) e il player parte dietro al live edge, quindi nessuna clip serve piu'
+    # del silenzio proprio.
     v0 = await _validate_audio_bytes(audio)
     if not v0["ok"]:
         return {"ok": False, "reason": f"audio_invalid:{v0['reason']}", "bytes": v0["bytes"],
@@ -6930,6 +6948,166 @@ async def _ts_source() -> str:
     return st.get("time_signal_source") or "tts"
 
 
+# ----------------------- SEGNALE ORARIO COMPOSTO (una sola clip) -----------------------
+# "Sono le ore X" + "e Y minuti" vengono concatenati LATO SERVER in un unico file con un lead-in di
+# silenzio fisso. Un solo elemento nel clock/playlist: niente buco tra ora e minuto, niente seconda
+# clip a meta', niente padding per-clip, e il LedWall segue la durata TOTALE della clip composta.
+# MP3 con stessi parametri (sample rate/canali) -> concat a copia di pacchetti, ZERO ricodifica
+# (registrazioni del cliente intatte). Parametri diversi o sorgenti < 44.1kHz -> unica ricodifica a 44.1kHz.
+_TS_LEAD_SEC = 1.0          # silenzio minimo in testa alla clip composta (lo stesso per TTS e upload)
+_TS_MIN_SAMPLE_RATE = 44100
+
+
+async def _ts_fetch_bytes(url: str) -> Optional[bytes]:
+    """Bytes di un file /api/tts/... : cache locale, altrimenti Object Storage."""
+    name = (url or "").split("?")[0].rsplit("/", 1)[-1]
+    if not name:
+        return None
+    local = elevenlabs_service.TTS_DIR / name
+    if local.exists() and local.stat().st_size > 0:
+        return local.read_bytes()
+    if object_storage.is_enabled():
+        data = await object_storage.get_bytes(f"tts/{name}")
+        if data:
+            try:
+                local.write_bytes(data)
+            except OSError:
+                pass
+        return data
+    return None
+
+
+async def _ts_probe(path: str) -> dict:
+    """{codec, sample_rate, channels, duration} del primo stream audio; {} se illeggibile."""
+    rc, out, _ = await _run_capture(
+        "ffprobe", "-v", "error", "-select_streams", "a:0",
+        "-show_entries", "stream=codec_name,sample_rate,channels:format=duration", "-of", "json", path, timeout=15.0)
+    if rc != 0:
+        return {}
+    try:
+        import json as _json
+        j = _json.loads(out)
+        st = (j.get("streams") or [{}])[0]
+        return {"codec": st.get("codec_name"), "sample_rate": int(st.get("sample_rate") or 0),
+                "channels": int(st.get("channels") or 0), "duration": float((j.get("format") or {}).get("duration") or 0)}
+    except Exception:
+        return {}
+
+
+async def _ts_leading_silence(path: str, scan_sec: float = 4.0) -> float:
+    """Secondi di silenzio gia' presenti in testa (cosi' non si raddoppia il lead-in sulle clip
+    caricate quando il cliente le aveva gia' col silenzio protettivo del vecchio upload)."""
+    try:
+        rc, _, err = await _run_capture(
+            "ffmpeg", "-hide_banner", "-t", str(scan_sec), "-i", path,
+            "-af", "silencedetect=n=-45dB:d=0.05", "-f", "null", "-", timeout=15.0)
+    except Exception:
+        return 0.0
+    m = re.search(r"silence_start: (-?[\d.]+)", err)
+    e = re.search(r"silence_end: ([\d.]+)", err)
+    if m and float(m.group(1)) <= 0.02:
+        return float(e.group(1)) if e else scan_sec
+    return 0.0
+
+
+async def _ts_compose_bytes(hour_audio: bytes, minute_audio: Optional[bytes]) -> Optional[dict]:
+    """Ritorna {audio, duration_sec, sample_rate, reencoded} o None. Mai eccezioni verso l'alto."""
+    import tempfile
+    if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+        return None
+    with tempfile.TemporaryDirectory(prefix="tscomp_") as td:
+        try:
+            srcs = [("hour", hour_audio)] + ([("minute", minute_audio)] if minute_audio else [])
+            paths, probes = [], []
+            for name, data in srcs:
+                pth = os.path.join(td, f"{name}.mp3")
+                Path(pth).write_bytes(data)
+                pr = await _ts_probe(pth)
+                if not pr.get("sample_rate"):
+                    logger.warning(f"[ts-compose] {name}: file illeggibile")
+                    return None
+                paths.append(pth); probes.append(pr)
+            lead_have = await _ts_leading_silence(paths[0])
+            lead = max(0.0, _TS_LEAD_SEC - lead_have)
+            sr, ch = probes[0]["sample_rate"], probes[0]["channels"] or 1
+            same = all(p["codec"] == "mp3" and p["sample_rate"] == sr and p["channels"] == ch for p in probes)
+            out = os.path.join(td, "out.mp3")
+            reencoded = not (same and sr >= _TS_MIN_SAMPLE_RATE)
+            cl = "stereo" if ch >= 2 else "mono"
+            if not reencoded:
+                files = list(paths)
+                if lead > 0.01:
+                    sil = os.path.join(td, "lead.mp3")
+                    rc, _, err = await _run_capture(
+                        "ffmpeg", "-y", "-f", "lavfi", "-i", f"anullsrc=r={sr}:cl={cl}", "-t", f"{lead:.3f}",
+                        "-c:a", "libmp3lame", "-b:a", "128k", "-write_xing", "0", "-id3v2_version", "0", sil, timeout=15.0)
+                    if rc != 0:
+                        logger.warning(f"[ts-compose] silenzio fallito: {err[:200]}"); return None
+                    files = [sil] + files
+                lst = os.path.join(td, "list.txt")
+                Path(lst).write_text("".join(f"file '{f}'\n" for f in files))
+                rc, _, err = await _run_capture(
+                    "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy",
+                    "-map_metadata", "-1", "-id3v2_version", "0", out, timeout=30.0)
+                if rc != 0:
+                    logger.warning(f"[ts-compose] concat copy fallito ({err[:200]}) -> ricodifica")
+                    reencoded = True
+            if reencoded:
+                ins, labels = [], []
+                if lead > 0.01:
+                    ins += ["-f", "lavfi", "-t", f"{lead:.3f}", "-i", f"anullsrc=r=44100:cl={cl}"]
+                    labels.append(f"[{len(labels)}:a]")
+                for pth in paths:
+                    ins += ["-i", pth]
+                    labels.append(f"[{len(labels)}:a]")
+                norm = ";".join(f"{lb}aresample=44100,aformat=channel_layouts={cl}[n{i}]" for i, lb in enumerate(labels))
+                cc = "".join(f"[n{i}]" for i in range(len(labels))) + f"concat=n={len(labels)}:v=0:a=1[out]"
+                rc, _, err = await _run_capture(
+                    "ffmpeg", "-y", *ins, "-filter_complex", f"{norm};{cc}", "-map", "[out]",
+                    "-c:a", "libmp3lame", "-b:a", "192k", "-ar", "44100", out, timeout=45.0)
+                if rc != 0:
+                    logger.warning(f"[ts-compose] ricodifica fallita: {err[:200]}"); return None
+            audio = Path(out).read_bytes()
+            po = await _ts_probe(out)
+            if not audio or not po.get("duration"):
+                return None
+            return {"audio": audio, "duration_sec": round(po["duration"], 3), "sample_rate": po["sample_rate"],
+                    "reencoded": reencoded, "lead_added_sec": round(lead, 3)}
+        except Exception as e:
+            logger.warning(f"[ts-compose] errore: {e}")
+            return None
+
+
+async def _ts_compose_cached(hd: dict, md: Optional[dict], key: str) -> Optional[dict]:
+    """Clip composta per (ora, minuto) -> {url, duration_sec}. Cache in `time_signal_composed`; si
+    ricompone se cambia una delle clip sorgente (url diverso). Un solo file nel clock."""
+    src = f"{hd['speech_audio_url']}|{(md or {}).get('speech_audio_url') or ''}"
+    c = await db.time_signal_composed.find_one({"_id": key})
+    if c and c.get("src") == src and c.get("url") and await _ts_url_reachable(-1, c["url"]):
+        return c
+    ha = await _ts_fetch_bytes(hd["speech_audio_url"])
+    ma = await _ts_fetch_bytes(md["speech_audio_url"]) if md else None
+    if not ha or (md and not ma):
+        return None
+    r = await _ts_compose_bytes(ha, ma)
+    if not r:
+        return None
+    v = await _validate_audio_bytes(r["audio"])
+    if not v["ok"]:
+        logger.warning(f"[ts-compose] {key}: audio composto non valido ({v['reason']})")
+        return None
+    name = f"tts_tscomp_{key}_{hashlib.sha256(r['audio']).hexdigest()[:16]}.mp3"
+    if object_storage.is_enabled():
+        if not await object_storage.put_mp3(f"tts/{name}", r["audio"]):
+            return None
+    (elevenlabs_service.TTS_DIR / name).write_bytes(r["audio"])
+    doc = {"_id": key, "src": src, "url": f"/api/tts/{name}", "duration_sec": r["duration_sec"],
+           "sample_rate": r["sample_rate"], "reencoded": r["reencoded"], "created_at": now_iso()}
+    await db.time_signal_composed.replace_one({"_id": key}, doc, upsert=True)
+    logger.info(f"[ts-compose] {key}: {r['duration_sec']}s {r['sample_rate']}Hz reencoded={r['reencoded']} lead+={r['lead_added_sec']}s")
+    return doc
+
+
 async def _resolve_time_signal_with_minutes() -> Optional[dict]:
     """Ora+minuto CORRENTI (Europe/Rome). Ritorna {hour_url, hour_dur, minute: {...follow_up} | None} o None se
     manca una delle due clip (→ il chiamante ripiega sul permanente orario).
@@ -6950,19 +7128,16 @@ async def _resolve_time_signal_with_minutes() -> Optional[dict]:
     elif not (hd and md):
         logger.info(f"[time-signal] clip-parte mancanti ({hp}={'ok' if hd else 'NO'}, {mp}={'ok' if md else 'NO'}) → fallback orario")
         return None
-    if not md:
-        return {"hour_url": hd["speech_audio_url"], "hour_dur": round(float(hd.get("duration_sec") or 3), 3),
-                "minute": None, "label": f"{_now.hour:02d}:{_now.minute:02d}"}
-    return {
-        "hour_url": hd["speech_audio_url"],
-        "hour_dur": round(float(hd.get("duration_sec") or 3), 3),
-        "minute": {"id": f"tsmin-{_now.hour:02d}{_now.minute:02d}", "title": f"Segnale orario · {_now.hour:02d}:{_now.minute:02d}",
-                   "artist": "R-A.I. Radio", "audio_url": md["speech_audio_url"],
-                   "duration_sec": round(float(md.get("duration_sec") or 3), 3),
-                   "real_duration_sec": round(float(md.get("duration_sec") or 3), 3), "video_url": None,
-                   "kind": "time_signal"},
-        "label": f"{_now.hour:02d}:{_now.minute:02d}",
-    }
+    comp = await _ts_compose_cached(hd, md, f"{_now.hour:02d}{_now.minute:02d}")
+    label = f"{_now.hour:02d}:{_now.minute:02d}"
+    if comp:
+        return {"hour_url": comp["url"], "hour_dur": round(float(comp["duration_sec"]), 3), "minute": None,
+                "label": label, "composed": True}
+    # Composizione non riuscita (ffmpeg assente / file illeggibile): ripiego sulla sola clip ORA,
+    # mai su due elementi separati (era la causa del buco e del minuto a meta').
+    logger.error(f"[time-signal] composizione {label} fallita -> solo clip ORA")
+    return {"hour_url": hd["speech_audio_url"], "hour_dur": round(float(hd.get("duration_sec") or 3), 3),
+            "minute": None, "label": label, "composed": False}
 
 
 @api_router.get("/admin/time-signal/parts-status")
@@ -7107,8 +7282,8 @@ async def admin_upload_time_signal_parts(files: List[UploadFile] = File(...)):
         # subito dopo l'ora (lo stesso motivo per cui il path TTS non lo fa, vedi _generate_time_signal_hour),
         # quindi 2.5s di silenzio in testa al minuto si sentono come un buco muto tra "sono le X" e
         # "e Y minuti" invece di una protezione. Il silenzio va SOLO sulle clip ORA (incluso "in punto").
-        if not part.startswith("m"):
-            audio = await _prepend_silence_bytes(audio, lead_sec=2.5)
+        # Nessun padding per-clip: il lead-in e' dato una sola volta dalla clip composta
+        # (_ts_compose_bytes) e l'MP3 del cliente resta intatto byte per byte.
         r = await _ts_store_upload(part, audio)
         if not r["ok"]:
             failed.append({"file": fname, "part": part, "reason": r["reason"]}); continue
@@ -7270,7 +7445,15 @@ async def _timeline_pick_due() -> Optional[dict]:
     # riavvio rimaterializza fino a 2h di occorrenze passate: ognuna andava in onda in fila,
     # risolta sull'ora/minuto CORRENTI. Ora: un segnale orario scaduto da piu' di 10 minuti non va
     # piu' in onda, e ne va in onda al massimo uno ogni 10 minuti qualunque sia la sorgente.
-    if doc.get("kind") in ("ora_esatta", "time_signal"):
+    # Un evento one-off creato a mano dalla Regia (nessun padre, nessuna ricorrenza) va SEMPRE in onda:
+    # il dedupe dei 10 minuti e il limite "stale" servono a fermare le rimaterializzazioni automatiche
+    # (rrule/ricorrenze), non una richiesta esplicita. Segna comunque l'orario per non raddoppiare
+    # con il segnale automatico subito dopo.
+    _manual_one_off = (not doc.get("parent_id") and not doc.get("from_rrule")
+                       and (doc.get("recurrence") or "none") == "none")
+    if doc.get("kind") in ("ora_esatta", "time_signal") and _manual_one_off:
+        await db.station.update_one({"_id": "ts_guard"}, {"$set": {"last_aired_at": now.isoformat(), "last_event_id": doc.get("id")}}, upsert=True)
+    elif doc.get("kind") in ("ora_esatta", "time_signal"):
         _skip = await _ts_guard_skip(doc)
         if _skip:
             await db.timeline_events.update_one({"id": doc.get("id")}, {"$set": {"skip_reason": _skip}})
@@ -7305,7 +7488,7 @@ async def _timeline_pick_due() -> Optional[dict]:
         _live_au = await _resolve_current_hour_time_signal()
         if _live_au:
             doc["audio_url"] = _live_au
-            if doc.get("kind") == "time_signal":
+            if doc.get("kind") in ("time_signal", "ora_esatta"):
                 _rd = await _probe_tts_duration(_live_au)
                 if _rd:
                     doc["duration_sec"] = round(_rd, 3)  # v13.40 · padding via _pad_short (era int(round)+1)
@@ -7355,6 +7538,7 @@ async def _timeline_pick_due() -> Optional[dict]:
         "artist": doc.get("artist") or doc.get("dj_name") or "R-A.I. Timeline",
         "audio_url": doc.get("audio_url"),
         "duration_sec": _pad_short(float(doc.get("duration_sec") or 30)),  # v13.40 · era int()
+        "real_duration_sec": (round(float(doc["real_duration_sec"]), 3) if doc.get("real_duration_sec") else None),
         "is_timeline": True,
         "timeline_kind": doc.get("kind"),
         # v13.27 · Espone anche `kind` così LedWall.detectMode() può
@@ -7538,20 +7722,18 @@ async def admin_timeline_create(payload: dict):
         # `/admin/timeline/ora-esatta`), invece di generare un dialogo DJ via
         # LLM+TTS. Il DJ resta rilevante solo per eventuali sponsor/voice-intro
         # futuri, non per l'arming di questo tipo di evento.
-        ts = await db.time_signal_cache.find_one(
-            {"speech_audio_url": {"$exists": True, "$ne": None}},
-            sort=[("_id", -1)],
-        )
-        if not ts or not ts.get("speech_audio_url"):
+        # Evento manuale one-off: l'audio si risolve SEMPRE al momento di andare in onda (ora+minuto
+        # reali, clip composta) tramite il sentinel, come per i figli rrule. Prima richiedeva una voce
+        # in `time_signal_cache`, quindi falliva con 400 quando il segnale orario usa i file caricati.
+        # Qui si verifica solo che adesso esista davvero qualcosa da mandare in onda.
+        if not (await _resolve_time_signal_with_minutes() or await _resolve_current_hour_time_signal()):
             raise HTTPException(
-                400,
-                "Nessun audio Segnale Orario disponibile. Attendi che "
-                "`_time_signal_pregenerator` ne pre-generi uno, oppure passa "
-                "`audio_url` nel body.",
+                409,
+                "Nessun audio Segnale Orario disponibile per l'ora corrente: carica/genera le clip "
+                "ora+minuti (Time) oppure il segnale orario permanente, poi riprova.",
             )
-        audio_url = ts["speech_audio_url"]
-        real_dur = await _probe_tts_duration(audio_url)
-        dur_from_payload = int(round(real_dur)) + 1 if real_dur else 15
+        audio_url = "time_signal:live"
+        dur_from_payload = 15
         if not title:
             title = "🕐 Segnale orario"
 
@@ -8964,6 +9146,14 @@ _clock_refill_task: Optional[asyncio.Task] = None   # un solo refill in volo all
 _CLOCK_CHAIN_MAX_LAG_SEC = 15.0
 
 
+def _parse_iso(value, default: Optional[datetime] = None) -> Optional[datetime]:
+    try:
+        d = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+    except Exception:
+        return default
+
+
 def _clock_entry_end(cur: Optional[dict]) -> Optional[datetime]:
     """Fine teorica (started_at + duration_sec) di un elemento del clock, o None."""
     if not cur or not cur.get("started_at"):
@@ -9001,6 +9191,14 @@ def _with_true_duration(e: dict) -> dict:
 
 
 _HLS_PREV_GRACE_SEC = 45   # Ticket #247410: per quanto la canzone finita resta in testa alla playlist live
+# Stream timing (root fix): il player NON si aggancia piu' al live edge. Ogni ascoltatore parte
+# _HLS_LIVE_DELAY_SEC secondi DIETRO al clock del server (10-30s), cosi' ha sempre un buffer reale
+# e non serve nessun "salto in avanti per recuperare". Un elemento esce dalla playlist solo dopo
+# che e' finito da (delay + grace) secondi, e la finestra ha sempre almeno _HLS_MIN_SEGMENTS elementi.
+_HLS_LIVE_DELAY_SEC = float(os.environ.get("HLS_LIVE_DELAY_SEC", "20"))
+_HLS_MIN_SEGMENTS = 3
+_HLS_MAX_AHEAD = 4
+_HLS_HISTORY_KEEP = 12
 
 
 def _play_log_kind(e: dict) -> str:
@@ -9286,6 +9484,20 @@ async def _clock_promote_inner(force: bool, state: dict) -> dict:
         _old_cur = clock.get("current")
         clock["previous"] = (dict(_old_cur, seq=int(clock.get("seq") or 0))
                              if _old_cur and not _forced_now else None)
+        # Storico per la finestra HLS "dietro al live edge": TUTTI gli elementi finiti di recente,
+        # skip incluso (con durata troncata a quanto e' andato in onda davvero: lo skip taglia).
+        _hist = list(clock.get("history") or [])
+        if _old_cur and _old_cur.get("audio_url"):
+            _h = dict(_old_cur, seq=int(clock.get("seq") or 0))
+            if _forced_now:
+                _el = max(0.0, (now - _parse_iso(_h.get("started_at"), now)).total_seconds())
+                _full = float(_h.get("duration_sec") or 0)
+                if 0 < _el < _full:
+                    _h["duration_sec"] = round(_el, 3)
+                    _h["real_duration_sec"] = round(_el, 3)
+                    _h["truncated"] = True
+            _hist.append(_h)
+        clock["history"] = _hist[-_HLS_HISTORY_KEEP:]
         clock["current"] = _with_true_duration(promo)
         clock["queue"] = q
         _promoted += 1
@@ -9311,6 +9523,7 @@ async def _clock_promote_inner(force: bool, state: dict) -> dict:
         for _attempt in range(4):
             if await _clock_cas(clock, {"current": clock.get("current"), "queue": clock.get("queue") or [],
                                         "previous": clock.get("previous"),
+                                        "history": clock.get("history") or [],
                                         "seq": int(clock.get("seq") or 0), "updated_at": clock["updated_at"],
                                         "claim_by": None, "claim_until": None}):   # scrittura finale = rilascio del claim
                 state["released"] = True
@@ -9741,10 +9954,12 @@ async def stream_now():
     differenza BPM (∆<8 = 3500ms, ∆<20 = 2500ms, altrimenti 1500ms).
     Il client hls.js/radioEngine usa questo valore per crossfade intelligente."""
     clock = await _clock_advance()   # self-heal se il pod ha dormito
-    offset, cur = _clock_now_offset(clock)
-    if cur:
-        _play_log_first_offset(cur, int(clock.get("seq") or 0), offset)
-    next_list = (clock.get("queue") or [])[:5]
+    edge_offset, edge_cur = _clock_now_offset(clock)
+    if edge_cur:
+        _play_log_first_offset(edge_cur, int(clock.get("seq") or 0), edge_offset)
+    # `current` = cio' che l'ascoltatore SENTE ora (clock - _HLS_LIVE_DELAY_SEC), non il bordo live:
+    # display e audio restano allineati (LedWall, now-playing, fallback diretto).
+    cur, offset, next_list = _clock_delayed_view(clock)
     # BPM crossfade suggestion
     next_xfade_ms = None
     if cur and next_list:
@@ -9790,6 +10005,8 @@ async def stream_now():
             "bpm": t.get("bpm"), "is_timeline": bool(t.get("is_timeline")),
         } for t in next_list],
         "next_crossfade_ms": next_xfade_ms,
+        "live_delay_sec": _HLS_LIVE_DELAY_SEC,
+        "edge_current_id": (edge_cur or {}).get("id"),
     }
 
 

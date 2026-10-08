@@ -3,63 +3,41 @@ import { Cpu } from "lucide-react";
 import { endpoints } from "@/lib/api";
 
 /**
- * LiveBrain — pannello LCD stile terminale che mostra le operazioni in corso
- * dedotte dallo state della station + ultimi segmenti generati.
- * Refresh ogni 3s. Massimo 6 righe visibili con auto-scroll.
+ * LiveBrain — terminale verde: mostra SOLO dati reali (elemento in onda + stato dei servizi
+ * verificato dal backend, /api/live-brain/services). Massimo 8 righe, refresh servizi ogni 15s.
  */
-export default function LiveBrain({ current, segments = [] }) {
-  const [lines, setLines] = useState([
-    "▸ CUE: boot completato. Sistema in ascolto…",
-  ]);
-
-  useEffect(() => {
-    if (!current) return;
-    const kind = (current.kind || "").toLowerCase();
-    const dj = current.dj_name || "DJ";
-    const title = current.title || "";
-    let msg = null;
-    if (kind === "music") {
-      msg = `CUE: analisi BPM · '${title.slice(0, 32)}'…`;
-    } else if (["talk","joke","weather","horoscope","interview","motivation","history"].includes(kind)) {
-      msg = `${dj}: generazione ${kind.toUpperCase()} in corso…`;
-    } else if (kind === "news") {
-      msg = `${dj}: fetch news + rewrite AI…`;
-    } else if (kind === "answer") {
-      msg = `${dj}: risposta LLM → TTS ElevenLabs…`;
-    } else if (kind === "community") {
-      msg = `CUE: rotazione UMANO · '${title.slice(0, 32)}'…`;
-    } else if (kind === "ad_spot") {
-      msg = `CUE: sponsor slot ON AIR…`;
-    } else if (kind === "jingle") {
-      msg = `CUE: jingle intercalato · ducking musica…`;
-    } else if (kind === "time_signal") {
-      const h = new Date().getHours();
-      msg = `CUE: segnale orario delle ${String(h).padStart(2,"0")}:00 · atomic clock`;
-    }
-    if (msg) pushLine(msg);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [current?.id, current?.kind]);
-
-  useEffect(() => {
-    // ping "vitale" ogni 8s per non lasciare mai il brain in silenzio
-    const iv = setInterval(async () => {
-      try {
-        const s = await endpoints.station();
-        const listeners = s?.listeners || 0;
-        const total = s?.total_segments || 0;
-        pushLine(`▸ station heartbeat · listeners=${listeners} · segments=${total}`);
-      } catch (e) {}
-    }, 8000);
-    return () => clearInterval(iv);
-  }, []);
+export default function LiveBrain({ current }) {
+  const [lines, setLines] = useState(["▸ live brain: verifica servizi…"]);
 
   const pushLine = (m) => {
     const t = new Date().toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-    setLines(prev => {
-      const next = [...prev, `[${t}] ${m}`];
-      return next.slice(-6);
-    });
+    setLines(prev => [...prev, `[${t}] ${m}`].slice(-8));
   };
+
+  // Solo fatti reali: cosa e' davvero in onda (dal clock del server)...
+  useEffect(() => {
+    if (!current?.id) return;
+    const kind = (current.kind || "track").toUpperCase();
+    const who = current.dj_name ? ` · ${current.dj_name}` : "";
+    pushLine(`ON AIR [${kind}] ${(current.title || "").slice(0, 40)}${who}`);
+  }, [current?.id]);
+
+  // ...e lo stato dei servizi veri, verificato dal backend a ogni giro (nessun testo decorativo).
+  useEffect(() => {
+    let alive = true;
+    const check = async () => {
+      try {
+        const { services = [] } = await endpoints.liveBrainServices();
+        if (!alive) return;
+        services.forEach(sv => pushLine(`${sv.ok ? "OK  " : "FAIL"} ${sv.name} · ${sv.detail}${sv.ms ? ` (${sv.ms}ms)` : ""}`));
+      } catch {
+        if (alive) pushLine("FAIL backend non raggiungibile");
+      }
+    };
+    check();
+    const iv = setInterval(check, 15000);
+    return () => { alive = false; clearInterval(iv); };
+  }, []);
 
   return (
     <div
@@ -84,7 +62,7 @@ export default function LiveBrain({ current, segments = [] }) {
           // Ticket #247410: verde "vecchio monitor" (stesso del vecchio ticker decorativo), su richiesta del cliente
           color: "#39FF14",
           textShadow: "0 0 4px rgba(57,255,20,0.6)",
-          minHeight: 96,
+          minHeight: 128,
         }}
       >
         {lines.map((ln, i) => {

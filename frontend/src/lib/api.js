@@ -10,6 +10,7 @@ export const api = axios.create({
 
 export const endpoints = {
   station: () => api.get("/station").then(r => r.data),
+  liveBrainServices: () => api.get("/live-brain/services").then(r => r.data),
   toggle: () => api.post("/station/toggle").then(r => r.data),
   djs: () => api.get("/djs").then(r => r.data),
   createDj: (data) => api.post("/djs", data).then(r => r.data),

@@ -219,7 +219,8 @@ async def _synth_elevenlabs(text: str, voice_key: str, kind: str = "", dj_id: st
     }
     try:
         async with httpx.AsyncClient(timeout=45) as client:
-            r = await client.post(url, headers=headers, json=body)
+            # output_format esplicito: 44.1 kHz (mai i ~22 kHz che i clip del segnale orario avevano)
+            r = await client.post(url, headers=headers, json=body, params={"output_format": "mp3_44100_128"})
         if r.status_code != 200:
             # v13.38 · Voice ID rifiutato → errore FORTE (niente fallback muto)
             _code = ""
