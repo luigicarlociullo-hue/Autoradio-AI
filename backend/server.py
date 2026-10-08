@@ -7022,11 +7022,15 @@ async def admin_upload_time_signal_parts(files: List[UploadFile] = File(...)):
             failed.append({"file": fname, "part": part, "reason": "lettura/conversione fallita"}); continue
         # Ticket #247410: le clip caricate dal cliente sono registrazioni brevissime (~1-2s),
         # quindi anche piu' vulnerabili delle clip TTS al noto live-edge catch-up di hls.js che
-        # puo' mangiare 0.3-3.7s dall'inizio di un item breve. A differenza del caso TTS ora+minuto
-        # (un'unica frase sintetizzata in due pezzi, dove il silenzio spezzerebbe il parlato a meta'
-        # frase), qui ora e minuto sono DUE registrazioni indipendenti del cliente: nessuna frase da
-        # spezzare, quindi il silenzio protettivo va messo su ENTRAMBE.
-        audio = await _prepend_silence_bytes(audio, lead_sec=2.5)
+        # puo' mangiare 0.3-3.7s dall'inizio di un item breve.
+        # CORREZIONE (confermata da log reali, test delle 14:01): avevo inizialmente aggiunto il
+        # silenzio anche al MINUTO, ragionando che ora e minuto fossero due registrazioni indipendenti
+        # (quindi nessuna frase da spezzare). Sbagliato: minuto va in onda come follow-up ZERO-GAP
+        # subito dopo l'ora (lo stesso motivo per cui il path TTS non lo fa, vedi _generate_time_signal_hour),
+        # quindi 2.5s di silenzio in testa al minuto si sentono come un buco muto tra "sono le X" e
+        # "e Y minuti" invece di una protezione. Il silenzio va SOLO sulle clip ORA (incluso "in punto").
+        if not part.startswith("m"):
+            audio = await _prepend_silence_bytes(audio, lead_sec=2.5)
         r = await _ts_store_upload(part, audio)
         if not r["ok"]:
             failed.append({"file": fname, "part": part, "reason": r["reason"]}); continue
