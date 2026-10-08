@@ -9263,6 +9263,13 @@ async def _clock_promote_inner(force: bool, state: dict) -> dict:
                 "title": _fu.get("title") or "Spot",
                 "artist": _fu.get("artist") or "R-A.I. Advertising",
                 "audio_url": _fu["audio_url"],
+                # Ticket #247410: il `kind` del follow_up originale (es. "time_signal" sul minuto,
+                # impostato in _resolve_time_signal_with_minutes) veniva perso qui - questo dict e'
+                # sempre stato ricostruito da zero con un set fisso di campi. Il LedWall legge
+                # clock.current.kind per decidere la modalita' (detectMode): senza questo campo
+                # ricadeva su "music"/"standby" appena il minuto diventava current, cioe' a META'
+                # dell'annuncio ora+minuti - anche se il backend aveva gia' il kind giusto pronto.
+                "kind": _fu.get("kind"),
                 "duration_sec": _pad_short(_dur_or_default(_fu.get("duration_sec"), 20, f"follow_up {_fu.get('id')}")),
                 "is_follow_up": True,
                 "parent_id": promo.get("id"),
