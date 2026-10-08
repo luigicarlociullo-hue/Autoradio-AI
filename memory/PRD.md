@@ -779,3 +779,10 @@ Vedi turni precedenti in questa sessione:
 
 ## v13.52 · LED WALL NEWS · full-width anche in standby (2026-10-07)
 - LedWall.js: `isStandbyMode` (detectMode === "standby", motori spenti → watermark non disegnato) → banda bordo a bordo come con effetto "logo" (`fullWidth` prop). Altri casi invariati.
+
+## v13.53 · MODALITÀ DEMO (2026-10-07)
+- `station.state.demo_mode` (bool) + `demo_every_min/max` (default 2–3). `GET/PUT /api/admin/demo-mode` (voices_available = segmenti con voce, kind ∈ talk/news/joke/interview/horoscope/motivation/history/answer; esclusi music/time_signal/ad_spot/jingle/weather).
+- `_clock_pick_demo_voice`: $sample su db.segments, probe ffprobe (scarta file mancanti), item con kind "talk", `is_demo_voice`, id `demo-<seg>-<rand>`.
+- `_clock_refill_queue`: blocco addizionale eseguito solo con demo ON (contatori `demo_counter`/`demo_target` nel clock, target random in [min,max]); demo_slot_filled gating su jingle/FX per evitare stacchi consecutivi. OFF → identico a prima; non tocca ai_speaker_enabled/ai_openai_talk/cadenze/time signal/player.
+- Regia: `components/DemoModePanel.js` in LIVE COMMAND subito sotto AI Master Control, toggle grande "MODALITÀ DEMO — Usa vocali esistenti", campi min–max + SALVA.
+- Verifica: compile/ruff ok, webpack ok, curl GET/PUT (200/400/401), picker in-process con 3 pick reali (durate ffprobe). Nessuna generazione. Demo lasciata OFF in preview.

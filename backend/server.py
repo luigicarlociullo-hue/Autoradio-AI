@@ -8485,6 +8485,88 @@ async def _dj_pregen_once():
         return False
 
 
+
+# ═══════════════════════════════════════════════════════════════════════════
+# v13.53 · MODALITÀ DEMO — riusa vocali DJ già sintetizzati (db.segments con
+# speech_audio_url) come interventi tra i brani. Zero LLM/TTS/API esterne.
+# Con demo_mode=False nessuna di queste funzioni viene chiamata dal clock.
+# ═══════════════════════════════════════════════════════════════════════════
+_DEMO_VOICE_KINDS = ("talk", "news", "joke", "interview", "horoscope", "motivation", "history", "answer")
+_DEMO_DEFAULTS = {"demo_mode": False, "demo_every_min": 2, "demo_every_max": 3}
+
+
+async def _demo_settings() -> dict:
+    st = await db.station.find_one({"_id": "state"}, {"demo_mode": 1, "demo_every_min": 1, "demo_every_max": 1}) or {}
+    mn = max(1, min(20, int(st.get("demo_every_min") or _DEMO_DEFAULTS["demo_every_min"])))
+    mx = max(mn, min(20, int(st.get("demo_every_max") or _DEMO_DEFAULTS["demo_every_max"])))
+    return {"demo_mode": bool(st.get("demo_mode", False)), "demo_every_min": mn, "demo_every_max": mx}
+
+
+def _demo_voice_query() -> dict:
+    return {"speech_audio_url": {"$ne": None}, "kind": {"$in": list(_DEMO_VOICE_KINDS)}}
+
+
+async def _clock_pick_demo_voice(exclude_ids: Optional[set] = None) -> Optional[dict]:
+    """Pesca a caso un vocale DJ esistente con file audio presente su disco."""
+    try:
+        cands = await db.segments.aggregate([
+            {"$match": _demo_voice_query()},
+            {"$sample": {"size": 8}},
+            {"$project": {"_id": 0, "id": 1, "kind": 1, "title": 1, "dj_name": 1, "speech_audio_url": 1}},
+        ]).to_list(8)
+    except Exception as e:
+        logger.warning(f"[demo] sample error: {e}")
+        return None
+    for s in cands:
+        if exclude_ids and s.get("id") in exclude_ids:
+            continue
+        dur = await _probe_tts_duration(s.get("speech_audio_url"), pad_sec=0.8)
+        if dur is None:
+            continue
+        return {
+            "id": f"demo-{s['id']}-{uuid.uuid4().hex[:6]}",
+            "title": f"🎙️ {s.get('title') or 'Intervento DJ'}",
+            "artist": s.get("dj_name") or "R-A.I.",
+            "audio_url": s["speech_audio_url"],
+            "duration_sec": dur,
+            "kind": "talk",
+            "is_demo_voice": True,
+            "demo_segment_id": s["id"],
+        }
+    return None
+
+
+@api_router.get("/admin/demo-mode")
+async def admin_demo_mode_get():
+    cfg = await _demo_settings()
+    cfg["voices_available"] = await db.segments.count_documents(_demo_voice_query())
+    return cfg
+
+
+@api_router.put("/admin/demo-mode")
+async def admin_demo_mode_put(payload: dict):
+    cur = await _demo_settings()
+    upd: dict = {}
+    if "demo_mode" in payload:
+        upd["demo_mode"] = bool(payload["demo_mode"])
+    try:
+        mn = int(payload.get("demo_every_min", cur["demo_every_min"]))
+        mx = int(payload.get("demo_every_max", cur["demo_every_max"]))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "demo_every_min/max devono essere interi")
+    if not (1 <= mn <= 20 and 1 <= mx <= 20):
+        raise HTTPException(400, "intervallo ammesso 1-20 brani")
+    if mn > mx:
+        raise HTTPException(400, "min non può superare max")
+    upd["demo_every_min"], upd["demo_every_max"] = mn, mx
+    upd["demo_updated_at"] = now_iso()
+    await db.station.update_one({"_id": "state"}, {"$set": upd}, upsert=True)
+    logger.info(f"[demo] settings → {upd}")
+    cfg = await _demo_settings()
+    cfg["voices_available"] = await db.segments.count_documents(_demo_voice_query())
+    return {"ok": True, **cfg}
+
+
 async def _clock_pick_dj_jingle(exclude_ids: Optional[set] = None) -> Optional[dict]:
     """Pesca un jingle DJ dalla libreria (`tracks.is_jingle=true`). Sono file
     audio brevi (10-25s) preregistrati con le voci Leo/Aria/Max — permettono
@@ -9216,6 +9298,18 @@ async def _clock_refill_queue():
         except Exception:
             _speaker_on = True
 
+        # v13.53 · MODALITÀ DEMO — letta una volta per refill. Se OFF, tutto il
+        # blocco demo qui sotto è inerte (nessuna query, nessun pick).
+        try:
+            _demo = await _demo_settings()
+        except Exception:
+            _demo = dict(_DEMO_DEFAULTS)
+        _demo_on = bool(_demo.get("demo_mode"))
+        demo_counter = int(clock.get("demo_counter") or 0)
+        demo_target = int(clock.get("demo_target") or 0)
+        if _demo_on and demo_target <= 0:
+            demo_target = random.randint(_demo["demo_every_min"], _demo["demo_every_max"])
+
         # v13.37 · `_queued_ids`: current + TUTTI gli ID già in coda. Aggiornato
         # ad ogni append e passato a _clock_pick_track come esclusione, così lo
         # stesso brano non può finire in più slot nello stesso passaggio.
@@ -9234,7 +9328,17 @@ async def _clock_refill_queue():
             dj_slot_filled = False
             jingle_slot_filled = False
             fx_slot_filled = False
-            if need_dj:
+            demo_slot_filled = False
+            # v13.53 · DEMO: vocale esistente ogni min–max brani (solo se ON).
+            if _demo_on and demo_counter >= demo_target:
+                picked = await _clock_pick_demo_voice(exclude_ids=_queued_ids)
+                if picked:
+                    demo_slot_filled = True
+                    demo_counter = 0
+                    demo_target = random.randint(_demo["demo_every_min"], _demo["demo_every_max"])
+                else:
+                    demo_counter = 0   # nessun vocale disponibile: riprova al prossimo intervallo
+            if not picked and need_dj:
                 # v13.18 · prova un vero segmento parlato pronto.
                 # Ticket #247410: il fallback "nessuna voce pronta → ripiega su
                 # un jingle della libreria" faceva si' che con dj_talk_every_n=1
@@ -9258,8 +9362,8 @@ async def _clock_refill_queue():
             # (fix precedente). Ora la cadenza jingle agisce quando il turno DJ
             # non ha davvero occupato lo slot, a prescindere da quanto spesso
             # "sarebbe dovuto" scattare.
-            need_jingle = (jingle_counter > 0 and jingle_counter % _jingle_every_n == 0) and not dj_slot_filled
-            need_fx = (_fx_every_n > 0 and fx_counter > 0 and fx_counter % _fx_every_n == 0) and not dj_slot_filled and not need_jingle
+            need_jingle = (jingle_counter > 0 and jingle_counter % _jingle_every_n == 0) and not dj_slot_filled and not demo_slot_filled
+            need_fx = (_fx_every_n > 0 and fx_counter > 0 and fx_counter % _fx_every_n == 0) and not dj_slot_filled and not demo_slot_filled and not need_jingle
             if not picked and need_jingle:
                 picked = await _clock_pick_dj_jingle(exclude_ids=_queued_ids)
                 if picked:
@@ -9281,6 +9385,8 @@ async def _clock_refill_queue():
                     jingle_counter += 1
                     fx_counter += 1
                     pp_since += 1
+                    if _demo_on:
+                        demo_counter += 1
             if not picked:
                 break
             if dj_slot_filled:
@@ -9321,7 +9427,7 @@ async def _clock_refill_queue():
             logger.info(
                 "[clock-cadence] kind=%s id=%s jingle_counter=%s jingle_every_n=%s "
                 "dj_counter=%s dj_every_n=%s fx_counter=%s fx_every_n=%s",
-                "dj" if dj_slot_filled else "jingle" if jingle_slot_filled else "fx" if fx_slot_filled else "music",
+                "demo" if demo_slot_filled else "dj" if dj_slot_filled else "jingle" if jingle_slot_filled else "fx" if fx_slot_filled else "music",
                 picked.get("id"), jingle_counter, _jingle_every_n, counter, _dj_every_n, fx_counter, _fx_every_n,
             )
             picks.append(picked)
@@ -9338,6 +9444,7 @@ async def _clock_refill_queue():
                 clock,
                 {"queue": list(clock.get("queue") or []) + picks, "music_counter": counter,
                  "jingle_counter": jingle_counter, "fx_counter": fx_counter, "pp_since": pp_since,
+                 "demo_counter": demo_counter, "demo_target": demo_target,
                  "updated_at": datetime.now(timezone.utc).isoformat()},
                 upsert=not clock,
             )
