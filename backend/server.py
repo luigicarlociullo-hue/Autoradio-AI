@@ -6682,6 +6682,42 @@ async def _prepend_silence_bytes(audio: bytes, lead_sec: float = 2.5) -> bytes:
                 pass
 
 
+async def _trim_leading_silence_bytes(audio: bytes, trim_sec: float = 2.5) -> bytes:
+    """Ticket #247410 (fix immediato): inverso esatto di _prepend_silence_bytes, rimuove `trim_sec`
+    dalla testa di una clip. Usato dall'endpoint admin/time-signal/fix-minute-padding per correggere
+    le clip MINUTO caricate dal cliente nella finestra in cui l'upload applicava per errore lo stesso
+    silenzio protettivo pensato solo per le clip ORA. Decode+trim+reencode, mai taglio bytewise.
+    In caso di errore ritorna i bytes originali invariati."""
+    import tempfile
+    if not shutil.which("ffmpeg"):
+        return audio
+    fd_in, src_path = tempfile.mkstemp(prefix="trimin_", suffix=".mp3")
+    fd_out, out_path = tempfile.mkstemp(prefix="trimout_", suffix=".mp3")
+    os.close(fd_out)
+    try:
+        with os.fdopen(fd_in, "wb") as f:
+            f.write(audio)
+        rc, _, err = await _run_capture(
+            "ffmpeg", "-y", "-i", src_path, "-ss", str(trim_sec),
+            "-ar", "44100", "-c:a", "libmp3lame", "-b:a", "192k", out_path,
+            timeout=20.0,
+        )
+        if rc != 0:
+            logger.warning(f"[silence-trim] ffmpeg fallito, uso audio originale: {err[:200]}")
+            return audio
+        trimmed = Path(out_path).read_bytes()
+        return trimmed or audio
+    except Exception as e:
+        logger.warning(f"[silence-trim] errore, uso audio originale: {e}")
+        return audio
+    finally:
+        for p in (src_path, out_path):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+
+
 async def _generate_time_signal_hour(h: int, text: str, voice_key: str, dj_id: Optional[str], allow_local_only: bool, tag: Optional[str] = None) -> dict:
     """Genera UN segnale orario permanente. Ritorna {ok, url, v, storage_verified} oppure {ok: False, reason, ...}.
     Mai Bark/wav; niente kill-switch (click esplicito admin). Il file nuovo ha un nome NUOVO (hash del contenuto):
@@ -7003,6 +7039,48 @@ async def _ts_store_upload(part: str, audio: bytes) -> dict:
             return {"ok": False, "reason": "refetch_mismatch"}
     local.write_bytes(audio)
     return {"ok": True, "url": url, "v": v0, "storage_verified": storage_on}
+
+
+@api_router.post("/admin/time-signal/fix-minute-padding")
+async def admin_fix_minute_padding():
+    """Ticket #247410 (fix immediato, azione manuale esplicita): rimuove i 2.5s di silenzio
+    aggiunti per errore alle clip MINUTO caricate dal cliente (pensati solo per le clip ORA - vedi
+    admin_upload_time_signal_parts). Non distruttiva: _ts_store_upload scrive sempre un nuovo file
+    con nome basato sull'hash del contenuto, quindi il file originale caricato dal cliente resta
+    intatto in storage anche se qualcosa va storto qui. Idempotente (padding_stripped=True): le
+    clip gia' corrette vengono saltate automaticamente, quindi puo' essere richiamato piu' volte."""
+    cur = db.time_signal_parts.find(
+        {"_id": {"$regex": "^m\\d{2}$"}, "provider": "upload", "padding_stripped": {"$ne": True}}
+    )
+    fixed, skipped = [], []
+    async for doc in cur:
+        name = (doc.get("speech_audio_url") or "").rsplit("/", 1)[-1]
+        if not name:
+            skipped.append({"part": doc["_id"], "reason": "no_url"}); continue
+        audio = None
+        if object_storage.is_enabled():
+            audio = await object_storage.get_bytes(f"tts/{name}")
+        if not audio:
+            local = elevenlabs_service.TTS_DIR / name
+            audio = local.read_bytes() if local.exists() else None
+        if not audio:
+            skipped.append({"part": doc["_id"], "reason": "audio_not_found"}); continue
+        trimmed = await _trim_leading_silence_bytes(audio, trim_sec=2.5)
+        v0 = await _validate_audio_bytes(trimmed)
+        if not v0["ok"]:
+            skipped.append({"part": doc["_id"], "reason": f"invalid_after_trim:{v0['reason']}"}); continue
+        r = await _ts_store_upload(doc["_id"], trimmed)
+        if not r["ok"]:
+            skipped.append({"part": doc["_id"], "reason": r["reason"]}); continue
+        await db.time_signal_parts.update_one(
+            {"_id": doc["_id"]},
+            {"$set": {"speech_audio_url": r["url"], "bytes": v0["bytes"], "duration_sec": v0["duration_sec"],
+                      "max_volume_db": v0["max_volume_db"], "padding_stripped": True,
+                      "padding_stripped_at": now_iso()}},
+        )
+        fixed.append({"part": doc["_id"], "duration_sec": v0["duration_sec"]})
+    logger.info(f"[ts-fix] correzione doppio-silenzio minuti: {len(fixed)} corrette, {len(skipped)} saltate")
+    return {"ok": True, "fixed": fixed, "skipped": skipped}
 
 
 @api_router.post("/admin/time-signal/upload-parts")
