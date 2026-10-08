@@ -7020,6 +7020,13 @@ async def admin_upload_time_signal_parts(files: List[UploadFile] = File(...)):
         audio = await _ts_to_mp3(data, fname) if data else None
         if not audio:
             failed.append({"file": fname, "part": part, "reason": "lettura/conversione fallita"}); continue
+        # Ticket #247410: le clip caricate dal cliente sono registrazioni brevissime (~1-2s),
+        # quindi anche piu' vulnerabili delle clip TTS al noto live-edge catch-up di hls.js che
+        # puo' mangiare 0.3-3.7s dall'inizio di un item breve. A differenza del caso TTS ora+minuto
+        # (un'unica frase sintetizzata in due pezzi, dove il silenzio spezzerebbe il parlato a meta'
+        # frase), qui ora e minuto sono DUE registrazioni indipendenti del cliente: nessuna frase da
+        # spezzare, quindi il silenzio protettivo va messo su ENTRAMBE.
+        audio = await _prepend_silence_bytes(audio, lead_sec=2.5)
         r = await _ts_store_upload(part, audio)
         if not r["ok"]:
             failed.append({"file": fname, "part": part, "reason": r["reason"]}); continue
