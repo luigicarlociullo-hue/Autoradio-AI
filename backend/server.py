@@ -8530,12 +8530,20 @@ async def _clock_pick_demo_voice(exclude_ids: Optional[set] = None) -> Optional[
         dur = await _probe_tts_duration(s.get("speech_audio_url"), pad_sec=0.8)
         if dur is None:
             continue
+        # Ticket #247410: pad_sec=0.8 e' una stima gonfiata ad uso del PICKER (anti-
+        # troncamento). Senza real_duration_sec esplicito _with_true_duration() non ha
+        # un valore vero da sostituire alla promozione e il clock avanza sul valore
+        # gonfiato: stesso drift (fine anticipata lato server rispetto al player HLS,
+        # che suona la durata reale) che b492f85 ha corretto per l'intera libreria -
+        # qui si ripresentava solo per i vocali Demo Mode.
+        real_dur = await _probe_tts_duration(s.get("speech_audio_url"))
         return {
             "id": f"demo-{s['id']}-{uuid.uuid4().hex[:6]}",
             "title": f"🎙️ {s.get('title') or 'Intervento DJ'}",
             "artist": s.get("dj_name") or "R-A.I.",
             "audio_url": s["speech_audio_url"],
             "duration_sec": dur,
+            "real_duration_sec": round(real_dur, 3) if real_dur is not None else None,
             "kind": "talk",
             "is_demo_voice": True,
             "demo_segment_id": s["id"],
