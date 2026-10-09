@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/api";
 import { assetCategory, ASSET_CATEGORIES, assetLabel, sortAssets } from "./CommandCenter2Panels";
 import { toast } from "sonner";
+import AppuntamentoLiberoForm from "./AppuntamentoLiberoForm";
 
 /**
  * SmartFlowTimelinePanel — v13.17
@@ -23,6 +24,7 @@ const KIND_COLOR = {
   insert: "#D080FF",
   ad: "#FF5577",
   ad_break: "#FF8A3D",
+  appointment: "#FF6BAA",
 };
 const KIND_LABEL = {
   jingle: "Jingle",
@@ -33,6 +35,7 @@ const KIND_LABEL = {
   insert: "Inserto libero",
   ad: "Spot",
   ad_break: "📢 Break Pubblicitario",
+  appointment: "✨ Appuntamento",
 };
 
 // datetime-local wants "YYYY-MM-DDTHH:mm" in *local* tz
@@ -533,6 +536,8 @@ export default function SmartFlowTimelinePanel() {
       )}
 
       {/* v13.22 · REGIA CONFIG UNIVERSALE — barra in cima */}
+      {/* v13.54 · APPUNTAMENTO LIBERO — form separato, ogni parametro facoltativo */}
+      <AppuntamentoLiberoForm sources={sources} djs={djs} onCreated={() => loadEvents("pending")} />
       <div
         className="rounded-lg p-3 mb-4 space-y-2"
         style={{ background: "rgba(255,184,77,0.06)", border: "1px solid rgba(255,184,77,0.30)" }}

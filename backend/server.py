@@ -3607,7 +3607,9 @@ async def _enqueue_hourly_sponsored_sequence(it_now):
         await _push_priority_segment(spot_seg)
 
     # ---- 3. Rubrica oraria: PARI → Umani Vs Algoritmo; DISPARI → Disco del Giorno ----
-    if hour % 2 == 0:
+    if not _HOURLY_RUBRICS_AUTO:
+        pass   # ticket 247410: rubriche solo da palinsesto manuale
+    elif hour % 2 == 0:
         # === "Umani Versus Algoritmo" — community LRP (least recently played) ===
         # 1) sort by last_played_at asc (mai riprodotti hanno None → primi)
         comm = await db.community_tracks.find_one(
@@ -6080,6 +6082,64 @@ async def live_brain_services():
     return {"services": out, "at": datetime.now(timezone.utc).isoformat()}
 
 
+# Ticket 247410: hls.js (ora il motore usato su Chrome/Android) decodifica solo segmenti MP3/AAC.
+# Le voci TTS di fallback sono WAV (/api/audio/*.wav) e venivano saltate in silenzio. Ogni
+# elemento non MP3/AAC passa da qui: convertito UNA volta in MP3 44.1 kHz stereo e messo in cache.
+_HLS_PASSTHROUGH_EXT = (".mp3", ".aac")
+_HLS_MP3_DIR = Path("/tmp/hls_mp3")
+_HLS_MP3_LOCKS: dict = {}
+
+
+def _hls_needs_mp3(url: str) -> bool:
+    path = (url or "").split("?", 1)[0].lower()
+    return url.startswith("/api/") and not path.endswith(_HLS_PASSTHROUGH_EXT)
+
+
+@api_router.get("/stream/hls-mp3")
+async def hls_mp3_segment(p: str, request: Request):
+    if not p.startswith("/api/") or ".." in p or "://" in p or p.startswith("/api/stream/"):
+        raise HTTPException(400, "percorso non valido")
+    _HLS_MP3_DIR.mkdir(parents=True, exist_ok=True)
+    out = _HLS_MP3_DIR / f"{hashlib.sha1(p.encode()).hexdigest()}.mp3"
+    if not out.exists():
+        lock = _HLS_MP3_LOCKS.setdefault(out.name, asyncio.Lock())
+        async with lock:
+            if not out.exists():
+                src = None
+                if p.startswith("/api/audio/"):
+                    lp = audio_path(p[len("/api/audio/"):].split("?", 1)[0])
+                    if lp:
+                        src = str(lp)
+                tmp_in = None
+                if not src:
+                    proto = request.headers.get("x-forwarded-proto", "https")
+                    host = request.headers.get("x-forwarded-host") or request.headers.get("host") or ""
+                    async with httpx.AsyncClient(timeout=60, follow_redirects=True) as c:
+                        r = await c.get(f"{proto}://{host}{p}")
+                    if r.status_code != 200 or not r.content:
+                        raise HTTPException(404, "audio sorgente non trovato")
+                    tmp_in = str(out) + ".src"
+                    with open(tmp_in, "wb") as f:
+                        f.write(r.content)
+                    src = tmp_in
+                tmp_out = str(out) + ".part.mp3"
+                proc = await asyncio.create_subprocess_exec(
+                    "ffmpeg", "-y", "-v", "error", "-i", src, "-vn", "-ar", "44100", "-ac", "2",
+                    "-b:a", "192k", "-f", "mp3", tmp_out,
+                    stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+                _, err = await proc.communicate()
+                if tmp_in:
+                    try: os.remove(tmp_in)
+                    except OSError: pass
+                if proc.returncode != 0:
+                    logger.warning(f"[hls-mp3] ffmpeg fallito per {p}: {err.decode(errors='ignore')[:300]}")
+                    raise HTTPException(500, "conversione audio fallita")
+                os.replace(tmp_out, out)
+                logger.info(f"[hls-mp3] convertito {p} -> {out.name}")
+    return FileResponse(str(out), media_type="audio/mpeg",
+                        headers={"Cache-Control": "public, max-age=86400", "Access-Control-Allow-Origin": "*"})
+
+
 @api_router.get("/stream/live.m3u8")
 async def hls_live_playlist(request: Request):
     """HLS Live Playlist — v13.6 TRUE BROADCASTER.
@@ -6162,6 +6222,9 @@ async def hls_live_playlist(request: Request):
         title = (t.get("title") or "R-A.I.").replace(",", " ")
         artist = (t.get("artist") or "R-A.I.").replace(",", " ")
         url = t.get("audio_url") or ""
+        if _hls_needs_mp3(url):
+            from urllib.parse import quote as _q
+            url = f"/api/stream/hls-mp3?p={_q(url, safe='/')}"
         if url.startswith("/"):
             url = f"{base_url.rstrip('/')}{url}"
         # v13.25 · #EXT-X-DISCONTINUITY prima di OGNI segmento successivo al primo
@@ -7388,6 +7451,242 @@ async def _ts_guard_skip(doc: dict) -> Optional[str]:
     return None if r.modified_count else "duplicate (un segnale orario e' gia' andato in onda negli ultimi 10 minuti)"
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# v13.54 · APPUNTAMENTO LIBERO (kind="appointment") — ogni parametro è
+# facoltativo; ciò che manca viene ignorato. Alla creazione NESSUNA generazione:
+# sentinel audio "appointment:live", risolto solo quando l'evento va in onda.
+# Catena: jingle prima → presentazione DJ → brano → jingle dopo → follow_ups.
+# ═══════════════════════════════════════════════════════════════════════════
+APPOINTMENT_SOURCES = ("disco_del_giorno", "umani_vs_algoritmo", "fixed")
+_APPT_MUSIC_FLAGS = [
+    {"$or": [{f: {"$exists": False}}, {f: False}]}
+    for f in ("is_anthem", "is_jingle", "is_loop", "is_fx", "is_spot", "is_billboard")
+]
+
+
+def _sanitize_appointment(raw) -> dict:
+    raw = raw if isinstance(raw, dict) else {}
+
+    def _s(k, n=200):
+        return (str(raw.get(k) or "")).strip()[:n] or None
+
+    def _jingle(k):
+        j = raw.get(k)
+        if not isinstance(j, dict) or not (j.get("audio_url") or "").strip():
+            return None
+        return {"audio_url": j["audio_url"].strip(), "title": (j.get("title") or "Jingle").strip()[:120],
+                "artist": (j.get("artist") or "").strip()[:120] or None,
+                "duration_sec": max(1, int(float(j.get("duration_sec") or 10)))}
+
+    source = (raw.get("source") or "fixed").strip().lower()
+    if source not in APPOINTMENT_SOURCES:
+        source = "fixed"
+    try:
+        lead = max(5, min(240, int(raw.get("suno_lead_minutes") or 20)))
+    except (TypeError, ValueError):
+        lead = 20
+    max_dur = None
+    try:
+        if raw.get("max_duration_sec") not in (None, "", 0, "0"):
+            max_dur = max(5, min(3600, int(float(raw.get("max_duration_sec")))))
+    except (TypeError, ValueError):
+        max_dur = None
+    return {
+        "description": _s("description", 1000),
+        "source": source,
+        "fixed_track_id": _s("fixed_track_id", 80),
+        "suno_genre": _s("suno_genre", 120),
+        "suno_mood": _s("suno_mood", 120),
+        "suno_lang": (_s("suno_lang", 5) or "it").lower(),
+        "suno_lead_minutes": lead,
+        "jingle_before": _jingle("jingle_before"),
+        "jingle_after": _jingle("jingle_after"),
+        "dj_present": bool(raw.get("dj_present")),
+        "dj_comment": _s("dj_comment", 600),
+        "max_duration_sec": max_dur,
+    }
+
+
+def _appt_item(src: dict, kind: str, prefix: str = "appt") -> dict:
+    return {
+        "id": f"{prefix}-{uuid.uuid4().hex[:10]}",
+        "title": src.get("title") or "Appuntamento",
+        "artist": src.get("artist") or None,
+        "audio_url": src["audio_url"],
+        "duration_sec": float(src.get("duration_sec") or 0) or 30.0,
+        "video_url": src.get("video_url"),
+        "kind": kind,
+    }
+
+
+async def _appointment_pick_track(doc: dict, cfg: dict) -> Optional[dict]:
+    """Sorgente del brano: fisso · Umani vs Algoritmo · Disco del Giorno."""
+    source = cfg.get("source") or "fixed"
+    proj = {"_id": 0, "id": 1, "title": 1, "artist": 1, "audio_url": 1, "duration_sec": 1}
+    track = None
+    if source == "fixed":
+        if cfg.get("fixed_track_id"):
+            track = await db.tracks.find_one({"id": cfg["fixed_track_id"], "audio_url": {"$ne": None}}, proj)
+        if not track:
+            logger.warning(f"[appointment] {doc.get('id')}: brano fisso non trovato ({cfg.get('fixed_track_id')})")
+            return None
+    elif source == "umani_vs_algoritmo":
+        q = {"status": "on", "audio_url": {"$ne": None}}
+        cands = await db.community_tracks.find(q, {"_id": 0, "id": 1, "title": 1, "author": 1, "audio_url": 1, "is_night": 1}).to_list(300)
+        from zoneinfo import ZoneInfo as _ZI
+        _h = datetime.now(_ZI("Europe/Rome")).hour
+        if 6 <= _h < 22:
+            day_c = [c for c in cands if not c.get("is_night")]
+            cands = day_c or cands
+        if not cands:
+            logger.warning(f"[appointment] {doc.get('id')}: nessun brano community ON")
+            return None
+        c = random.choice(cands)
+        dur = await _probe_tts_duration(c["audio_url"]) or 180.0
+        await db.community_tracks.update_one({"id": c["id"]}, {"$inc": {"play_count": 1}})
+        track = {"id": c["id"], "title": c.get("title"), "artist": c.get("author"), "audio_url": c["audio_url"], "duration_sec": dur}
+    else:  # disco_del_giorno
+        sid = doc.get("suno_track_id")
+        if sid and sid not in ("pending", "failed"):
+            track = await db.tracks.find_one({"id": sid, "status": "ready", "audio_url": {"$ne": None}}, proj)
+            if not track:
+                logger.info(f"[appointment] {doc.get('id')}: brano Suno {sid} non ancora pronto → ultimo brano del Magazzino")
+        if not track:
+            recent = await db.tracks.find(
+                {"status": "ready", "audio_url": {"$ne": None}, "on_air": {"$ne": False}, "deleted_at": None,
+                 "duration_sec": {"$gt": 0}, "$and": _APPT_MUSIC_FLAGS},
+                proj, sort=[("created_at", -1)],
+            ).to_list(10)
+            if not recent:
+                logger.warning(f"[appointment] {doc.get('id')}: nessun brano pronto nel Magazzino")
+                return None
+            track = random.choice(recent)
+    dur = float(track.get("duration_sec") or 0) or (await _probe_tts_duration(track["audio_url"]) or 180.0)
+    if cfg.get("max_duration_sec"):
+        dur = min(dur, float(cfg["max_duration_sec"]))
+    item = _appt_item({**track, "duration_sec": dur}, "music")
+    item["source_track_id"] = track.get("id")
+    item["appointment_source"] = source
+    return item
+
+
+async def _appointment_dj_intro(doc: dict, cfg: dict, track: dict) -> Optional[dict]:
+    """Presentazione DJ (titolo + artista + commento libero) con la voce del DJ.
+    Solo se ai_openai_talk è ON; qualsiasi problema → nessuna presentazione."""
+    try:
+        if not (await _get_ai_controls()).get("ai_openai_talk"):
+            logger.info(f"[appointment] {doc.get('id')}: OPENAI TALK OFF → presentazione DJ saltata")
+            return None
+        dj_doc = await db.djs.find_one({"id": doc.get("dj_id")}, {"_id": 0})
+        if not dj_doc or not dj_doc.get("voice_key"):
+            return None
+        comment = cfg.get("dj_comment") or ""
+        user_prompt = (
+            f"Sei in diretta su R-A.I. Presenta ADESSO il brano \"{track.get('title')}\" di {track.get('artist') or 'artista sconosciuto'} "
+            f"che parte subito dopo le tue parole. 30-50 parole, frasi complete, tono da radio live, in prima persona. "
+            f"Devi dire chiaramente titolo e artista." + (f" Includi questo commento con parole tue: \"{comment}\"." if comment else "") +
+            " Solo il testo del parlato, nessuna didascalia."
+        )
+        system_prompt = f"Sei {dj_doc.get('name')}, speaker di R-A.I. — {dj_doc.get('personality') or ''}\nRispondi SOLO con il testo che pronuncerai (max 60 parole)."
+        script = await llm_generate(dj_doc.get("llm_provider") or "openai", dj_doc.get("llm_model") or "gpt-5.2", system_prompt, user_prompt)
+        spoken = _extract_spoken_text((script or "").strip())
+        if not spoken:
+            return None
+        fname, subpath = await synth_speech(spoken, voice_key=dj_doc["voice_key"], kind="answer", strict_voice=True, dj_id=dj_doc.get("id"))
+        if not fname:
+            return None
+        url = f"/api/{subpath or 'tts'}/{fname}"
+        dur = await _probe_tts_duration(url) or max(6.0, len(spoken.split()) * 0.42)
+        return {**_appt_item({"title": f"🎙️ {dj_doc.get('name')} presenta", "artist": dj_doc.get("name"), "audio_url": url,
+                              "duration_sec": round(dur, 3) + 1}, "talk", "appt-intro"),
+                "spoken_text": spoken, "dj_id": dj_doc.get("id"), "dj_name": dj_doc.get("name")}
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[appointment] {doc.get('id')}: presentazione DJ fallita → saltata: {e}")
+        return None
+
+
+async def _appointment_resolve(doc: dict) -> Optional[dict]:
+    cfg = doc.get("appointment") or {}
+    track = await _appointment_pick_track(doc, cfg)
+    if not track:
+        return None
+    chain = []
+    if cfg.get("jingle_before"):
+        chain.append(_appt_item(cfg["jingle_before"], "jingle"))
+    intro = None
+    if cfg.get("dj_present") and doc.get("dj_id"):
+        intro = await _appointment_dj_intro(doc, cfg, track)
+        if intro:
+            chain.append(intro)
+    chain.append(track)
+    if cfg.get("jingle_after"):
+        chain.append(_appt_item(cfg["jingle_after"], "jingle"))
+    chain.extend(list(doc.get("follow_ups") or []))
+    head = chain[0]
+    name = doc.get("title") or "Appuntamento"
+    res = {
+        "audio_url": head["audio_url"],
+        "duration_sec": float(head["duration_sec"]),
+        "title": track["title"] if head is track else f"{name} · {head['title']}",
+        "artist": track.get("artist") or head.get("artist"),
+        "follow_ups": chain[1:],
+        "_entry_kind": head.get("kind") or "music",
+    }
+    try:
+        await db.timeline_events.update_one({"id": doc.get("id")}, {"$set": {"appointment_resolution": {
+            "at": now_iso(), "track": {k: track.get(k) for k in ("title", "artist", "audio_url", "duration_sec", "appointment_source", "source_track_id")},
+            "dj_intro": bool(intro), "chain": [c.get("title") for c in chain]}}})
+    except Exception:
+        pass
+    logger.info(f"[appointment] {doc.get('id')} '{name}' → {[c.get('title') for c in chain]}")
+    return res
+
+
+async def _appointment_suno_prepare():
+    """Disco del Giorno: con ai_suno_engine ON, lancia generate_track con
+    l'anticipo configurato (max 1 generazione per tick). Con Suno OFF non fa nulla."""
+    try:
+        if not (await _get_ai_controls()).get("ai_suno_engine") or not suno_service.is_enabled():
+            return
+        now = datetime.now(timezone.utc)
+        tpls = await db.timeline_events.find(
+            {"status": "template", "kind": "appointment", "appointment.source": "disco_del_giorno", "rrule": {"$ne": None}}, {"_id": 0}
+        ).to_list(100)
+        for tpl in tpls:
+            lead = int((tpl.get("appointment") or {}).get("suno_lead_minutes") or 20)
+            await _rrule_materialize_template(tpl, now - timedelta(hours=2), now + timedelta(minutes=lead), now)
+        evs = await db.timeline_events.find(
+            {"status": "pending", "kind": "appointment", "appointment.source": "disco_del_giorno",
+             "suno_track_id": {"$exists": False}, "scheduled_at": {"$gte": now.isoformat()}},
+            {"_id": 0, "id": 1, "scheduled_at": 1, "appointment": 1, "title": 1},
+        ).sort("scheduled_at", 1).to_list(50)
+        for ev in evs:
+            cfg = ev.get("appointment") or {}
+            sched = datetime.fromisoformat(ev["scheduled_at"].replace("Z", "+00:00"))
+            if sched - now > timedelta(minutes=int(cfg.get("suno_lead_minutes") or 20)):
+                continue
+            r = await db.timeline_events.update_one(
+                {"id": ev["id"], "suno_track_id": {"$exists": False}},
+                {"$set": {"suno_track_id": "pending", "suno_requested_at": now.isoformat()}},
+            )
+            if r.modified_count == 0:
+                continue
+            try:
+                genre = cfg.get("suno_genre") or None
+                hint = " ".join(x for x in [f"a {genre} track" if genre else "", f"mood {cfg['suno_mood']}" if cfg.get("suno_mood") else "",
+                                            f"for the radio show '{ev.get('title')}'" if ev.get("title") else ""] if x).strip() or None
+                t = await generate_track(hint=hint, genre=genre, lang=cfg.get("suno_lang") or "it")
+                await db.timeline_events.update_one({"id": ev["id"]}, {"$set": {"suno_track_id": t.id}})
+                logger.info(f"[appointment] Disco del Giorno {ev['id']} → Suno track {t.id} richiesto ({int((sched - now).total_seconds() // 60)} min di anticipo)")
+            except Exception as e:  # noqa: BLE001
+                await db.timeline_events.update_one({"id": ev["id"]}, {"$set": {"suno_track_id": "failed", "suno_error": str(e)[:300]}})
+                logger.warning(f"[appointment] Suno per {ev['id']} fallito → all'orario userà il Magazzino: {e}")
+            break
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"[appointment] suno prepare: {e}")
+
+
+
 async def _timeline_pick_due() -> Optional[dict]:
     """Ritorna un evento timeline maturo (scheduled_at <= now) e lo marca
     come `consumed` atomicamente. Ignora eventi troppo vecchi (>2h).
@@ -7397,6 +7696,7 @@ async def _timeline_pick_due() -> Optional[dict]:
     Recurrence" non hanno bisogno di background task dedicati: la
     materializzazione avviene lungo lo stesso path del clock ticker."""
     await _rrule_materialize_due(window_sec=90)
+    await _appointment_suno_prepare()  # v13.54 · Disco del Giorno: pre-generazione Suno con anticipo (no-op se Suno OFF)
     now = datetime.now(timezone.utc)
     cutoff_old = (now - timedelta(hours=2)).isoformat()
     now_iso_s = now.isoformat()
@@ -7520,7 +7820,7 @@ async def _timeline_pick_due() -> Optional[dict]:
     # con la durata salvata NELL'EVENTO (default 30s del form, o quella del
     # file prima di una ricarica/ricalcolo) e veniva troncato lì. Se l'audio
     # è un file della libreria, vale la sua durata reale attuale.
-    if doc.get("kind") not in ("ora_esatta", "time_signal", "ad_break") and doc.get("audio_url"):
+    if doc.get("kind") not in ("ora_esatta", "time_signal", "ad_break", "appointment") and doc.get("audio_url"):
         try:
             _lib = await db.tracks.find_one(
                 {"audio_url": doc["audio_url"], "duration_sec": {"$gt": 0}},
@@ -7531,6 +7831,17 @@ async def _timeline_pick_due() -> Optional[dict]:
                 doc["duration_sec"] = float(_lib["duration_sec"])
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[timeline] library duration lookup failed: {e}")
+    # v13.54 · APPUNTAMENTO LIBERO: risolto SOLO ora (sorgente brano, jingle, presentazione DJ)
+    _appt_entry_kind = None
+    if doc.get("kind") == "appointment":
+        _res = await _appointment_resolve(doc)
+        if not _res:
+            await db.timeline_events.update_one({"id": doc.get("id")}, {"$set": {"status": "skipped_no_audio", "note": "Appuntamento: nessun brano risolvibile"}})
+            logger.warning(f"[appointment] {doc.get('id')} saltato: nessun brano risolvibile")
+            return None
+        _appt_entry_kind = _res.pop("_entry_kind", "music")
+        doc.update(_res)
+        doc["real_duration_sec"] = None
     # Costruisce l'entry compatibile con la queue del clock
     entry = {
         "id": doc.get("id") or f"tl-{uuid.uuid4().hex[:10]}",
@@ -7568,6 +7879,8 @@ async def _timeline_pick_due() -> Optional[dict]:
         # v13.33 · Sequenza concatenata multipla (lista ordinata, iniettata in blocco)
         "follow_ups": doc.get("follow_ups") or [],
     }
+    if _appt_entry_kind:
+        entry["kind"] = _appt_entry_kind  # jingle / talk / music → LedWall mode corretto
     # v13.32 · AD_BREAK — quando l'evento matura, espandi al volo il cluster
     # [intro]+[N spot]+[outro] e ritorna la PRIMA entry, incatenando le altre
     # via `follow_up` a cascata (zero-gap). Se non ci sono spot, marchia come
@@ -7737,6 +8050,17 @@ async def admin_timeline_create(payload: dict):
         if not title:
             title = "🕐 Segnale orario"
 
+    # v13.54 · APPUNTAMENTO LIBERO: nessuna generazione alla creazione, sentinel risolto in onda.
+    _appointment_cfg = None
+    if event_kind == "appointment":
+        _appointment_cfg = _sanitize_appointment(payload.get("appointment"))
+        if _appointment_cfg["source"] == "fixed" and not _appointment_cfg.get("fixed_track_id") and audio_url:
+            _appointment_cfg["fixed_track_id"] = (await db.tracks.find_one({"audio_url": audio_url}, {"_id": 0, "id": 1}) or {}).get("id")
+        audio_url = "appointment:live"
+        dur_from_payload = int(_appointment_cfg.get("max_duration_sec") or 240)
+        if not title:
+            title = "✨ Appuntamento"
+
     if not audio_url:
         # Percorso "autonomo": serve un DJ per generare voce
         if not dj_doc:
@@ -7849,6 +8173,7 @@ async def admin_timeline_create(payload: dict):
         "recurrence": recurrence or "none",
         "follow_up": follow_up,
         "follow_ups": follow_ups,
+        "appointment": _appointment_cfg,
         "status": "pending",
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -8109,31 +8434,36 @@ async def _rrule_materialize_due(window_sec: int = 90):
             {"_id": 0},
         ).to_list(200)
         for tpl in templates:
-            occurrences = _rrule_expand(tpl.get("rrule") or {}, from_dt, to_dt)
-            excluded = set(tpl.get("excluded_occurrences") or [])
-            for occ in occurrences:
-                occ_iso = occ.isoformat()
-                # v13.42 · Occorrenza singola eliminata dall'utente: mai rimaterializzare
-                if occ_iso in excluded:
-                    continue
-                # Dedup: la coppia (parent_id, scheduled_at) è unica
-                existing = await db.timeline_events.find_one(
-                    {"parent_id": tpl["id"], "scheduled_at": occ_iso},
-                    {"_id": 0, "id": 1},
-                )
-                if existing:
-                    continue
-                # Nuovo child concreto — copia il template ma override id/status/scheduled_at
-                child = {k: v for k, v in tpl.items() if k not in ("_id", "id", "status", "rrule", "created_at")}
-                child["id"] = f"tl-{uuid.uuid4().hex[:12]}"
-                child["scheduled_at"] = occ_iso
-                child["status"] = "pending"
-                child["parent_id"] = tpl["id"]
-                child["from_rrule"] = True
-                child["created_at"] = now.isoformat()
-                await db.timeline_events.insert_one(child)
+            await _rrule_materialize_template(tpl, from_dt, to_dt, now)
     except Exception as e:
         logger.debug(f"[rrule] materialize failed: {e}")
+
+
+async def _rrule_materialize_template(tpl: dict, from_dt: datetime, to_dt: datetime, now: datetime):
+    """Materializza le occorrenze di UN template nella finestra [from_dt, to_dt] (dedup parent_id+scheduled_at)."""
+    occurrences = _rrule_expand(tpl.get("rrule") or {}, from_dt, to_dt)
+    excluded = set(tpl.get("excluded_occurrences") or [])
+    for occ in occurrences:
+        occ_iso = occ.isoformat()
+        # v13.42 · Occorrenza singola eliminata dall'utente: mai rimaterializzare
+        if occ_iso in excluded:
+            continue
+        # Dedup: la coppia (parent_id, scheduled_at) è unica
+        existing = await db.timeline_events.find_one(
+            {"parent_id": tpl["id"], "scheduled_at": occ_iso},
+            {"_id": 0, "id": 1},
+        )
+        if existing:
+            continue
+        # Nuovo child concreto — copia il template ma override id/status/scheduled_at
+        child = {k: v for k, v in tpl.items() if k not in ("_id", "id", "status", "rrule", "created_at")}
+        child["id"] = f"tl-{uuid.uuid4().hex[:12]}"
+        child["scheduled_at"] = occ_iso
+        child["status"] = "pending"
+        child["parent_id"] = tpl["id"]
+        child["from_rrule"] = True
+        child["created_at"] = now.isoformat()
+        await db.timeline_events.insert_one(child)
 
 
 @api_router.post("/admin/timeline/rrule")
@@ -8156,6 +8486,14 @@ async def admin_timeline_create_rrule(payload: dict):
         # v13.33 · Marker: i figli ri-risolvono l'audio dell'ora live in _timeline_pick_due
         audio_url = "time_signal:live"
         tpl_title = tpl_title or "🕐 Segnale orario"
+    # v13.54 · APPUNTAMENTO LIBERO ricorrente: sentinel, risolto in onda (nessuna generazione ora)
+    _appointment_cfg = None
+    if tpl_kind == "appointment":
+        _appointment_cfg = _sanitize_appointment(payload.get("appointment"))
+        if _appointment_cfg["source"] == "fixed" and not _appointment_cfg.get("fixed_track_id") and audio_url:
+            _appointment_cfg["fixed_track_id"] = (await db.tracks.find_one({"audio_url": audio_url}, {"_id": 0, "id": 1}) or {}).get("id")
+        audio_url = "appointment:live"
+        tpl_title = tpl_title or "✨ Appuntamento"
     if not audio_url:
         raise HTTPException(400, "audio_url richiesto per il template")
     # Risolvi DJ opzionale
@@ -8189,6 +8527,7 @@ async def admin_timeline_create_rrule(payload: dict):
         "brief": (payload.get("brief") or "").strip() or None,
         "video_url": (payload.get("video_url") or "").strip() or None,
         "follow_ups": follow_ups,
+        "appointment": _appointment_cfg,
         "rrule": clean_rrule,
         "status": "template",
         "scheduled_at": now.isoformat(),  # solo per ordinamento; il vero orario è dato da rrule
@@ -8197,6 +8536,32 @@ async def admin_timeline_create_rrule(payload: dict):
     await db.timeline_events.insert_one(tpl.copy())
     tpl.pop("_id", None)
     return {"ok": True, "template": tpl}
+
+
+# v13.54 · MODELLI riutilizzabili per Appuntamento Libero (payload del form salvato così com'è)
+@api_router.get("/admin/timeline/presets")
+async def admin_timeline_presets_list():
+    items = await db.timeline_presets.find({}, {"_id": 0}).sort("created_at", -1).to_list(200)
+    return {"items": items}
+
+
+@api_router.post("/admin/timeline/presets")
+async def admin_timeline_presets_add(payload: dict):
+    name = (payload.get("name") or "").strip()[:120]
+    body = payload.get("payload")
+    if not name or not isinstance(body, dict):
+        raise HTTPException(400, "name e payload richiesti")
+    doc = {"id": f"preset-{uuid.uuid4().hex[:10]}", "name": name, "payload": body, "created_at": now_iso()}
+    await db.timeline_presets.insert_one(dict(doc))
+    return {"ok": True, "preset": doc}
+
+
+@api_router.delete("/admin/timeline/presets/{preset_id}")
+async def admin_timeline_presets_delete(preset_id: str):
+    r = await db.timeline_presets.delete_one({"id": preset_id})
+    if r.deleted_count == 0:
+        raise HTTPException(404, "modello non trovato")
+    return {"ok": True, "id": preset_id}
 
 
 @api_router.get("/admin/timeline/calendar")
@@ -8910,7 +9275,7 @@ async def _clock_pick_track(exclude_ids: Optional[set] = None) -> Optional[dict]
     # v13.47 · il Power Play di oggi suona SOLO dal suo slot (con il gap minimo):
     # dal pool normale rientrava a caso, aggiungendosi alle ripetizioni.
     try:
-        _pp_today = await _power_play_get_today()
+        _pp_today = await _power_play_get_today() if _POWER_PLAY_AUTO_ROTATION else None
         if _pp_today and _pp_today.get("track_id"):
             _excl.add(_pp_today["track_id"])
     except Exception:
@@ -11752,6 +12117,10 @@ async def admin_power_play_regenerate():
 
 
 _POWER_PLAY_DEFAULT_MIN_GAP = 6   # brani minimi tra due riproduzioni dello stesso Power Play
+# Ticket 247410: il cliente vuole programmare lui Disco del Giorno / Umani Vs Algoritmo dalla
+# Regia. Spenti la rotazione automatica del Power Play e le rubriche orarie automatiche.
+_POWER_PLAY_AUTO_ROTATION = False
+_HOURLY_RUBRICS_AUTO = False
 
 
 async def _power_play_min_gap() -> int:
@@ -11774,6 +12143,8 @@ async def _power_play_maybe_pick(pp_since: int = 0) -> Optional[dict]:
     stessa CAS di coda e contatori (prima era `station.pp_counter`, fuori CAS:
     un refill scartato lo faceva avanzare comunque). Il chiamante lo azzera
     solo se il Power Play è davvero finito in coda (il dedupe può sostituirlo)."""
+    if not _POWER_PLAY_AUTO_ROTATION:
+        return None
     if pp_since < await _power_play_min_gap():
         return None
     pp = await _power_play_get_today()

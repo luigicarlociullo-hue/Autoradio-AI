@@ -270,8 +270,10 @@ export default function SyncLivePlayer() {
     try {
       // Cleanup precedente
       if (hlsRef.current) { try { hlsRef.current.destroy(); } catch {} hlsRef.current = null; }
-      // Native HLS (Safari, iOS)
-      if (audio.canPlayType("application/vnd.apple.mpegurl")) {
+      // Native HLS SOLO se hls.js non e' disponibile (vecchi iOS). Ticket 247410: Chrome recente
+      // risponde "maybe" a canPlayType(HLS) ma non riproduce questa playlist MP3 -> si finiva
+      // sempre nell'aggancio diretto (vuoto + inizio mangiato a ogni cambio). hls.js va prima.
+      if (!Hls.isSupported() && audio.canPlayType("application/vnd.apple.mpegurl")) {
         audio.src = hlsUrl;
         audio.load();
         wireToRadioEngine();
