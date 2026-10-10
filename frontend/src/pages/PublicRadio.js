@@ -774,10 +774,10 @@ export default function PublicRadio() {
               )}
               <div className="min-w-0 flex-1" data-testid="now-playing-title">
                 <div className="text-[9px] font-mono uppercase tracking-[0.3em] text-cyan-400/80">In onda</div>
-                <div className="font-display text-xl sm:text-2xl font-black text-white leading-tight line-clamp-2" data-testid="current-title">
+                <div className="font-display text-base sm:text-lg font-black text-white leading-tight line-clamp-3 break-words" data-testid="current-title">
                   {displayCurrent?.title || "R-A.I. Radio"}
                 </div>
-                <div className="text-sm text-zinc-300 truncate mt-0.5" data-testid="current-artist">
+                <div className="text-sm text-zinc-300 line-clamp-2 mt-0.5" data-testid="current-artist">
                   {displayCurrent?.artist || displayCurrent?.dj_name || "La radio che pensa da sola"}
                 </div>
               </div>
