@@ -4967,6 +4967,187 @@ async def get_bed(filename: str, request: Request):
     raise HTTPException(404, "Bed audio not found")
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# v13.56 · BED MIX SERVER-SIDE — la voce DJ che entra nella coda del clock viene
+# unita (una volta, con cache) al loop di sottofondo: loop ripetuto per tutta la
+# voce, ~20% di volume, ducking automatico mentre la voce parla, fade in/out.
+# Durata del file = durata della voce → nessun impatto su clock/sync/buffer.
+# Voce originale intatta. Nessuna generazione (no ElevenLabs/Suno).
+# ═══════════════════════════════════════════════════════════════════════════
+BEDMIX_DIR = Path("/app/backend/static/bedmix")
+BEDMIX_DIR.mkdir(parents=True, exist_ok=True)
+_BEDMIX_LOCKS: dict = {}
+_BEDMIX_VOLUME = 0.20
+_BEDMIX_FADE_IN = 1.0
+_BEDMIX_FADE_OUT = 1.5
+_BEDMIX_TIMEOUT = 60.0
+
+
+@api_router.get("/bedmix/{filename}")
+async def get_bedmix(filename: str, request: Request):
+    if "/" in filename or ".." in filename or not filename.endswith(".mp3"):
+        raise HTTPException(400, "Invalid filename")
+    p = BEDMIX_DIR / filename
+    if p.exists():
+        return await _serve_local_audio(
+            p, "audio/mpeg", request.headers.get("range"),
+            {"Cache-Control": "public, max-age=604800", "Accept-Ranges": "bytes"},
+        )
+    if object_storage.is_enabled():
+        streamed = await object_storage.stream_mp3(f"bedmix/{filename}", cache_to=str(p), range_header=request.headers.get("range"))
+        if streamed:
+            gen, content_length, status_code, content_range = streamed
+            headers = {"Cache-Control": "public, max-age=604800", "Accept-Ranges": "bytes"}
+            if content_length:
+                headers["Content-Length"] = content_length
+            if content_range:
+                headers["Content-Range"] = content_range
+            return StreamingResponse(gen, status_code=status_code, media_type="audio/mpeg", headers=headers)
+    raise HTTPException(404, "Bed mix not found")
+
+
+_AUDIO_URL_DIRS = (
+    ("/api/tts/", lambda: elevenlabs_service.TTS_DIR, "tts"),
+    ("/api/suno_audio/", lambda: SUNO_AUDIO_DIR, "suno"),
+    ("/api/community_audio/", lambda: COMMUNITY_AUDIO_DIR, "community"),
+    ("/api/audio/", lambda: AUDIO_DIR, None),
+    ("/api/beds/", lambda: BEDS_DIR, "beds"),
+    ("/api/bedmix/", lambda: BEDMIX_DIR, "bedmix"),
+)
+
+
+async def _audio_local_file(url: Optional[str]) -> Optional[Path]:
+    """Path locale di un audio /api/*; se manca e l'Object Storage lo ha, lo scarica in cache."""
+    if not url:
+        return None
+    clean = url.split("?", 1)[0]
+    for prefix, dir_fn, sub in _AUDIO_URL_DIRS:
+        if not clean.startswith(prefix):
+            continue
+        fname = clean[len(prefix):]
+        if not fname or "/" in fname or ".." in fname:
+            return None
+        p = dir_fn() / fname
+        if p.exists():
+            return p
+        if sub and object_storage.is_enabled():
+            try:
+                data = await object_storage.fetch_mp3(f"{sub}/{fname}")
+                if data:
+                    p.parent.mkdir(parents=True, exist_ok=True)
+                    p.write_bytes(data)
+                    return p
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"[bedmix] fetch storage {sub}/{fname}: {e}")
+        return None
+    return None
+
+
+async def _bed_for_speaker(dj_name: Optional[str]) -> Optional[str]:
+    """URL del loop: 1) loop/bed agganciato allo speaker · 2) bed attivo (universale o
+    agganciato a questo speaker) · 3) None → voce così com'è."""
+    name = (dj_name or "").strip()
+    if name:
+        rx = {"$regex": f"^{re.escape(name)}$", "$options": "i"}
+        t = await db.tracks.find_one({"is_loop": True, "loop_bind_speaker": rx, "deleted_at": None, "audio_url": {"$ne": None}}, {"_id": 0, "audio_url": 1})
+        if t:
+            return t["audio_url"]
+        b = await db.beds.find_one({"loop_bind_speaker": rx, "audio_url": {"$ne": None}}, {"_id": 0, "audio_url": 1})
+        if b:
+            return b["audio_url"]
+    st = await db.station.find_one({"_id": "state"}, {"active_bed_url": 1}) or {}
+    active = st.get("active_bed_url") or None
+    if not active:
+        return None
+    bound = None
+    doc = await db.beds.find_one({"audio_url": active}, {"_id": 0, "loop_bind_speaker": 1}) \
+        or await db.tracks.find_one({"audio_url": active, "is_loop": True}, {"_id": 0, "loop_bind_speaker": 1})
+    if doc:
+        bound = (doc.get("loop_bind_speaker") or "").strip() or None
+    if bound and bound.lower() != name.lower():
+        return None
+    return active
+
+
+async def _bed_mix_voice(voice_url: str, bed_url: str) -> Optional[str]:
+    """Mixa voce+loop con ffmpeg (cache per coppia). Ritorna il nuovo URL o None."""
+    if not shutil.which("ffmpeg"):
+        return None
+    key = hashlib.sha1(f"{voice_url.split('?')[0]}|{bed_url.split('?')[0]}|v1".encode()).hexdigest()[:24]
+    out = BEDMIX_DIR / f"mix_{key}.mp3"
+    url = f"/api/bedmix/{out.name}"
+    if out.exists():
+        return url
+    lock = _BEDMIX_LOCKS.setdefault(out.name, asyncio.Lock())
+    async with lock:
+        if out.exists():
+            return url
+        vpath = await _audio_local_file(voice_url)
+        bpath = await _audio_local_file(bed_url)
+        if not vpath or not bpath:
+            logger.info(f"[bedmix] sorgenti non disponibili (voice={bool(vpath)} bed={bool(bpath)}) → voce senza bed")
+            return None
+        probe = await video_service.probe_video(str(vpath))
+        dur = float((probe or {}).get("duration_sec") or 0)
+        if dur <= 0.5:
+            return None
+        fade_out_start = max(0.0, dur - _BEDMIX_FADE_OUT)
+        fc = (
+            "[0:a]aformat=sample_rates=44100:channel_layouts=stereo,asplit=2[v][sc];"
+            f"[1:a]aformat=sample_rates=44100:channel_layouts=stereo,volume={_BEDMIX_VOLUME},"
+            f"afade=t=in:st=0:d={_BEDMIX_FADE_IN},afade=t=out:st={fade_out_start:.3f}:d={_BEDMIX_FADE_OUT}[b];"
+            "[b][sc]sidechaincompress=threshold=0.015:ratio=8:attack=40:release=700:makeup=1[bd];"
+            "[v][bd]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[out]"
+        )
+        tmp = str(out) + ".part.mp3"
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "ffmpeg", "-y", "-nostdin", "-v", "error", "-i", str(vpath), "-stream_loop", "-1", "-i", str(bpath),
+                "-filter_complex", fc, "-map", "[out]", "-t", f"{dur:.3f}",
+                "-ar", "44100", "-ac", "2", "-c:a", "libmp3lame", "-b:a", "192k", "-f", "mp3", tmp,
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+            _, err = await asyncio.wait_for(proc.communicate(), timeout=_BEDMIX_TIMEOUT)
+            if proc.returncode != 0 or not os.path.exists(tmp) or os.path.getsize(tmp) < 1000:
+                logger.warning(f"[bedmix] ffmpeg fallito: {err.decode(errors='ignore')[:300]}")
+                try: os.remove(tmp)
+                except OSError: pass
+                return None
+            os.replace(tmp, out)
+        except asyncio.TimeoutError:
+            logger.warning("[bedmix] ffmpeg timeout → voce senza bed")
+            try: proc.kill()
+            except Exception: pass
+            return None
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[bedmix] errore: {e}")
+            return None
+        if object_storage.is_enabled():
+            try:
+                await object_storage.put_mp3(f"bedmix/{out.name}", out.read_bytes())
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"[bedmix] upload storage: {e}")
+        logger.info(f"[bedmix] voce {voice_url} + bed {bed_url} → {url} ({dur:.1f}s)")
+        return url
+
+
+async def _bed_mix_item(item: Optional[dict], dj_name: Optional[str] = None) -> Optional[dict]:
+    """Applica il bed a un elemento-voce della coda (durata invariata). Fail-safe: ritorna l'item com'è."""
+    if not item or not item.get("audio_url") or item.get("bed_mixed") or item.get("is_dj_jingle"):
+        return item
+    try:
+        bed = await _bed_for_speaker(dj_name or item.get("dj_name") or item.get("artist"))
+        if not bed:
+            return item
+        mixed = await _bed_mix_voice(item["audio_url"], bed)
+        if not mixed:
+            return item
+        return {**item, "audio_url": mixed, "voice_audio_url": item["audio_url"], "bed_url": bed, "bed_mixed": True}
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[bedmix] skip: {e}")
+        return item
+
+
+
 @api_router.get("/suno_audio/{filename}")
 async def get_suno_audio(filename: str, request: Request):
     """Serve Suno MP3s. Local cache priority; on miss stream direttamente dal
@@ -7792,6 +7973,7 @@ async def _appointment_resolve(doc: dict) -> Optional[dict]:
     if cfg.get("dj_present") and doc.get("dj_id"):
         intro = await _appointment_dj_intro(doc, cfg, track)
         if intro:
+            intro = await _bed_mix_item(intro, intro.get("dj_name"))  # v13.56
             chain.append(intro)
     chain.append(track)
     if cfg.get("jingle_after"):
@@ -8056,6 +8238,10 @@ async def _timeline_pick_due() -> Optional[dict]:
     }
     if _appt_entry_kind:
         entry["kind"] = _appt_entry_kind  # jingle / talk / music → LedWall mode corretto
+    # v13.56 · Evento Timeline con voce DJ (rubrica/inserto/pillola generati con dj_id) → bed sotto la voce
+    if doc.get("dj_id") and doc.get("kind") not in ("jingle", "time_signal", "ora_esatta", "ad", "ad_break", "appointment") \
+            and str(entry.get("audio_url") or "").startswith(("/api/tts/", "/api/audio/")):
+        entry = await _bed_mix_item(entry, doc.get("dj_name"))
     # v13.32 · AD_BREAK — quando l'evento matura, espandi al volo il cluster
     # [intro]+[N spot]+[outro] e ritorna la PRIMA entry, incatenando le altre
     # via `follow_up` a cascata (zero-gap). Se non ci sono spot, marchia come
@@ -10190,6 +10376,7 @@ async def _clock_refill_queue():
             if _demo_on and demo_counter >= demo_target:
                 picked = await _clock_pick_demo_voice(exclude_ids=_queued_ids)
                 if picked:
+                    picked = await _bed_mix_item(picked)  # v13.56 · bed sotto la voce demo
                     demo_slot_filled = True
                     demo_counter = 0
                     demo_target = random.randint(_demo["demo_every_min"], _demo["demo_every_max"])
@@ -10210,6 +10397,7 @@ async def _clock_refill_queue():
                 # secondo il proprio ritmo, invece di essere sempre scavalcata.
                 picked = await _clock_pick_dj_voice_segment()
                 if picked:
+                    picked = await _bed_mix_item(picked)  # v13.56 · bed sotto la voce (server-side)
                     dj_slot_filled = True
             # Ticket #247410 (parte 2): need_jingle/need_fx devono dipendere
             # dall'ESITO reale del turno DJ (dj_slot_filled), non dal solo
