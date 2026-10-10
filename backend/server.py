@@ -348,6 +348,8 @@ class Track(BaseModel):
     # v13.44 · MATRICE TEMPORALE UNIVERSALE · v13.49 · 6 fasce:
     #   always 24h | morning 06-11 | afternoon 11-19 | day 06-19 | evening 19-22 | night 22-04
     broadcast_slot: Literal["always", "morning", "afternoon", "day", "evening", "night"] = "always"
+    broadcast_slots: Optional[List[str]] = None       # v13.57 · fasce multiple (OR)
+    broadcast_custom: Optional[dict] = None            # v13.57 · {"from","to","from_min","to_min","wrap"} si aggiunge alle fasce
     is_billboard: bool = False            # v13.44 · spot "billboard" (upload libero, senza contratto)
     # v12.14 · Archivio Pro + Beat Detection
     # NOTE: this is intentionally a SEPARATE field from `genre` above — `genre`
@@ -1453,18 +1455,60 @@ async def admin_assets_zip_download(token: str):
 # ----------------------- Admin: Upload MP3 (Master Plan #1) -----------------------
 @api_router.patch("/admin/tracks/{track_id}/broadcast-slot")
 async def admin_track_broadcast_slot(track_id: str, payload: dict):
-    """v13.49 · MATRICE TEMPORALE a 6 fasce (vedi BROADCAST_SLOTS)."""
-    slot = (payload.get("slot") or "").strip().lower()
-    if slot not in BROADCAST_SLOTS:
-        raise HTTPException(400, "slot deve essere uno di: " + "|".join(BROADCAST_SLOTS))
-    r = await db.tracks.update_one({"id": track_id}, {"$set": {"broadcast_slot": slot, "updated_at": now_iso()}})
+    """v13.49 · 6 fasce · v13.57 · selezione MULTIPLA (`slots: [...]`) + range personalizzato
+    (`custom: {"from":"HH:MM","to":"HH:MM"} | null`, si AGGIUNGE alle fasce)."""
+    upd: dict = {}
+    if "slots" in payload:
+        upd.update(_broadcast_slots_set(payload.get("slots")))
+    elif payload.get("slot"):
+        slot = (payload.get("slot") or "").strip().lower()
+        if slot not in BROADCAST_SLOTS:
+            raise HTTPException(400, "slot deve essere uno di: " + "|".join(BROADCAST_SLOTS))
+        upd.update(_broadcast_slots_set([slot]))
+    if "custom" in payload:
+        upd["broadcast_custom"] = _broadcast_custom_parse(payload.get("custom"))
+    if not upd:
+        raise HTTPException(400, "slots/slot/custom richiesti")
+    upd["updated_at"] = now_iso()
+    r = await db.tracks.update_one({"id": track_id}, {"$set": upd})
     if r.matched_count == 0:
         raise HTTPException(404, "traccia non trovata")
-    return {"ok": True, "id": track_id, "broadcast_slot": slot}
+    return {"ok": True, "id": track_id, **upd}
 
 
 BROADCAST_SLOTS = ("always", "morning", "afternoon", "day", "evening", "night")
 TRACK_KIND_FLAGS = ("is_jingle", "is_anthem", "is_loop", "is_spot", "is_fx")
+
+
+def _broadcast_slots_set(raw) -> dict:
+    """Normalizza la lista fasce (vuota → ['always']); tiene allineato il legacy `broadcast_slot`."""
+    slots = []
+    for s in (raw or []):
+        s = str(s).strip().lower()
+        if s not in BROADCAST_SLOTS:
+            raise HTTPException(400, "fascia non valida: " + s)
+        if s not in slots:
+            slots.append(s)
+    if not slots:
+        slots = ["always"]
+    return {"broadcast_slots": slots, "broadcast_slot": "always" if "always" in slots else slots[0]}
+
+
+def _hhmm_to_min(v) -> int:
+    m = re.fullmatch(r"(\d{1,2}):(\d{2})", str(v or "").strip())
+    if not m or int(m.group(1)) > 24 or int(m.group(2)) > 59:
+        raise HTTPException(400, "orario non valido (HH:MM)")
+    return (int(m.group(1)) * 60 + int(m.group(2))) % 1440
+
+
+def _broadcast_custom_parse(raw) -> Optional[dict]:
+    """{'from':'12:00','to':'23:00'} → {from,to,from_min,to_min,wrap}. None/vuoto → None."""
+    if not raw or not isinstance(raw, dict) or not (raw.get("from") and raw.get("to")):
+        return None
+    f, t = _hhmm_to_min(raw["from"]), _hhmm_to_min(raw["to"])
+    if f == t:
+        raise HTTPException(400, "l'orario personalizzato deve avere inizio e fine diversi")
+    return {"from": f"{f // 60:02d}:{f % 60:02d}", "to": f"{t // 60:02d}:{t % 60:02d}", "from_min": f, "to_min": t, "wrap": f > t}
 
 
 def _broadcast_slots_active(hour: int) -> list:
@@ -1479,10 +1523,24 @@ def _broadcast_slots_active(hour: int) -> list:
     return out
 
 
+def _broadcast_query(now_local: datetime) -> dict:
+    """v13.57 · Filtro motore: nessuna info → ok · fasce multiple (∩ attive) · legacy slot ·
+    range personalizzato (anche a cavallo di mezzanotte). Le condizioni sono in OR: basta una."""
+    active = _broadcast_slots_active(now_local.hour)
+    nowm = now_local.hour * 60 + now_local.minute
+    return {"$or": [
+        {"broadcast_slots": {"$exists": False}, "broadcast_slot": {"$exists": False}},
+        {"broadcast_slots": {"$in": active}},
+        {"$or": [{"broadcast_slots": {"$exists": False}}, {"broadcast_slots": {"$size": 0}}], "broadcast_slot": {"$in": active}},
+        {"broadcast_custom.wrap": False, "broadcast_custom.from_min": {"$lte": nowm}, "broadcast_custom.to_min": {"$gt": nowm}},
+        {"broadcast_custom.wrap": True, "$or": [{"broadcast_custom.from_min": {"$lte": nowm}}, {"broadcast_custom.to_min": {"$gt": nowm}}]},
+    ]}
+
+
 @api_router.patch("/admin/tracks/{track_id}/meta")
 async def admin_track_meta(track_id: str, payload: dict):
     """v13.49 · Archivio Controllo Totale: modifica nome / artista / categoria
-    (song|jingle|anthem|loop|spot|fx). Solo metadati, nessun impatto sull'audio."""
+    (song|jingle|anthem|loop|spot|fx) · v13.57 · + broadcast_slots (lista) e broadcast_custom."""
     upd: dict = {}
     title = (payload.get("title") or "").strip()
     artist = (payload.get("artist") or "").strip()
@@ -1495,6 +1553,10 @@ async def admin_track_meta(track_id: str, payload: dict):
         for f in TRACK_KIND_FLAGS:
             upd[f] = (f == f"is_{kind}")
         upd["kind"] = kind
+    if "broadcast_slots" in payload:
+        upd.update(_broadcast_slots_set(payload.get("broadcast_slots")))
+    if "broadcast_custom" in payload:
+        upd["broadcast_custom"] = _broadcast_custom_parse(payload.get("broadcast_custom"))
     if not upd:
         raise HTTPException(400, "nessun campo da aggiornare")
     upd["updated_at"] = now_iso()
@@ -1519,7 +1581,7 @@ async def admin_tracks_searchable():
          "loop_bind_speaker": 1, "submitted_by": 1,
          "spot_start_date": 1, "spot_end_date": 1, "spot_frequency_per_hour": 1,
          "duration_sec": 1, "on_air": 1, "genre_category": 1, "bpm": 1, "bpm_source": 1,
-         "daypart_day": 1, "daypart_night": 1, "is_night_jingle": 1, "broadcast_slot": 1, "is_billboard": 1,
+         "daypart_day": 1, "daypart_night": 1, "is_night_jingle": 1, "broadcast_slot": 1, "broadcast_slots": 1, "broadcast_custom": 1, "is_billboard": 1,
          "audio_url": 1, "created_at": 1},
     ).sort("created_at", -1)
     docs = await cursor.to_list(length=2000)
@@ -1550,6 +1612,8 @@ async def admin_tracks_searchable():
             "spot_frequency_per_hour": t.get("spot_frequency_per_hour"),
             "daypart_day": t.get("daypart_day") if t.get("daypart_day") is not None else True,
             "broadcast_slot": t.get("broadcast_slot") or "always",
+            "broadcast_slots": t.get("broadcast_slots") or [t.get("broadcast_slot") or "always"],
+            "broadcast_custom": t.get("broadcast_custom"),
             "is_billboard": bool(t.get("is_billboard")),
             "daypart_night": t.get("daypart_night") if t.get("daypart_night") is not None else True,
             "is_night_jingle": bool(t.get("is_night_jingle")),
@@ -9658,7 +9722,7 @@ async def _clock_pick_track(exclude_ids: Optional[set] = None) -> Optional[dict]
         now_local = datetime.now(timezone.utc)
     is_night = (now_local.hour >= 22 or now_local.hour < 4)
     # v13.49 · MATRICE TEMPORALE a 6 fasce (always/morning/afternoon/day/evening/night)
-    _slot_q = {"$or": [{"broadcast_slot": {"$exists": False}}, {"broadcast_slot": {"$in": _broadcast_slots_active(now_local.hour)}}]}
+    _slot_q = _broadcast_query(now_local)  # v13.57 · fasce multiple + range personalizzato
     dp = ({"$or": [{"daypart_night": {"$ne": False}}, {"daypart_night": {"$exists": False}}]}
           if is_night else
           {"$or": [{"daypart_day": {"$ne": False}}, {"daypart_day": {"$exists": False}}]})

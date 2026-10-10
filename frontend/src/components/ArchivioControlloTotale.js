@@ -22,6 +22,9 @@ export const BROADCAST_SLOTS = [
   { k: "always",    label: "SEMPRE",     hours: "24h",   col: "#80FFB4" },
 ];
 const slotLabel = (k) => { const s = BROADCAST_SLOTS.find((x) => x.k === k); return s ? `${s.label} ${s.hours}` : k; };
+const trackSlots = (t) => (Array.isArray(t.broadcast_slots) && t.broadcast_slots.length ? t.broadcast_slots : [t.broadcast_slot || "always"]);
+const sameList = (a, b) => a.length === b.length && a.every((x) => b.includes(x));
+const customLabel = (c) => (c && c.from && c.to ? `⏱ ${c.from}–${c.to}` : "");
 
 const KINDS = [
   { k: "song",   label: "Canzone", cls: "bg-pink-500/15 text-pink-300" },
@@ -46,7 +49,8 @@ const downloadUrl = (id) => `${backend}/api/suno_audio/track_${id}.mp3`;
 const short = (id) => (id || "").slice(0, 8);
 
 const setOnAir = (id, on) => { const fd = new FormData(); fd.append("on_air", on ? "true" : "false"); return api.post(`/admin/tracks/${id}/on-air`, fd); };
-const setSlot = (id, slot) => api.patch(`/admin/tracks/${id}/broadcast-slot`, { slot });
+const setSlots = (id, slots) => api.patch(`/admin/tracks/${id}/broadcast-slot`, { slots });
+const setCustom = (id, custom) => api.patch(`/admin/tracks/${id}/broadcast-slot`, { custom });
 const setMeta = (id, body) => api.patch(`/admin/tracks/${id}/meta`, body);
 
 /* ─── Toggle grande ON/OFF ─── */
@@ -65,12 +69,14 @@ function OnAirToggle({ on, busy, onChange, id }) {
 
 /* ─── 6 fasce orarie, una sola attiva ─── */
 function SlotPicker({ value, busy, onPick, id, size = "sm" }) {
+  const list = Array.isArray(value) && value.length ? value : ["always"];
+  const toggle = (k) => { const next = list.includes(k) ? list.filter((x) => x !== k) : [...list, k]; onPick(next.length ? next : ["always"]); };
   return (
-    <div className="flex gap-1 flex-wrap shrink-0" data-testid={`act-slot-group-${short(id)}`} title="Fascia oraria: quando il motore può mandare in onda questo brano">
+    <div className="flex gap-1 flex-wrap shrink-0" data-testid={`act-slot-group-${short(id)}`} title="Fasce orarie (selezione multipla): il brano va in onda in tutte le fasce accese">
       {BROADCAST_SLOTS.map((s) => {
-        const on = (value || "always") === s.k;
+        const on = list.includes(s.k);
         return (
-          <button key={s.k} type="button" onClick={() => onPick(s.k)} disabled={busy} data-testid={`act-slot-${s.k}-${short(id)}`}
+          <button key={s.k} type="button" onClick={() => toggle(s.k)} disabled={busy} data-testid={`act-slot-${s.k}-${short(id)}`}
             className={`rounded font-mono font-bold leading-tight ${size === "lg" ? "px-3 py-2 text-xs" : "px-1.5 py-1 text-[9px]"}`}
             style={on ? { background: s.col, color: "#000", boxShadow: `0 0 8px ${s.col}88` } : { border: `1px solid ${s.col}55`, color: s.col, opacity: 0.8 }}
             title={`${s.label} (${s.hours})`}>
@@ -78,6 +84,34 @@ function SlotPicker({ value, busy, onPick, id, size = "sm" }) {
           </button>
         );
       })}
+    </div>
+  );
+}
+
+/* ─── Orario personalizzato (si aggiunge alle fasce) ─── */
+function CustomRange({ value, busy, onSave, id }) {
+  const [open, setOpen] = useState(false);
+  const [from, setFrom] = useState(value?.from || "");
+  const [to, setTo] = useState(value?.to || "");
+  useEffect(() => { setFrom(value?.from || ""); setTo(value?.to || ""); }, [value]);
+  const sid = short(id);
+  if (!open) {
+    return (
+      <button type="button" onClick={() => setOpen(true)} disabled={busy} data-testid={`act-custom-${sid}`} title="Orario personalizzato (dalle–alle), si aggiunge alle fasce"
+        className="px-1.5 py-1 rounded font-mono text-[9px] font-bold shrink-0"
+        style={value ? { background: "#7DD3FC", color: "#000" } : { border: "1px solid rgba(125,211,252,0.45)", color: "#7DD3FC", opacity: 0.85 }}>
+        {value ? customLabel(value) : "⏱ ORARIO"}
+      </button>
+    );
+  }
+  return (
+    <div className="flex items-center gap-1 shrink-0" data-testid={`act-custom-editor-${sid}`}>
+      <input type="time" value={from} onChange={(e) => setFrom(e.target.value)} className="bg-black/60 border border-white/10 rounded px-1 py-0.5 text-[11px] text-white" data-testid={`act-custom-from-${sid}`} />
+      <span className="text-[10px] text-zinc-500">–</span>
+      <input type="time" value={to} onChange={(e) => setTo(e.target.value)} className="bg-black/60 border border-white/10 rounded px-1 py-0.5 text-[11px] text-white" data-testid={`act-custom-to-${sid}`} />
+      <button type="button" disabled={busy || !from || !to} onClick={() => { onSave({ from, to }); setOpen(false); }} data-testid={`act-custom-save-${sid}`} className="px-1.5 py-0.5 rounded text-[10px] font-bold text-black" style={{ background: "#7DD3FC" }}>OK</button>
+      {value && <button type="button" disabled={busy} onClick={() => { onSave(null); setOpen(false); }} data-testid={`act-custom-clear-${sid}`} className="px-1.5 py-0.5 rounded text-[10px] border border-red-400/50 text-red-300">rimuovi</button>}
+      <button type="button" onClick={() => setOpen(false)} data-testid={`act-custom-cancel-${sid}`} className="px-1 py-0.5 rounded text-[10px] text-zinc-400">✕</button>
     </div>
   );
 }
@@ -107,7 +141,8 @@ function DeleteConfirm({ track, onCancel, onConfirm, busy }) {
 function EditPanel({ track, onCancel, onSaved }) {
   const [f, setF] = useState({
     title: track.title || "", artist: track.artist || "", kind: track.kind || "song",
-    genre_category: track.genre_category || "", bpm: track.bpm || "", broadcast_slot: track.broadcast_slot || "always",
+    genre_category: track.genre_category || "", bpm: track.bpm || "", broadcast_slots: trackSlots(track),
+    custom_from: track.broadcast_custom?.from || "", custom_to: track.broadcast_custom?.to || "",
     on_air: track.on_air !== false, daypart_day: track.daypart_day !== false, daypart_night: track.daypart_night !== false,
     is_night_jingle: !!track.is_night_jingle,
   });
@@ -123,7 +158,11 @@ function EditPanel({ track, onCancel, onSaved }) {
     if ((f.genre_category || null) !== (track.genre_category || null)) ops.push(endpoints.trackSetGenre(track.id, f.genre_category || null));
     const bpmV = f.bpm === "" ? null : parseInt(f.bpm, 10);
     if (bpmV !== (track.bpm || null)) ops.push(endpoints.trackSetBpm(track.id, bpmV, "manual"));
-    if (f.broadcast_slot !== (track.broadcast_slot || "always")) ops.push(setSlot(track.id, f.broadcast_slot));
+    const curCustom = track.broadcast_custom || null;
+    const newCustom = f.custom_from && f.custom_to ? { from: f.custom_from, to: f.custom_to } : null;
+    const customChanged = (curCustom?.from || "") !== (newCustom?.from || "") || (curCustom?.to || "") !== (newCustom?.to || "");
+    if (!sameList(f.broadcast_slots, trackSlots(track)) || customChanged)
+      ops.push(setMeta(track.id, { broadcast_slots: f.broadcast_slots, broadcast_custom: newCustom }));
     if (f.on_air !== (track.on_air !== false)) ops.push(setOnAir(track.id, f.on_air));
     if (f.daypart_day !== (track.daypart_day !== false) || f.daypart_night !== (track.daypart_night !== false))
       ops.push(endpoints.trackDaypart(track.id, f.daypart_day, f.daypart_night));
@@ -166,8 +205,15 @@ function EditPanel({ track, onCancel, onSaved }) {
             <input type="number" min={40} max={220} value={f.bpm} onChange={(e) => up("bpm", e.target.value)} placeholder="—" className={inp} data-testid="act-edit-bpm" /></label>
         </div>
         <div className="mt-4">
-          <div className="text-xs text-zinc-400 mb-1.5">Fascia oraria</div>
-          <SlotPicker value={f.broadcast_slot} onPick={(k) => up("broadcast_slot", k)} id={track.id + "-edit"} size="lg" />
+          <div className="text-xs text-zinc-400 mb-1.5">Fasce orarie (puoi accenderne più di una)</div>
+          <SlotPicker value={f.broadcast_slots} onPick={(v) => up("broadcast_slots", v)} id={track.id + "-edit"} size="lg" />
+          <div className="flex items-center gap-2 mt-3 text-xs text-zinc-400 flex-wrap">
+            <span>Orario personalizzato (facoltativo, si aggiunge alle fasce):</span>
+            <input type="time" value={f.custom_from} onChange={(e) => up("custom_from", e.target.value)} className="w-28 bg-black/60 border border-white/10 rounded px-2 py-1.5 text-sm text-white" data-testid="act-edit-custom-from" />
+            <span>–</span>
+            <input type="time" value={f.custom_to} onChange={(e) => up("custom_to", e.target.value)} className="w-28 bg-black/60 border border-white/10 rounded px-2 py-1.5 text-sm text-white" data-testid="act-edit-custom-to" />
+            {(f.custom_from || f.custom_to) && <button type="button" onClick={() => { up("custom_from", ""); up("custom_to", ""); }} className="text-[10px] text-red-300 border border-red-400/40 rounded px-1.5 py-0.5" data-testid="act-edit-custom-clear">rimuovi</button>}
+          </div>
         </div>
         <div className="mt-4 flex flex-wrap items-center gap-5">
           <OnAirToggle on={f.on_air} onChange={() => up("on_air", !f.on_air)} id={track.id + "-edit"} />
@@ -221,7 +267,7 @@ function TrackRow({ t, selected, onSelect, previewing, onPreview, onEdit, onDele
           {t.is_pending_approval && <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-amber-500/15 text-amber-300 shrink-0">⏳ approvazione</span>}
         </div>
         <div className="text-[10px] text-zinc-500 font-mono truncate">
-          {t.artist} · {sid} · {t.duration_sec ? Math.floor(t.duration_sec) + "s" : "?"}{t.bpm ? ` · ${t.bpm} BPM` : ""} · <span className="text-cyan-300/80">{slotLabel(t.broadcast_slot || "always")}</span>
+          {t.artist} · {sid} · {t.duration_sec ? Math.floor(t.duration_sec) + "s" : "?"}{t.bpm ? ` · ${t.bpm} BPM` : ""} · <span className="text-cyan-300/80">{trackSlots(t).map(slotLabel).join(" + ")}{t.broadcast_custom ? ` + ${customLabel(t.broadcast_custom)}` : ""}</span>
         </div>
       </div>
 
@@ -229,8 +275,10 @@ function TrackRow({ t, selected, onSelect, previewing, onPreview, onEdit, onDele
       <OnAirToggle on={isOn} id={t.id} busy={busyKey === `on-${t.id}`}
         onChange={() => run(`on-${t.id}`, () => setOnAir(t.id, !isOn), !isOn ? "Brano ON · in diretta" : "Brano OFF · sospeso, il motore lo ignora")} />
       {/* 2 · FASCIA */}
-      <SlotPicker value={t.broadcast_slot} id={t.id} busy={busyKey?.startsWith(`slot-${t.id}`)}
-        onPick={(k) => k !== (t.broadcast_slot || "always") && run(`slot-${t.id}`, () => setSlot(t.id, k), `${t.title}: ${slotLabel(k)}`)} />
+      <SlotPicker value={trackSlots(t)} id={t.id} busy={busyKey?.startsWith(`slot-${t.id}`)}
+        onPick={(v) => !sameList(v, trackSlots(t)) && run(`slot-${t.id}`, () => setSlots(t.id, v), `${t.title}: ${v.map(slotLabel).join(" + ")}`)} />
+      <CustomRange value={t.broadcast_custom || null} id={t.id} busy={busyKey === `custom-${t.id}`}
+        onSave={(c) => run(`custom-${t.id}`, () => setCustom(t.id, c), c ? `${t.title}: orario ${c.from}–${c.to} aggiunto` : `${t.title}: orario personalizzato rimosso`)} />
       {/* 3 · MATITA */}
       <button type="button" onClick={onEdit} data-testid={`act-edit-${sid}`} title="Modifica (richiede approvazione)"
         className="inline-flex items-center justify-center w-8 h-8 rounded-full bg-cyan-500/15 border border-cyan-400/50 text-cyan-200 hover:bg-cyan-500/30 transition">

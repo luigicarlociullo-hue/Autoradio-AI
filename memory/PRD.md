@@ -806,3 +806,9 @@ Vedi turni precedenti in questa sessione:
 - `_bed_mix_item(item, dj_name)`: hook in `_clock_refill_queue` (turno DJ e turno Demo), `_timeline_pick_due` (eventi con dj_id, audio /api/tts|/api/audio, esclusi jingle/time_signal/ad/ad_break/appointment), `_appointment_resolve` (intro DJ). `duration_sec` invariato → sync/buffer/recovery player intatti. `is_dj_jingle` e item già mixati esclusi.
 - `_audio_local_file(url)`: resolve locale + fetch da storage per /api/tts|suno_audio|community_audio|audio|beds|bedmix.
 - Verifica in-process con voce reale + bed attivo preview: mix 1.0s, durata identica, cache hit, servito 200/206. Nota: molti vecchi tts dei segmenti non esistono né in locale né in storage (già scartati a monte dal probe).
+
+## v13.57 · FASCE MULTIPLE + ORARIO PERSONALIZZATO (2026-10-10)
+- Track: `broadcast_slots: [..]` (OR tra fasce) + `broadcast_custom: {from,to,from_min,to_min,wrap}` (si AGGIUNGE alle fasce, anche a cavallo di mezzanotte). Legacy `broadcast_slot` mantenuto allineato ("always" se presente, altrimenti prima fascia); lista vuota → ["always"].
+- Endpoint: `PATCH /admin/tracks/{id}/broadcast-slot` accetta `slots` (lista), `slot` (legacy), `custom` ({from,to}|null); `PATCH /meta` accetta `broadcast_slots`, `broadcast_custom`. Searchable espone entrambi.
+- Motore: `_broadcast_query(now_local)` sostituisce `_slot_q` in `_clock_pick_track` (query principale + fallback): nessuna info → ok · slots ∩ attive · legacy slot · custom (wrap/non-wrap). Verificato in-process su 8 orari con 6 tracce di prova (rimosse).
+- Frontend Archivio: SlotPicker multi-toggle, chip "⏱ ORARIO" per riga con editor inline (dalle–alle, OK/rimuovi), EditPanel con fasce multiple + orario personalizzato (APPROVA E SALVA).
