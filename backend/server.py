@@ -3466,6 +3466,181 @@ async def clear_segments():
     return {"ok": True}
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# v13.55 · SEGMENTI VOCALI DJ (Magazzino) — gestione dei db.segments con
+# speech_audio_url: lista/filtri, modifica titolo+testo, sostituzione audio da
+# upload, eliminazione (sempre confermata lato UI), doppioni, copia nei Jingle.
+# Nessuna generazione audio. Player e /api/stream non toccati.
+# ═══════════════════════════════════════════════════════════════════════════
+_VSEG_PROJ = {"_id": 0, "id": 1, "kind": 1, "dj_id": 1, "dj_name": 1, "voice_key": 1, "title": 1, "script": 1,
+              "spoken_text": 1, "speech_audio_url": 1, "duration_sec": 1, "created_at": 1, "audio_replaced_at": 1}
+
+
+def _vseg_text(s: dict) -> str:
+    return (s.get("spoken_text") or s.get("script") or "").strip()
+
+
+def _vseg_local_path(url: str) -> Optional[Path]:
+    """Path locale (se esiste) di un speech_audio_url /api/tts/* o /api/audio/*."""
+    if not url:
+        return None
+    fname = url.split("?")[0].rsplit("/", 1)[-1]
+    if url.startswith("/api/tts/"):
+        return elevenlabs_service.tts_path(fname)
+    if url.startswith("/api/audio/"):
+        return audio_path(fname)
+    return None
+
+
+@api_router.get("/admin/segments/voice")
+async def admin_voice_segments(dj: Optional[str] = None, kind: Optional[str] = None, q: Optional[str] = None,
+                               date_from: Optional[str] = None, date_to: Optional[str] = None,
+                               limit: int = 200, offset: int = 0):
+    match: dict = {"speech_audio_url": {"$ne": None}}
+    if dj:
+        match["dj_name"] = dj
+    if kind:
+        match["kind"] = kind
+    if date_from:
+        match.setdefault("created_at", {})["$gte"] = date_from
+    if date_to:
+        match.setdefault("created_at", {})["$lte"] = date_to + ("T23:59:59" if len(date_to) == 10 else "")
+    if q and q.strip():
+        rx = {"$regex": re.escape(q.strip()), "$options": "i"}
+        match["$or"] = [{"title": rx}, {"script": rx}, {"spoken_text": rx}]
+    limit = max(1, min(500, limit))
+    total = await db.segments.count_documents(match)
+    items = await db.segments.find(match, _VSEG_PROJ).sort("created_at", -1).skip(max(0, offset)).limit(limit).to_list(limit)
+    base = {"speech_audio_url": {"$ne": None}}
+    djs = await db.segments.distinct("dj_name", base)
+    kinds = await db.segments.distinct("kind", base)
+    return {"items": items, "total": total, "offset": offset, "limit": limit,
+            "djs": sorted(d for d in djs if d), "kinds": sorted(k for k in kinds if k)}
+
+
+@api_router.get("/admin/segments/voice/duplicates")
+async def admin_voice_segments_duplicates():
+    """Gruppi di segmenti con lo stesso testo (maiuscole/punteggiatura ignorate), anche con voci diverse."""
+    groups: dict = {}
+    async for s in db.segments.find({"speech_audio_url": {"$ne": None}}, _VSEG_PROJ):
+        key = _normalize_question(_vseg_text(s))
+        if len(key) < 8:
+            continue
+        groups.setdefault(key, []).append(s)
+    out = [{"key": k, "text": _vseg_text(v[0]), "count": len(v), "items": sorted(v, key=lambda x: x.get("created_at") or "")}
+           for k, v in groups.items() if len(v) > 1]
+    out.sort(key=lambda g: -g["count"])
+    return {"groups": out, "duplicate_segments": sum(g["count"] - 1 for g in out)}
+
+
+@api_router.patch("/admin/segments/voice/{seg_id}")
+async def admin_voice_segment_patch(seg_id: str, payload: dict):
+    upd: dict = {}
+    if "title" in payload:
+        t = (payload.get("title") or "").strip()
+        if not t:
+            raise HTTPException(400, "titolo vuoto")
+        upd["title"] = t[:200]
+    if "text" in payload:
+        txt = (payload.get("text") or "").strip()
+        if not txt:
+            raise HTTPException(400, "testo vuoto")
+        upd["script"] = txt[:5000]
+        upd["spoken_text"] = txt[:5000]
+    if not upd:
+        raise HTTPException(400, "nessun campo da aggiornare")
+    upd["updated_at"] = now_iso()
+    r = await db.segments.update_one({"id": seg_id, "speech_audio_url": {"$ne": None}}, {"$set": upd})
+    if r.matched_count == 0:
+        raise HTTPException(404, "segmento non trovato")
+    return {"ok": True, "id": seg_id, **upd}
+
+
+@api_router.post("/admin/segments/voice/{seg_id}/audio")
+async def admin_voice_segment_replace_audio(seg_id: str, file: UploadFile = File(...)):
+    """Sostituisce il file voce con un upload dell'utente (mp3/wav). Nessuna sintesi."""
+    seg = await db.segments.find_one({"id": seg_id, "speech_audio_url": {"$ne": None}}, _VSEG_PROJ)
+    if not seg:
+        raise HTTPException(404, "segmento non trovato")
+    data = await file.read()
+    if not data or len(data) < 1000:
+        raise HTTPException(400, "file audio vuoto o troppo piccolo")
+    if len(data) > 40 * 1024 * 1024:
+        raise HTTPException(413, "file troppo grande (max 40 MB)")
+    ext = (Path(file.filename or "").suffix or ".mp3").lower()
+    if ext not in (".mp3", ".wav", ".m4a", ".ogg"):
+        raise HTTPException(400, "formato ammesso: mp3, wav, m4a, ogg")
+    fname = f"tts_user_{uuid.uuid4().hex[:20]}{ext}"
+    tts_dir = elevenlabs_service.tts_dir()
+    tts_dir.mkdir(parents=True, exist_ok=True)
+    (tts_dir / fname).write_bytes(data)
+    if object_storage.is_enabled():
+        stored = await object_storage.put_bytes(f"tts/{fname}", data, "audio/mpeg" if ext == ".mp3" else "application/octet-stream")
+        if not stored:
+            logger.warning(f"[voice-seg] upload Object Storage fallito per {fname} (resta la copia locale)")
+    url = f"/api/tts/{fname}"
+    dur = await _probe_tts_duration(url) or seg.get("duration_sec")
+    await db.segments.update_one({"id": seg_id}, {"$set": {
+        "speech_audio_url": url, "previous_speech_audio_url": seg["speech_audio_url"],
+        "duration_sec": round(float(dur), 2) if dur else seg.get("duration_sec"),
+        "audio_replaced_at": now_iso(), "updated_at": now_iso()}})
+    return {"ok": True, "id": seg_id, "speech_audio_url": url, "duration_sec": dur}
+
+
+@api_router.post("/admin/segments/voice/delete")
+async def admin_voice_segments_delete(payload: dict):
+    """Elimina 1..N segmenti (la conferma è obbligatoria lato UI). Il file locale viene
+    rimosso solo se nessun altro segmento/traccia lo referenzia; Object Storage intatto."""
+    ids = [i for i in (payload.get("ids") or []) if isinstance(i, str)]
+    if not ids:
+        raise HTTPException(400, "ids mancanti")
+    segs = await db.segments.find({"id": {"$in": ids}}, {"_id": 0, "id": 1, "speech_audio_url": 1}).to_list(len(ids))
+    r = await db.segments.delete_many({"id": {"$in": [s["id"] for s in segs]}})
+    files_removed = 0
+    for s in segs:
+        url = s.get("speech_audio_url")
+        if not url:
+            continue
+        still = await db.segments.count_documents({"speech_audio_url": url}) or await db.tracks.count_documents({"audio_url": url})
+        if still:
+            continue
+        p = _vseg_local_path(url)
+        try:
+            if p and p.exists():
+                p.unlink()
+                files_removed += 1
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[voice-seg] unlink {p}: {e}")
+    logger.info(f"[voice-seg] eliminati {r.deleted_count} segmenti, {files_removed} file locali")
+    return {"ok": True, "deleted": r.deleted_count, "files_removed": files_removed}
+
+
+@api_router.post("/admin/segments/voice/{seg_id}/copy-to-jingle")
+async def admin_voice_segment_copy_to_jingle(seg_id: str, payload: dict = None):
+    """Crea un Jingle nel Magazzino che riusa lo stesso file audio del segmento (nessuna copia/generazione)."""
+    seg = await db.segments.find_one({"id": seg_id, "speech_audio_url": {"$ne": None}}, _VSEG_PROJ)
+    if not seg:
+        raise HTTPException(404, "segmento non trovato")
+    payload = payload or {}
+    title = (payload.get("title") or seg.get("title") or "Jingle vocale").strip()[:200]
+    url = seg["speech_audio_url"]
+    dur = await _probe_tts_duration(url) or float(seg.get("duration_sec") or 0) or 10.0
+    now = now_iso()
+    track = Track(
+        title=title, artist=seg.get("dj_name") or "R-A.I.", genre="voice_segment", mood="jingle",
+        lyrics_excerpt=_vseg_text(seg)[:300], duration_sec=round(float(dur), 3), real_duration_sec=round(float(dur), 3),
+        llm_provider="segment_copy", cover_seed=seg_id[:8], audio_url=url, downloaded_at=now, source="admin_upload",
+        is_jingle=True, include_in_rotation=True, on_air=True, status="ready",
+    )
+    doc = track.model_dump()
+    doc.update({"tags": ["vocale", seg.get("kind") or "talk"], "is_seed": False, "rotation_weight": 1.0,
+                "last_played_at": None, "updated_at": now, "from_segment_id": seg_id})
+    await db.tracks.insert_one(doc)
+    doc.pop("_id", None)
+    logger.info(f"[voice-seg] copia nei Jingle: segmento {seg_id} → track {doc['id']}")
+    return {"ok": True, "track": {k: doc[k] for k in ("id", "title", "artist", "audio_url", "duration_sec")}}
+
+
 # ----------------------- Questions -----------------------
 # Multi-brain router (v12.4): domande classificate per topic e inoltrate a
 # DJ diversi con modelli LLM specifici via Universal Key.

@@ -174,7 +174,11 @@ export default function SyncLivePlayer() {
 
   // Deriva rispetto al clock del server, corretta SOLO con il playbackRate (mai con un seek):
   // atteso = server_time - live_delay; sentito = hls.playingDate (PROGRAM-DATE-TIME del segnale
-  // che sta suonando). In ritardo di oltre 2s -> 1.04x, in anticipo -> 0.96x (si "tiene"), altrimenti 1x.
+  // che sta suonando).
+  // Ticket Android "stonatura": il vecchio 1.04x/0.96x senza isteresi oscillava (rallenta/accelera)
+  // e su Android il ±4% si sente come stonatura. Ora: correzione lieve (±1.5%) con pitch preservato,
+  // parte solo oltre 3s di deriva e torna a 1x solo sotto 0.5s (niente ping-pong).
+  const rateModeRef = useRef(0);   // -1 rallenta, 0 normale, +1 accelera
   const driftCorrect = (d) => {
     const hls = hlsRef.current;
     const audio = audioRef.current;
@@ -182,7 +186,43 @@ export default function SyncLivePlayer() {
     const expected = new Date(d.server_time).getTime() - (Number(d.live_delay_sec) || 0) * 1000;
     const drift = (expected - hls.playingDate.getTime()) / 1000;   // >0 = siamo indietro
     if (Math.abs(drift) > 120) return;    // incoerente (cambio finestra / pod addormentato): non toccare
-    audio.playbackRate = drift > 2 ? 1.04 : drift < -2 ? 0.96 : 1;
+    let mode = rateModeRef.current;
+    if (Math.abs(drift) < 0.5) mode = 0;
+    else if (drift > 3) mode = 1;
+    else if (drift < -3) mode = -1;
+    else if ((mode === 1 && drift < 0) || (mode === -1 && drift > 0)) mode = 0;  // superato lo zero
+    rateModeRef.current = mode;
+    try { audio.preservesPitch = true; audio.webkitPreservesPitch = true; } catch {}
+    const rate = mode === 1 ? 1.015 : mode === -1 ? 0.985 : 1;
+    if (audio.playbackRate !== rate) audio.playbackRate = rate;
+  };
+
+  // Coda riscritta in testa (segnale orario, talk DJ, evento Timeline inseriti DAVANTI a brani gia'
+  // pubblicati nella playlist): hls.js ha gia' scaricato i brani VECCHI per quegli stessi numeri di
+  // sequenza -> timeline incoerente -> silenzio a fine brano. Se un elemento nuovo compare PRIMA di
+  // uno gia' annunciato, resync immediato (stesso effetto di Esci/Entra), invece di aspettare lo stallo.
+  const queueSigRef = useRef(null);
+  const detectQueueRewrite = (d) => {
+    const ids = [d?.current, ...(d?.next || [])]
+      .map((t) => t?.id || t?.audio_url)
+      .filter(Boolean);
+    const prev = queueSigRef.current;
+    queueSigRef.current = ids;
+    const audio = audioRef.current;
+    if (!prev || !hlsRef.current || !audio || audio.paused) return;
+    const prevSet = new Set(prev);
+    let seenNew = false;
+    for (const id of ids) {
+      if (!prevSet.has(id)) { seenNew = true; continue; }
+      if (seenNew) {
+        const w = watchRef.current;
+        if (Date.now() - w.lastResync < 20000) return;
+        console.warn("[SyncLive] coda riscritta in testa, resync automatico");
+        w.lastResync = Date.now();
+        startSync(true).catch(() => {});
+        return;
+      }
+    }
   };
 
   // Poll /api/stream/now ogni 5s per il display "cosa sta suonando" + coda
@@ -194,12 +234,59 @@ export default function SyncLivePlayer() {
         setNowInfo(d.current || null);
         setNextQueue(d.next || []);
         driftCorrect(d);
+        detectQueueRewrite(d);
       } catch {}
     };
     fetchNow();
     nowPollRef.current = setInterval(fetchNow, 5000);
     return () => clearInterval(nowPollRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Watchdog Sync Live (ticket Android "silenzio dopo 3-4 brani"): a un cambio brano hls.js puo'
+  // restare fermo senza errore fatale, oppure Android sospende l'AudioContext a cui e' collegato
+  // l'<audio> (createMediaElementSource) -> UI "sincronizzato" ma nessun suono. Ogni 2s:
+  //  (a) AudioContext sospeso/interrotto -> resume();
+  //  (b) currentTime fermo da >=8s mentre non in pausa -> resync automatico (= Esci/Entra manuale).
+  const watchRef = useRef({ last: -1, stuckSince: 0, lastResync: 0 });
+  useEffect(() => {
+    if (status !== "playing") return undefined;
+    watchRef.current = { last: -1, stuckSince: 0, lastResync: watchRef.current.lastResync };
+    const resumeCtx = () => {
+      const ctx = radioEngine.audioCtx;
+      if (ctx && ctx.state !== "running" && ctx.state !== "closed") {
+        ctx.resume().catch(() => {});
+      }
+    };
+    const onVisible = () => { if (document.visibilityState === "visible") resumeCtx(); };
+    document.addEventListener("visibilitychange", onVisible);
+    const iv = setInterval(() => {
+      const a = audioRef.current;
+      if (!a) return;
+      resumeCtx();
+      if (a.paused) { watchRef.current.stuckSince = 0; return; }   // pausa volontaria (lock screen ecc.)
+      const now = Date.now();
+      const w = watchRef.current;
+      if (Math.abs(a.currentTime - w.last) > 0.05) {
+        w.last = a.currentTime;
+        w.stuckSince = 0;
+        return;
+      }
+      if (!w.stuckSince) { w.stuckSince = now; return; }
+      if (now - w.stuckSince >= 8000 && now - w.lastResync >= 20000) {
+        console.warn("[SyncLive] watchdog: riproduzione ferma da 8s, resync automatico");
+        w.lastResync = now;
+        w.stuckSince = 0;
+        w.last = -1;
+        startSync(true).catch(() => {});
+      }
+    }, 2000);
+    return () => {
+      clearInterval(iv);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status]);
 
   // Ticket #247410: lo Skip admin avanza il clock lato server (station_clock)
   // ma, se gia' in ascolto, hls.js continua a suonare dal buffer gia'

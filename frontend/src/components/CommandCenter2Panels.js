@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
 import { toast } from "sonner";
+import VoiceSegmentsPanel from "./VoiceSegmentsPanel";
 import { Radio, Upload, Trash2, RotateCcw, Music, Film, Video } from "lucide-react";
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -346,6 +347,7 @@ export function MagazzinoUniversale({ embedded = false }) {
     { k: "video", label: `📤 Upload MP3/MP4 (${videos.length})`, color: "#FFB84D" },
     { k: "trash", label: `🗑️ Cestino (${trash.length})`, color: "#FF6BAA" },
     { k: "voice", label: `🎙️ Vocali (${voice.length})`, color: "#D080FF" },
+    { k: "segments", label: "🗣️ Segmenti vocali DJ", color: "#D080FF" },
   ].filter((t) => !(embedded && t.k === "audio"));
 
   return (
@@ -580,6 +582,8 @@ export function MagazzinoUniversale({ embedded = false }) {
         </div>
       )}
 
+      {/* v13.55 · Segmenti vocali DJ (db.segments con speech_audio_url) */}
+      {tab === "segments" && <VoiceSegmentsPanel />}
       {tab === "voice" && (
         <div className="max-h-[420px] overflow-y-auto space-y-1" data-testid="magazzino-list-voice">
           {voice.map((v) => (
