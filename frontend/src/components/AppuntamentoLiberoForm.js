@@ -24,6 +24,7 @@ const emptyForm = () => {
     max_duration_sec: "", jingle_before_id: "", jingle_after_id: "",
     source: "disco_del_giorno", fixed_track_id: "", suno_genre: "", suno_mood: "", suno_lang: "it", suno_lead_minutes: 20,
     dj_id: "", dj_comment: "",
+    video_url: "",   // LedWall durante l'appuntamento: "" | "fx:effects" | url video
   };
 };
 const inp = "w-full bg-black/60 border border-white/10 rounded px-2 py-1.5 text-sm text-white";
@@ -53,6 +54,7 @@ export default function AppuntamentoLiberoForm({ sources = [], djs = [], onCreat
   const [presets, setPresets] = useState([]);
   const [presetName, setPresetName] = useState("");
   const [status, setStatus] = useState({ suno: null, talk: null, community: null });
+  const [videos, setVideos] = useState([]);
   const up = (k, v) => setF((s) => ({ ...s, [k]: v }));
 
   const loadPresets = useCallback(() => api.get("/admin/timeline/presets").then((r) => setPresets(r.data?.items || [])).catch(() => {}), []);
@@ -60,6 +62,7 @@ export default function AppuntamentoLiberoForm({ sources = [], djs = [], onCreat
     loadPresets();
     api.get("/admin/ai-controls").then((r) => setStatus((s) => ({ ...s, suno: !!r.data?.controls?.ai_suno_engine, talk: !!r.data?.controls?.ai_openai_talk }))).catch(() => {});
     api.get("/community/wall").then((r) => setStatus((s) => ({ ...s, community: (r.data?.tracks || []).length }))).catch(() => {});
+    api.get("/admin/ledwall/videos").then((r) => setVideos(r.data?.videos || [])).catch(() => {});
   }, [loadPresets]);
 
   const jingles = useMemo(() => sources.filter((t) => (t.kind === "jingle" || t.kind === "appointment_jingle" || t.is_appointment_jingle) && t.audio_url)
@@ -84,7 +87,7 @@ export default function AppuntamentoLiberoForm({ sources = [], djs = [], onCreat
     if (!f.recurring && !f.when) return toast.error("Imposta data e ora");
     setBusy(true);
     try {
-      const base = { kind: "appointment", title: f.name || undefined, dj_id: f.dj_id || undefined, appointment: appointmentPayload(), duration_sec: f.max_duration_sec ? Number(f.max_duration_sec) : undefined };
+      const base = { kind: "appointment", title: f.name || undefined, dj_id: f.dj_id || undefined, appointment: appointmentPayload(), duration_sec: f.max_duration_sec ? Number(f.max_duration_sec) : undefined, video_url: f.video_url || undefined };
       if (f.recurring) {
         const freq = Math.max(1, Number(f.rr_freq_value) || 1) * (f.rr_freq_unit === "hours" ? 60 : 1);
         const r = await api.post("/admin/timeline/rrule", { ...base, rrule: {
@@ -200,6 +203,16 @@ export default function AppuntamentoLiberoForm({ sources = [], djs = [], onCreat
               </div>
             )}
           </div>
+
+          {/* LedWall durante l'appuntamento (stesse opzioni dell'override eventi) */}
+          <label className="text-xs block"><span className={lbl}>🖥️ LedWall durante l'appuntamento (facoltativo)</span>
+            <select value={f.video_url} onChange={(e) => up("video_url", e.target.value)} className={inp} data-testid="appt-video">
+              <option value="">— nessuno (mantieni default LedWall) —</option>
+              <optgroup label="🎆 Effetti Visuali (FX)"><option value="fx:effects">Effetti audio-reattivi</option></optgroup>
+              <optgroup label="🎬 Video caricati">
+                {videos.map((v) => <option key={v.id} value={v.url}>{v.display_name} ({Math.round((v.size || 0) / 1024 / 1024)}MB)</option>)}
+              </optgroup>
+            </select></label>
 
           {/* 6 · DJ */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-xs">

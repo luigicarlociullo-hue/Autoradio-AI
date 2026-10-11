@@ -818,3 +818,6 @@ Vedi turni precedenti in questa sessione:
 - Esclusa dalla rotazione: `_clock_pick_track` (query principale + fallback), Power Play fallback (12454), legacy palinsesto queries (3021/3039), `_APPT_MUSIC_FLAGS`. Non è `is_jingle` → mai nel picker jingle di rotazione.
 - Frontend: `assetCategory` → "appointment_jingle", chip "SIGLE APPUNTAMENTI" in ASSET_CATEGORIES (Magazzino + AssetPicker Timeline pre/post-jingle e follow-up), TrackModal pulsante "✨ Sigla Appuntamenti", Archivio KINDS/filtro, AppuntamentoLiberoForm jingle picker include le sigle (in testa, prefisso ✨).
 - Verifica: upload reale (poi rimossa), flags/kind corretti, 20 pick di rotazione senza la sigla, meta switch ok.
+
+## v13.59 · Appuntamento Libero · campo LedWall (2026-10-11)
+- `AppuntamentoLiberoForm.js`: select "🖥️ LedWall durante l'appuntamento" (nessuno / fx:effects / video da /admin/ledwall/videos) → `video_url` in POST /admin/timeline e /admin/timeline/rrule; incluso nei modelli (payload form). Nessuna modifica backend. Verificato via curl: video_url salvato su evento singolo e template rrule (poi rimossi).
