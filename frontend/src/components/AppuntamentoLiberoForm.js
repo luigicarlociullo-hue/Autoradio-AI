@@ -30,24 +30,24 @@ const emptyForm = () => {
 const inp = "w-full bg-black/60 border border-white/10 rounded px-2 py-1.5 text-sm text-white";
 const lbl = "label-mono block mb-1 text-zinc-400";
 
-function PickTrack({ list, value, onChange, placeholder, testid }) {
+function PickTrack({ list, value, onChange, placeholder, testid, onRefresh }) {
   const [q, setQ] = useState("");
   const shown = useMemo(() => {
     const s = q.trim().toLowerCase();
-    return list.filter((t) => !s || (t.title || "").toLowerCase().includes(s) || (t.artist || "").toLowerCase().includes(s)).slice(0, 300);
+    return list.filter((t) => !s || (t.title || "").toLowerCase().includes(s) || (t.artist || "").toLowerCase().includes(s)).slice(0, 1000);
   }, [list, q]);
   return (
     <div className="flex gap-1 min-w-0">
       <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="cerca…" className="w-24 shrink-0 bg-black/60 border border-white/10 rounded px-2 py-1.5 text-sm text-white" data-testid={`${testid}-search`} />
-      <select value={value} onChange={(e) => onChange(e.target.value)} className={`${inp} flex-1 min-w-0`} data-testid={testid}>
+      <select value={value} onChange={(e) => onChange(e.target.value)} onFocus={() => onRefresh && onRefresh()} className={`${inp} flex-1 min-w-0`} data-testid={testid}>
         <option value="">{placeholder}</option>
-        {shown.map((t) => <option key={t.id} value={t.id}>{t.kind === "appointment_jingle" ? "✨ " : ""}{t.title}{t.artist ? ` · ${t.artist}` : ""}{t.duration_sec ? ` (${Math.round(t.duration_sec)}s)` : ""}</option>)}
+        {shown.map((t) => <option key={t.id} value={t.id}>{t.kind === "appointment_jingle" || t.is_appointment_jingle ? "✨ " : (t.kind && t.kind !== "jingle" ? `[${t.kind}] ` : "")}{t.title}{t.artist ? ` · ${t.artist}` : ""}{t.duration_sec ? ` (${Math.round(t.duration_sec)}s)` : ""}</option>)}
       </select>
     </div>
   );
 }
 
-export default function AppuntamentoLiberoForm({ sources = [], djs = [], onCreated }) {
+export default function AppuntamentoLiberoForm({ sources = [], djs = [], onCreated, onRefreshSources }) {
   const [f, setF] = useState(emptyForm);
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState(true);
@@ -65,8 +65,9 @@ export default function AppuntamentoLiberoForm({ sources = [], djs = [], onCreat
     api.get("/admin/ledwall/videos").then((r) => setVideos(r.data?.videos || [])).catch(() => {});
   }, [loadPresets]);
 
-  const jingles = useMemo(() => sources.filter((t) => (t.kind === "jingle" || t.kind === "appointment_jingle" || t.is_appointment_jingle) && t.audio_url)
-    .sort((a, b) => (a.kind === "appointment_jingle" ? 0 : 1) - (b.kind === "appointment_jingle" ? 0 : 1)), [sources]);
+  // #247410 · pre/post: TUTTI i file audio del Magazzino — prima le Sigle Appuntamenti, poi i jingle, poi il resto
+  const _rank = (t) => (t.kind === "appointment_jingle" || t.is_appointment_jingle ? 0 : t.kind === "jingle" ? 1 : 2);
+  const jingles = useMemo(() => sources.filter((t) => t.audio_url).sort((a, b) => _rank(a) - _rank(b)), [sources]);
   const songs = useMemo(() => sources.filter((t) => (t.kind === "song" || !t.kind) && t.audio_url), [sources]);
   const byId = (id) => sources.find((t) => t.id === id);
   const jingleSpec = (id) => { const t = byId(id); return t ? { audio_url: t.audio_url, title: t.title, artist: t.artist, duration_sec: Math.max(1, Math.round(t.duration_sec || 10)) } : null; };
@@ -180,8 +181,8 @@ export default function AppuntamentoLiberoForm({ sources = [], djs = [], onCreat
           {/* 3-4 · Durata + jingle */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-xs">
             <label><span className={lbl}>Durata max brano (sec, facoltativa)</span><input type="number" min={5} value={f.max_duration_sec} onChange={(e) => up("max_duration_sec", e.target.value)} placeholder="intero" className={inp} data-testid="appt-duration" /></label>
-            <label><span className={lbl}>Jingle PRIMA (facoltativo)</span><PickTrack list={jingles} value={f.jingle_before_id} onChange={(v) => up("jingle_before_id", v)} placeholder="— nessuno —" testid="appt-jingle-before" /></label>
-            <label><span className={lbl}>Jingle DOPO (facoltativo, accodato)</span><PickTrack list={jingles} value={f.jingle_after_id} onChange={(v) => up("jingle_after_id", v)} placeholder="— nessuno —" testid="appt-jingle-after" /></label>
+            <label><span className={lbl}>Sigla / jingle PRIMA (facoltativo)</span><PickTrack list={jingles} value={f.jingle_before_id} onChange={(v) => up("jingle_before_id", v)} placeholder="— nessuno —" testid="appt-jingle-before" onRefresh={onRefreshSources} /></label>
+            <label><span className={lbl}>Sigla / jingle DOPO (facoltativo, accodato)</span><PickTrack list={jingles} value={f.jingle_after_id} onChange={(v) => up("jingle_after_id", v)} placeholder="— nessuno —" testid="appt-jingle-after" onRefresh={onRefreshSources} /></label>
           </div>
 
           {/* 5 · Sorgente */}
@@ -206,7 +207,7 @@ export default function AppuntamentoLiberoForm({ sources = [], djs = [], onCreat
 
           {/* LedWall durante l'appuntamento (stesse opzioni dell'override eventi) */}
           <label className="text-xs block"><span className={lbl}>🖥️ LedWall durante l'appuntamento (facoltativo)</span>
-            <select value={f.video_url} onChange={(e) => up("video_url", e.target.value)} className={inp} data-testid="appt-video">
+            <select value={f.video_url} onChange={(e) => up("video_url", e.target.value)} onFocus={() => api.get("/admin/ledwall/videos").then((r) => setVideos(r.data?.videos || [])).catch(() => {})} className={inp} data-testid="appt-video">
               <option value="">— nessuno (mantieni default LedWall) —</option>
               <optgroup label="🎆 Effetti Visuali (FX)"><option value="fx:effects">Effetti audio-reattivi</option></optgroup>
               <optgroup label="🎬 Video caricati">

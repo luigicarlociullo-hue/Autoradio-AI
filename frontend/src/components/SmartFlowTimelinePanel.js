@@ -537,7 +537,7 @@ export default function SmartFlowTimelinePanel() {
 
       {/* v13.22 · REGIA CONFIG UNIVERSALE — barra in cima */}
       {/* v13.54 · APPUNTAMENTO LIBERO — form separato, ogni parametro facoltativo */}
-      <AppuntamentoLiberoForm sources={sources} djs={djs} onCreated={() => loadEvents("pending")} />
+      <AppuntamentoLiberoForm sources={sources} djs={djs} onCreated={() => loadEvents("pending")} onRefreshSources={loadSources} />
       <div
         className="rounded-lg p-3 mb-4 space-y-2"
         style={{ background: "rgba(255,184,77,0.06)", border: "1px solid rgba(255,184,77,0.30)" }}
