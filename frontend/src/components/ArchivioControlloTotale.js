@@ -33,11 +33,12 @@ const KINDS = [
   { k: "loop",   label: "🌀 Loop", cls: "bg-indigo-500/15 text-indigo-300" },
   { k: "spot",   label: "💰 Spot", cls: "bg-amber-500/15 text-amber-300" },
   { k: "fx",     label: "⚡ FX",   cls: "bg-fuchsia-500/15 text-fuchsia-300" },
+  { k: "appointment_jingle", label: "✨ Sigla Appuntamenti", cls: "bg-pink-500/15 text-pink-300" },
 ];
 const CATEGORY_FILTERS = [
   { k: "all", label: "TUTTI" }, { k: "song", label: "MUSICA" }, { k: "jingle", label: "JINGLE" },
   { k: "spot", label: "SPOT" }, { k: "loop", label: "BASI (LOOP)" }, { k: "fx", label: "FX" },
-  { k: "anthem", label: "INNO" }, { k: "pending", label: "⏳ APPROVAZIONE" },
+  { k: "anthem", label: "INNO" }, { k: "appointment_jingle", label: "SIGLE APPUNTAMENTI" }, { k: "pending", label: "⏳ APPROVAZIONE" },
 ];
 const GENRES = [
   { k: "all", label: "Tutti" }, { k: "pop", label: "Pop" }, { k: "rock", label: "Rock" }, { k: "hiphop", label: "Hip Hop" },

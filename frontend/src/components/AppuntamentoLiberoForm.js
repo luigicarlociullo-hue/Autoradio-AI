@@ -40,7 +40,7 @@ function PickTrack({ list, value, onChange, placeholder, testid }) {
       <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="cerca…" className={`${inp} w-24 shrink-0`} data-testid={`${testid}-search`} />
       <select value={value} onChange={(e) => onChange(e.target.value)} className={inp} data-testid={testid}>
         <option value="">{placeholder}</option>
-        {shown.map((t) => <option key={t.id} value={t.id}>{t.title}{t.artist ? ` · ${t.artist}` : ""}{t.duration_sec ? ` (${Math.round(t.duration_sec)}s)` : ""}</option>)}
+        {shown.map((t) => <option key={t.id} value={t.id}>{t.kind === "appointment_jingle" ? "✨ " : ""}{t.title}{t.artist ? ` · ${t.artist}` : ""}{t.duration_sec ? ` (${Math.round(t.duration_sec)}s)` : ""}</option>)}
       </select>
     </div>
   );
@@ -62,7 +62,8 @@ export default function AppuntamentoLiberoForm({ sources = [], djs = [], onCreat
     api.get("/community/wall").then((r) => setStatus((s) => ({ ...s, community: (r.data?.tracks || []).length }))).catch(() => {});
   }, [loadPresets]);
 
-  const jingles = useMemo(() => sources.filter((t) => t.kind === "jingle" && t.audio_url), [sources]);
+  const jingles = useMemo(() => sources.filter((t) => (t.kind === "jingle" || t.kind === "appointment_jingle" || t.is_appointment_jingle) && t.audio_url)
+    .sort((a, b) => (a.kind === "appointment_jingle" ? 0 : 1) - (b.kind === "appointment_jingle" ? 0 : 1)), [sources]);
   const songs = useMemo(() => sources.filter((t) => (t.kind === "song" || !t.kind) && t.audio_url), [sources]);
   const byId = (id) => sources.find((t) => t.id === id);
   const jingleSpec = (id) => { const t = byId(id); return t ? { audio_url: t.audio_url, title: t.title, artist: t.artist, duration_sec: Math.max(1, Math.round(t.duration_sec || 10)) } : null; };

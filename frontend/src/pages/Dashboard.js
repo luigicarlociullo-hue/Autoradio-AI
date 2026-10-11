@@ -1895,6 +1895,18 @@ function TrackModal({ mode, target, onClose, onDone }) {
                   📣 Billboard (libero)
                 </button>
                 <button
+                  data-testid="modal-kind-appointment-jingle"
+                  onClick={() => setKind("appointment_jingle")}
+                  title="Sigla Appuntamenti: mai in rotazione casuale, nessun contratto; selezionabile come pre/post-jingle in Timeline"
+                  className={`py-2 rounded border font-mono text-xs uppercase transition ${
+                    kind === "appointment_jingle"
+                      ? "border-pink-400 text-pink-300 bg-pink-500/10"
+                      : "border-white/10 text-zinc-400"
+                  }`}
+                >
+                  ✨ Sigla Appuntamenti
+                </button>
+                <button
                   data-testid="modal-kind-fx"
                   onClick={() => setKind("fx")}
                   className={`col-span-2 py-2 rounded border font-mono text-xs uppercase transition ${

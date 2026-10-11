@@ -202,6 +202,7 @@ export function LedWallMiniPreview() {
 // v13.44 · Cassetti magazzino: categoria derivata dai flag traccia
 export const assetCategory = (t) => {
   if (!t) return "music";
+  if (t.is_appointment_jingle || t.kind === "appointment_jingle") return "appointment_jingle";
   if (t.is_fx || t.kind === "fx") return "fx";
   if (t.is_loop || t.kind === "loop") return "loop";
   if (t.is_spot || t.is_billboard || t.kind === "spot" || t.kind === "billboard") return "spot";
@@ -213,6 +214,7 @@ export const ASSET_CATEGORIES = [
   { k: "all", label: "TUTTI" },
   { k: "music", label: "MUSICA" },
   { k: "jingle", label: "JINGLE" },
+  { k: "appointment_jingle", label: "SIGLE APPUNTAMENTI" },
   { k: "spot", label: "SPOT" },
   { k: "voice", label: "VOCALI" },
   { k: "loop", label: "BASI (LOOP)" },
@@ -336,6 +338,11 @@ export function MagazzinoUniversale({ embedded = false }) {
     try { await api.delete(`/admin/tracks/${id}/purge-trash`); toast.success("Eliminato definitivamente"); load(); }
     catch { toast.error("Errore"); }
   };
+  const trashTrack = async (id) => {
+    if (!window.confirm("Spostare questa traccia nel Cestino?")) return;
+    try { await api.delete(`/admin/tracks/${id}`); toast.success("Spostato nel Cestino"); load(); }
+    catch { toast.error("Errore eliminazione traccia"); }
+  };
   const deleteVideo = async (id) => {
     if (!window.confirm("Eliminare fisicamente il video dallo storage? Questa azione libera spazio e non è reversibile.")) return;
     try { await api.delete(`/admin/ledwall/videos/${id}`); toast.success("Video eliminato dallo storage"); load(); }
@@ -455,6 +462,10 @@ export function MagazzinoUniversale({ embedded = false }) {
                   );
                 })}
               </div>
+              <button type="button" onClick={() => trashTrack(t.id)} data-testid={`trash-audio-${t.id}`}
+                className="shrink-0 p-1 rounded hover:bg-white/10" title="Sposta nel Cestino">
+                <Trash2 className="w-3.5 h-3.5 text-red-400" />
+              </button>
             </div>
           ))}
           {tracks.length === 0 && <div className="text-zinc-500 text-sm py-8 text-center">Nessuna traccia</div>}

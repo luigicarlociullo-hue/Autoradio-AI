@@ -812,3 +812,9 @@ Vedi turni precedenti in questa sessione:
 - Endpoint: `PATCH /admin/tracks/{id}/broadcast-slot` accetta `slots` (lista), `slot` (legacy), `custom` ({from,to}|null); `PATCH /meta` accetta `broadcast_slots`, `broadcast_custom`. Searchable espone entrambi.
 - Motore: `_broadcast_query(now_local)` sostituisce `_slot_q` in `_clock_pick_track` (query principale + fallback): nessuna info → ok · slots ∩ attive · legacy slot · custom (wrap/non-wrap). Verificato in-process su 8 orari con 6 tracce di prova (rimosse).
 - Frontend Archivio: SlotPicker multi-toggle, chip "⏱ ORARIO" per riga con editor inline (dalle–alle, OK/rimuovi), EditPanel con fasce multiple + orario personalizzato (APPROVA E SALVA).
+
+## v13.58 · SIGLE APPUNTAMENTI (is_appointment_jingle) (2026-10-10)
+- Track flag `is_appointment_jingle`; upload `kind=appointment_jingle` (no contratto, `include_in_rotation=False`, is_jingle False); searchable kind "appointment_jingle"; meta kind ammesso (aggiorna include_in_rotation).
+- Esclusa dalla rotazione: `_clock_pick_track` (query principale + fallback), Power Play fallback (12454), legacy palinsesto queries (3021/3039), `_APPT_MUSIC_FLAGS`. Non è `is_jingle` → mai nel picker jingle di rotazione.
+- Frontend: `assetCategory` → "appointment_jingle", chip "SIGLE APPUNTAMENTI" in ASSET_CATEGORIES (Magazzino + AssetPicker Timeline pre/post-jingle e follow-up), TrackModal pulsante "✨ Sigla Appuntamenti", Archivio KINDS/filtro, AppuntamentoLiberoForm jingle picker include le sigle (in testa, prefisso ✨).
+- Verifica: upload reale (poi rimossa), flags/kind corretti, 20 pick di rotazione senza la sigla, meta switch ok.

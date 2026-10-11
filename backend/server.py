@@ -351,6 +351,7 @@ class Track(BaseModel):
     broadcast_slots: Optional[List[str]] = None       # v13.57 · fasce multiple (OR)
     broadcast_custom: Optional[dict] = None            # v13.57 · {"from","to","from_min","to_min","wrap"} si aggiunge alle fasce
     is_billboard: bool = False            # v13.44 · spot "billboard" (upload libero, senza contratto)
+    is_appointment_jingle: bool = False   # v13.58 · "Sigla Appuntamenti": mai in rotazione casuale, nessun contratto
     # v12.14 · Archivio Pro + Beat Detection
     # NOTE: this is intentionally a SEPARATE field from `genre` above — `genre`
     # holds the free-text descriptive genre (often with BPM, e.g. 'tech house
@@ -1477,7 +1478,7 @@ async def admin_track_broadcast_slot(track_id: str, payload: dict):
 
 
 BROADCAST_SLOTS = ("always", "morning", "afternoon", "day", "evening", "night")
-TRACK_KIND_FLAGS = ("is_jingle", "is_anthem", "is_loop", "is_spot", "is_fx")
+TRACK_KIND_FLAGS = ("is_jingle", "is_anthem", "is_loop", "is_spot", "is_fx", "is_appointment_jingle")
 
 
 def _broadcast_slots_set(raw) -> dict:
@@ -1548,10 +1549,11 @@ async def admin_track_meta(track_id: str, payload: dict):
     if title: upd["title"] = title[:200]
     if artist: upd["artist"] = artist[:120]
     if kind:
-        if kind not in ("song", "jingle", "anthem", "loop", "spot", "fx"):
-            raise HTTPException(400, "kind deve essere song|jingle|anthem|loop|spot|fx")
+        if kind not in ("song", "jingle", "anthem", "loop", "spot", "fx", "appointment_jingle"):
+            raise HTTPException(400, "kind deve essere song|jingle|anthem|loop|spot|fx|appointment_jingle")
         for f in TRACK_KIND_FLAGS:
             upd[f] = (f == f"is_{kind}")
+        upd["include_in_rotation"] = kind not in ("loop", "fx", "appointment_jingle")
         upd["kind"] = kind
     if "broadcast_slots" in payload:
         upd.update(_broadcast_slots_set(payload.get("broadcast_slots")))
@@ -1581,12 +1583,13 @@ async def admin_tracks_searchable():
          "loop_bind_speaker": 1, "submitted_by": 1,
          "spot_start_date": 1, "spot_end_date": 1, "spot_frequency_per_hour": 1,
          "duration_sec": 1, "on_air": 1, "genre_category": 1, "bpm": 1, "bpm_source": 1,
-         "daypart_day": 1, "daypart_night": 1, "is_night_jingle": 1, "broadcast_slot": 1, "broadcast_slots": 1, "broadcast_custom": 1, "is_billboard": 1,
+         "daypart_day": 1, "daypart_night": 1, "is_night_jingle": 1, "broadcast_slot": 1, "broadcast_slots": 1, "broadcast_custom": 1, "is_billboard": 1, "is_appointment_jingle": 1,
          "audio_url": 1, "created_at": 1},
     ).sort("created_at", -1)
     docs = await cursor.to_list(length=2000)
     for t in docs:
-        if t.get("is_anthem"): kind = "anthem"
+        if t.get("is_appointment_jingle"): kind = "appointment_jingle"
+        elif t.get("is_anthem"): kind = "anthem"
         elif t.get("is_jingle"): kind = "jingle"
         elif t.get("is_loop"): kind = "loop"
         elif t.get("is_spot"): kind = "spot"
@@ -1615,6 +1618,7 @@ async def admin_tracks_searchable():
             "broadcast_slots": t.get("broadcast_slots") or [t.get("broadcast_slot") or "always"],
             "broadcast_custom": t.get("broadcast_custom"),
             "is_billboard": bool(t.get("is_billboard")),
+            "is_appointment_jingle": bool(t.get("is_appointment_jingle")),
             "daypart_night": t.get("daypart_night") if t.get("daypart_night") is not None else True,
             "is_night_jingle": bool(t.get("is_night_jingle")),
         })
@@ -1653,8 +1657,10 @@ async def admin_tracks_upload(
     is_billboard = kind == "billboard"
     if is_billboard:
         kind = "spot"
-    if kind not in ("song", "jingle", "anthem", "loop", "spot", "fx"):
-        raise HTTPException(400, "kind deve essere song|jingle|anthem|loop|spot|fx|billboard")
+    # v13.58 · "appointment_jingle" = Sigla Appuntamenti: categoria propria, fuori rotazione, senza contratto
+    is_appointment_jingle = kind == "appointment_jingle"
+    if kind not in ("song", "jingle", "anthem", "loop", "spot", "fx", "appointment_jingle"):
+        raise HTTPException(400, "kind deve essere song|jingle|anthem|loop|spot|fx|billboard|appointment_jingle")
 
     data = await file.read()
     if not data or len(data) < 5_000:
@@ -1757,11 +1763,12 @@ async def admin_tracks_upload(
                 "is_loop": kind == "loop",
                 "is_spot": kind == "spot",
                 "is_billboard": is_billboard,
+                "is_appointment_jingle": is_appointment_jingle,
                 "is_fx": kind == "fx",
                 # Ticket #247410: loop/fx non vanno MAI nella rotazione automatica
                 # (motivo per cui esiste questo campo) — prima non veniva mai
                 # impostato all'upload, quindi restava True di default.
-                "include_in_rotation": kind not in ("loop", "fx"),
+                "include_in_rotation": kind not in ("loop", "fx", "appointment_jingle"),
                 "tags": merged_tags,
                 "updated_at": now,
                 # Ticket #247410: la durata del NUOVO file non veniva salvata in
@@ -1798,6 +1805,7 @@ async def admin_tracks_upload(
             id=track_id,
             title=title,
             is_billboard=is_billboard,
+            is_appointment_jingle=is_appointment_jingle,
             artist=artist,
             genre="admin_upload" if kind != "spot" else "sponsor_spot",
             mood="uploaded",
@@ -1815,7 +1823,7 @@ async def admin_tracks_upload(
             is_spot=(kind == "spot"),
             is_fx=(kind == "fx"),
             # Ticket #247410: default automatico coerente col path "replace" sopra.
-            include_in_rotation=(kind not in ("loop", "fx")),
+            include_in_rotation=(kind not in ("loop", "fx", "appointment_jingle")),
             is_pending_approval=pending,
             submitted_by=(submitted_by or None),
             loop_bind_speaker=(loop_bind_speaker or None) if kind == "loop" else None,
@@ -3019,6 +3027,7 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
                 "$and": [
                     {"$or": [{"is_anthem": {"$exists": False}}, {"is_anthem": False}]},
                     {"$or": [{"is_jingle": {"$exists": False}}, {"is_jingle": False}]},
+                    {"$or": [{"is_appointment_jingle": {"$exists": False}}, {"is_appointment_jingle": False}]},
                     _daypart_filter,
                 ],
             }
@@ -3029,6 +3038,7 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
                 "$or": [{"is_anthem": {"$exists": False}}, {"is_anthem": False}],
                 "priority": {"$ne": "high"},
                 "is_jingle": {"$ne": True},
+                "is_appointment_jingle": {"$ne": True},
                 "$and": [
                     {"$or": [{"rotation_weight": {"$exists": False}}, {"rotation_weight": {"$lte": 1}}]},
                     _daypart_filter,
@@ -7880,7 +7890,7 @@ async def _ts_guard_skip(doc: dict) -> Optional[str]:
 APPOINTMENT_SOURCES = ("disco_del_giorno", "umani_vs_algoritmo", "fixed")
 _APPT_MUSIC_FLAGS = [
     {"$or": [{f: {"$exists": False}}, {f: False}]}
-    for f in ("is_anthem", "is_jingle", "is_loop", "is_fx", "is_spot", "is_billboard")
+    for f in ("is_anthem", "is_jingle", "is_loop", "is_fx", "is_spot", "is_billboard", "is_appointment_jingle")
 ]
 
 
@@ -9641,6 +9651,16 @@ async def _clock_pick_dj_jingle(exclude_ids: Optional[set] = None) -> Optional[d
     audio brevi (10-25s) preregistrati con le voci Leo/Aria/Max — permettono
     di avere la voce dei DJ nel flusso HLS senza dipendere da TTS live."""
     _now_iso_s = datetime.now(timezone.utc).isoformat()
+    try:
+        from zoneinfo import ZoneInfo
+        _now_local = datetime.now(ZoneInfo("Europe/Rome"))
+    except Exception:
+        _now_local = datetime.now(timezone.utc)
+    # Ticket #247410: i jingle non rispettavano la MATRICE TEMPORALE
+    # (broadcast_slot/broadcast_slots) impostata in Magazzino — _clock_pick_track
+    # (canzoni) la applica da v13.49, questa funzione no: un jingle assegnato a
+    # "Mattina" continuava a suonare in qualsiasi fascia oraria.
+    _slot_q = _broadcast_query(_now_local)
     q = {
         "is_jingle": True, "status": "ready", "audio_url": {"$ne": None},
         "on_air": {"$ne": False}, "deleted_at": None,
@@ -9651,7 +9671,7 @@ async def _clock_pick_dj_jingle(exclude_ids: Optional[set] = None) -> Optional[d
         # dedupe lo sostituiva con un brano → cadenza "1 jingle ogni 1 brano" rotta.
         **({"id": {"$nin": [i for i in exclude_ids if i]}} if exclude_ids else {}),
         "$or": [{"start_date": {"$exists": False}}, {"start_date": None}, {"start_date": {"$lte": _now_iso_s}}],
-        "$and": [{"$or": [{"end_date": {"$exists": False}}, {"end_date": None}, {"end_date": {"$gte": _now_iso_s}}]}],
+        "$and": [{"$or": [{"end_date": {"$exists": False}}, {"end_date": None}, {"end_date": {"$gte": _now_iso_s}}]}, _slot_q],
     }
     tr = await db.tracks.find_one(q, {"_id": 0, "id": 1, "title": 1, "artist": 1,
                                        "audio_url": 1, "duration_sec": 1, "real_duration_sec": 1},
@@ -9766,6 +9786,7 @@ async def _clock_pick_track(exclude_ids: Optional[set] = None) -> Optional[dict]
             {"$or": [{"is_loop": {"$exists": False}}, {"is_loop": False}]},
             {"$or": [{"is_fx": {"$exists": False}}, {"is_fx": False}]},
             {"$or": [{"is_spot": {"$exists": False}}, {"is_spot": False}]},
+            {"$or": [{"is_appointment_jingle": {"$exists": False}}, {"is_appointment_jingle": False}]},
             {"$or": [{"include_in_rotation": {"$exists": False}}, {"include_in_rotation": {"$ne": False}}]},
             dp, _window, _window_end, _slot_q,
         ],
@@ -9790,6 +9811,7 @@ async def _clock_pick_track(exclude_ids: Optional[set] = None) -> Optional[dict]
                  {"$or": [{"is_loop": {"$exists": False}}, {"is_loop": False}]},
                  {"$or": [{"is_fx": {"$exists": False}}, {"is_fx": False}]},
                  {"$or": [{"is_spot": {"$exists": False}}, {"is_spot": False}]},
+                 {"$or": [{"is_appointment_jingle": {"$exists": False}}, {"is_appointment_jingle": False}]},
                  {"$or": [{"include_in_rotation": {"$exists": False}}, {"include_in_rotation": {"$ne": False}}]},
              ]},
             {"_id": 0, "id": 1, "title": 1, "artist": 1, "audio_url": 1, "duration_sec": 1, "real_duration_sec": 1, "bpm": 1},
@@ -12431,6 +12453,7 @@ async def _power_play_generate(source_hint: str = "auto") -> Optional[dict]:
              {"$or": [{"is_loop": {"$exists": False}}, {"is_loop": False}]},
              {"$or": [{"is_fx": {"$exists": False}}, {"is_fx": False}]},
              {"$or": [{"is_spot": {"$exists": False}}, {"is_spot": False}]},
+             {"$or": [{"is_appointment_jingle": {"$exists": False}}, {"is_appointment_jingle": False}]},
              {"$or": [{"include_in_rotation": {"$exists": False}}, {"include_in_rotation": {"$ne": False}}]},
              # Durata minima ragionevole per un Power Play (evita file di test da pochi secondi).
              {"$or": [{"duration_sec": {"$exists": False}}, {"duration_sec": {"$gte": 60}}]},
