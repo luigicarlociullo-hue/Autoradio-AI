@@ -1783,7 +1783,7 @@ function TrackModal({ mode, target, onClose, onDone }) {
       onClick={onClose}
     >
       <div
-        className="max-w-lg w-full bg-zinc-950 border border-white/10 rounded-xl p-6 shadow-2xl"
+        className="max-w-lg w-full max-h-[90vh] overflow-y-auto bg-zinc-950 border border-white/10 rounded-xl p-6 shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-4">

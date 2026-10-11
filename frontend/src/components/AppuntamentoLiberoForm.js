@@ -37,9 +37,9 @@ function PickTrack({ list, value, onChange, placeholder, testid }) {
     return list.filter((t) => !s || (t.title || "").toLowerCase().includes(s) || (t.artist || "").toLowerCase().includes(s)).slice(0, 300);
   }, [list, q]);
   return (
-    <div className="flex gap-1">
-      <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="cerca…" className={`${inp} w-24 shrink-0`} data-testid={`${testid}-search`} />
-      <select value={value} onChange={(e) => onChange(e.target.value)} className={inp} data-testid={testid}>
+    <div className="flex gap-1 min-w-0">
+      <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="cerca…" className="w-24 shrink-0 bg-black/60 border border-white/10 rounded px-2 py-1.5 text-sm text-white" data-testid={`${testid}-search`} />
+      <select value={value} onChange={(e) => onChange(e.target.value)} className={`${inp} flex-1 min-w-0`} data-testid={testid}>
         <option value="">{placeholder}</option>
         {shown.map((t) => <option key={t.id} value={t.id}>{t.kind === "appointment_jingle" ? "✨ " : ""}{t.title}{t.artist ? ` · ${t.artist}` : ""}{t.duration_sec ? ` (${Math.round(t.duration_sec)}s)` : ""}</option>)}
       </select>
