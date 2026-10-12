@@ -1530,9 +1530,12 @@ def _broadcast_query(now_local: datetime) -> dict:
     active = _broadcast_slots_active(now_local.hour)
     nowm = now_local.hour * 60 + now_local.minute
     return {"$or": [
-        {"broadcast_slots": {"$exists": False}, "broadcast_slot": {"$exists": False}},
+        # #247410 · `None` (non `$exists: False`): il modello Track salva broadcast_slots=null
+        # su ogni nuovo upload, e null non era trattato come "nessuna fascia" → i brani/jingle
+        # caricati dopo il 10/10 non venivano mai pescati.
+        {"broadcast_slots": None, "broadcast_slot": None},
         {"broadcast_slots": {"$in": active}},
-        {"$or": [{"broadcast_slots": {"$exists": False}}, {"broadcast_slots": {"$size": 0}}], "broadcast_slot": {"$in": active}},
+        {"$or": [{"broadcast_slots": None}, {"broadcast_slots": {"$size": 0}}], "broadcast_slot": {"$in": active}},
         {"broadcast_custom.wrap": False, "broadcast_custom.from_min": {"$lte": nowm}, "broadcast_custom.to_min": {"$gt": nowm}},
         {"broadcast_custom.wrap": True, "$or": [{"broadcast_custom.from_min": {"$lte": nowm}}, {"broadcast_custom.to_min": {"$gt": nowm}}]},
     ]}
