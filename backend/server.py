@@ -8183,6 +8183,17 @@ async def _timeline_pick_due() -> Optional[dict]:
     # il dedupe dei 10 minuti e il limite "stale" servono a fermare le rimaterializzazioni automatiche
     # (rrule/ricorrenze), non una richiesta esplicita. Segna comunque l'orario per non raddoppiare
     # con il segnale automatico subito dopo.
+    # #247410 · un appuntamento in ritardo di oltre 10 minuti non va piu' in onda (prima poteva
+    # partire fino a 2h dopo l'orario previsto).
+    if doc.get("kind") == "appointment":
+        try:
+            _sch = datetime.fromisoformat((doc.get("scheduled_at") or "").replace("Z", "+00:00"))
+            if (now - _sch) > timedelta(minutes=10):
+                await db.timeline_events.update_one({"id": doc.get("id")}, {"$set": {"status": "skipped_stale", "skip_reason": "appuntamento scaduto da oltre 10 minuti"}})
+                logger.warning(f"[appointment] {doc.get('id')} @ {doc.get('scheduled_at')} NON in onda: scaduto da oltre 10 minuti")
+                return await _timeline_pick_due()
+        except Exception:
+            pass
     _manual_one_off = (not doc.get("parent_id") and not doc.get("from_rrule")
                        and (doc.get("recurrence") or "none") == "none")
     if doc.get("kind") in ("ora_esatta", "time_signal") and _manual_one_off:
@@ -8799,8 +8810,12 @@ def _rrule_expand(rrule: dict, from_dt: datetime, to_dt: datetime, anchor_dt: Op
 
     out = []
     # Itera giorno per giorno all'interno di [max(from,sd), min(to,ed)]
-    day_from = max(from_dt, sd).astimezone(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-    day_to = to_dt.astimezone(timezone.utc)
+    # #247410 · ore/giorni della regola = ora ITALIANA (il form Regia e' in ora locale).
+    # Prima erano interpretate in UTC → ogni ricorrenza partiva 1-2h dopo l'orario impostato.
+    from zoneinfo import ZoneInfo as _ZI
+    _tz = _ZI("Europe/Rome")
+    day_from = max(from_dt, sd).astimezone(_tz).replace(hour=0, minute=0, second=0, microsecond=0)
+    day_to = to_dt.astimezone(_tz)
     if ed:
         day_to = min(day_to, ed)
     if day_from > day_to:
@@ -8844,6 +8859,7 @@ def _rrule_expand(rrule: dict, from_dt: datetime, to_dt: datetime, anchor_dt: Op
                             out.append(ts)
                         ts += timedelta(minutes=freq_min)
         day += timedelta(days=1)
+    out = [o.astimezone(timezone.utc) for o in out]
     return out[:1000]  # hard cap
 
 
@@ -8879,6 +8895,16 @@ async def _rrule_materialize_due(window_sec: int = 90):
 
 async def _rrule_materialize_template(tpl: dict, from_dt: datetime, to_dt: datetime, now: datetime):
     """Materializza le occorrenze di UN template nella finestra [from_dt, to_dt] (dedup parent_id+scheduled_at)."""
+    # #247410 · il recupero all'indietro (2h, per i riavvii) non deve creare occorrenze
+    # precedenti alla creazione del template: un appuntamento creato alle 07:50 con partenza
+    # 06:05 andava in onda subito con l'occorrenza gia' passata.
+    try:
+        _tpl_created = datetime.fromisoformat(str(tpl.get("created_at") or "").replace("Z", "+00:00"))
+        if _tpl_created.tzinfo is None:
+            _tpl_created = _tpl_created.replace(tzinfo=timezone.utc)
+        from_dt = max(from_dt, _tpl_created - timedelta(seconds=60))
+    except Exception:
+        pass
     occurrences = _rrule_expand(tpl.get("rrule") or {}, from_dt, to_dt)
     excluded = set(tpl.get("excluded_occurrences") or [])
     for occ in occurrences:
