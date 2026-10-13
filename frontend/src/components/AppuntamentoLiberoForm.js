@@ -25,6 +25,7 @@ const emptyForm = () => {
     source: "disco_del_giorno", fixed_track_id: "", suno_genre: "", suno_mood: "", suno_lang: "it", suno_lead_minutes: 20,
     dj_id: "", dj_comment: "",
     video_url: "",   // LedWall durante l'appuntamento: "" | "fx:effects" | url video
+    follow_up_ids: [],  // #247410 · MP3 concatenati dopo la sigla DOPO (es. sponsor)
   };
 };
 const inp = "w-full bg-black/60 border border-white/10 rounded px-2 py-1.5 text-sm text-white";
@@ -88,7 +89,8 @@ export default function AppuntamentoLiberoForm({ sources = [], djs = [], onCreat
     if (!f.recurring && !f.when) return toast.error("Imposta data e ora");
     setBusy(true);
     try {
-      const base = { kind: "appointment", title: f.name || undefined, dj_id: f.dj_id || undefined, appointment: appointmentPayload(), duration_sec: f.max_duration_sec ? Number(f.max_duration_sec) : undefined, video_url: f.video_url || undefined };
+      const base = { kind: "appointment", title: f.name || undefined, dj_id: f.dj_id || undefined, appointment: appointmentPayload(), duration_sec: f.max_duration_sec ? Number(f.max_duration_sec) : undefined, video_url: f.video_url || undefined,
+        follow_ups: (f.follow_up_ids || []).map(byId).filter(Boolean).map((t) => ({ audio_url: t.audio_url, title: t.title, artist: t.artist, duration_sec: Math.max(1, Math.round(t.duration_sec || 20)) })) };
       if (f.recurring) {
         const freq = Math.max(1, Number(f.rr_freq_value) || 1) * (f.rr_freq_unit === "hours" ? 60 : 1);
         const r = await api.post("/admin/timeline/rrule", { ...base, rrule: {
@@ -183,6 +185,18 @@ export default function AppuntamentoLiberoForm({ sources = [], djs = [], onCreat
             <label><span className={lbl}>Durata max brano (sec, facoltativa)</span><input type="number" min={5} value={f.max_duration_sec} onChange={(e) => up("max_duration_sec", e.target.value)} placeholder="intero" className={inp} data-testid="appt-duration" /></label>
             <label><span className={lbl}>Sigla / jingle PRIMA (facoltativo)</span><PickTrack list={jingles} value={f.jingle_before_id} onChange={(v) => up("jingle_before_id", v)} placeholder="— nessuno —" testid="appt-jingle-before" onRefresh={onRefreshSources} /></label>
             <label><span className={lbl}>Sigla / jingle DOPO (facoltativo, accodato)</span><PickTrack list={jingles} value={f.jingle_after_id} onChange={(v) => up("jingle_after_id", v)} placeholder="— nessuno —" testid="appt-jingle-after" onRefresh={onRefreshSources} /></label>
+          </div>
+
+          {/* #247410 · Coda di successione: MP3 concatenati dopo la sigla DOPO (es. sponsor) */}
+          <div className="rounded p-2 text-xs" style={{ background: "rgba(128,255,180,0.04)", border: "1px dashed rgba(128,255,180,0.3)" }} data-testid="appt-followups">
+            <div className={lbl}>🔗 MP3 concatenati dopo l'appuntamento (facoltativi, in ordine, es. sponsor)</div>
+            {(f.follow_up_ids || []).map((id, i) => { const t = byId(id); return (
+              <div key={`${id}-${i}`} className="flex items-center gap-2 py-0.5 font-mono" data-testid={`appt-followup-row-${i}`}>
+                <span className="text-zinc-500 w-5">{i + 1}.</span>
+                <span className="flex-1 truncate text-zinc-200">{t ? `${t.title}${t.duration_sec ? ` (${Math.round(t.duration_sec)}s)` : ""}` : "(file non trovato)"}</span>
+                <button type="button" onClick={() => up("follow_up_ids", (f.follow_up_ids || []).filter((_, j) => j !== i))} className="px-1.5 rounded text-[10px]" style={{ color: "#FF6BAA", border: "1px solid rgba(255,45,149,0.4)" }} data-testid={`appt-followup-remove-${i}`}>✕</button>
+              </div>); })}
+            <PickTrack list={jingles} value="" onChange={(v) => { if (v) up("follow_up_ids", [...(f.follow_up_ids || []), v]); }} placeholder="+ aggiungi MP3 concatenato..." testid="appt-followup-add" onRefresh={onRefreshSources} />
           </div>
 
           {/* 5 · Sorgente */}

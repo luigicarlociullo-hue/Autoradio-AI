@@ -443,8 +443,8 @@ export default function AdminCalendar() {
                       {hasConflict && (
                         <span className="text-[8px] font-mono px-1 rounded"
                           style={{ background: "rgba(255,51,85,0.18)", border: "1px solid #FF335599", color: "#FF3355" }}
-                          title={`Sovrapposizione con ${ev.conflicts.length} evento/i · vince il più recente`}>
-                          ⚠ conflitto ×{ev.conflicts.length}
+                          title={`Stesso orario di ${ev.conflicts.length} altro/i evento/i · nessuno viene cancellato: vanno in onda uno dopo l'altro`}>
+                          ⇄ in sequenza ×{ev.conflicts.length}
                         </span>
                       )}
                     </div>

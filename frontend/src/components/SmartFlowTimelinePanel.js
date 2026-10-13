@@ -96,6 +96,43 @@ function AssetPicker({ sources, value, onChange, placeholder = "- seleziona dal 
   );
 }
 
+// #247410 · Le serie ricorrenti sono salvate come "template" e non comparivano mai nella
+// lista "In attesa" (solo eventi pending, creati ~90s prima della messa in onda): il cliente
+// pensava che creando una nuova serie la precedente venisse cancellata. Qui le mostriamo tutte.
+const _DAYS_IT = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom"];
+function RecurringSeriesList({ refreshKey }) {
+  const [rows, setRows] = useState([]);
+  const load = async () => {
+    try { const r = await api.get(`/admin/timeline`, { params: { status: "template", limit: 200 } }); setRows(r.data.events || []); } catch {}
+  };
+  useEffect(() => { load(); const iv = setInterval(load, 30000); return () => clearInterval(iv); }, [refreshKey]);
+  const remove = async (t) => {
+    if (!window.confirm(`Eliminare la serie "${t.title || t.kind}" e tutte le sue prossime occorrenze?`)) return;
+    try { await api.delete(`/admin/timeline/${t.id}`); toast.success("Serie eliminata"); load(); } catch { toast.error("Errore eliminazione serie"); }
+  };
+  const desc = (r = {}) => {
+    const pad = (n) => String(n).padStart(2, "0");
+    const fm = Number(r.frequency_minutes || 60);
+    const every = fm % 60 === 0 ? `ogni ${fm / 60} h` : `ogni ${fm} min`;
+    const days = Array.isArray(r.days_of_week) && r.days_of_week.length && r.days_of_week.length < 7 ? ` · ${r.days_of_week.map((d) => _DAYS_IT[d]).join(" ")}` : "";
+    return `${every} · dalle ${pad(r.start_hour ?? 0)}:${pad(r.anchor_minute ?? 0)} alle ${pad(r.end_hour ?? 24)}:00${days}`;
+  };
+  return (
+    <div className="rounded-lg p-3 mb-4" style={{ background: "rgba(0,229,255,0.04)", border: "1px solid rgba(0,229,255,0.25)" }} data-testid="recurring-series-list">
+      <div className="label-mono mb-2" style={{ color: "#00E5FF" }}>🔁 Serie ricorrenti attive ({rows.length}) · restano tutte attive anche se hanno lo stesso orario: vanno in onda una dopo l'altra</div>
+      {rows.length === 0 && <div className="text-xs font-mono text-zinc-500">Nessuna serie ricorrente.</div>}
+      {rows.map((t) => (
+        <div key={t.id} className="flex items-center gap-2 text-xs font-mono py-1 border-b border-white/5" data-testid={`series-row-${t.id}`}>
+          <span className="px-1.5 py-0.5 rounded uppercase text-[9px]" style={{ color: "#00E5FF", border: "1px solid rgba(0,229,255,0.4)" }}>{t.kind}</span>
+          <span className="flex-1 min-w-0 truncate text-white">{t.title || "—"}</span>
+          <span className="text-zinc-400 hidden md:inline">{desc(t.rrule)}</span>
+          <button type="button" onClick={() => remove(t)} className="px-2 rounded text-[10px]" style={{ color: "#FF6BAA", border: "1px solid rgba(255,45,149,0.4)" }} data-testid={`series-delete-${t.id}`}>Elimina</button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function SmartFlowTimelinePanel() {
   const [now, setNow] = useState(null); // /api/stream/now
   const [pending, setPending] = useState([]);
@@ -190,6 +227,7 @@ export default function SmartFlowTimelinePanel() {
   });
   // v13.33 · Sequenza concatenata multipla (lista ordinata di source_id dal Magazzino)
   const [followUpIds, setFollowUpIds] = useState([]);
+  const [seriesKey, setSeriesKey] = useState(0);  // #247410 · refresh lista serie ricorrenti
   // v13.36 · FIX (ticket #247410, come modifico un evento gia' creato):
   // stato per la modifica inline di un evento pending gia' esistente —
   // prima d'ora l'unica azione disponibile era la cancellazione (✕).
@@ -340,6 +378,7 @@ export default function SmartFlowTimelinePanel() {
         const rr = await api.post("/admin/timeline/rrule", rBody);
         const tpl = rr.data?.template;
         toast.success(`🔁 Template creato · ogni ${tpl.rrule.frequency_minutes}min · ${tpl.rrule.start_hour}:00→${tpl.rrule.end_hour}:00${followUps.length ? ` · +${followUps.length} MP3 concatenati` : ""}`);
+        setSeriesKey((k) => k + 1);
         setFollowUpIds([]);
         loadEvents("pending");
         setBusy(false);
@@ -537,7 +576,8 @@ export default function SmartFlowTimelinePanel() {
 
       {/* v13.22 · REGIA CONFIG UNIVERSALE — barra in cima */}
       {/* v13.54 · APPUNTAMENTO LIBERO — form separato, ogni parametro facoltativo */}
-      <AppuntamentoLiberoForm sources={sources} djs={djs} onCreated={() => loadEvents("pending")} onRefreshSources={loadSources} />
+      <AppuntamentoLiberoForm sources={sources} djs={djs} onCreated={() => { loadEvents("pending"); setSeriesKey((k) => k + 1); }} onRefreshSources={loadSources} />
+      <RecurringSeriesList refreshKey={seriesKey} />
       <div
         className="rounded-lg p-3 mb-4 space-y-2"
         style={{ background: "rgba(255,184,77,0.06)", border: "1px solid rgba(255,184,77,0.30)" }}
