@@ -4963,7 +4963,22 @@ async def upload_bed(file: UploadFile = File(...), name: str = Form(""), loop_bi
 async def list_beds():
     beds = await db.beds.find({}, {"_id": 0}).sort("uploaded_at", -1).to_list(100)
     st = await db.station.find_one({"_id": "state"}) or {}
-    return {"beds": beds, "active_bed_url": st.get("active_bed_url")}
+    # #247410 · anche i loop/sottofondi del Magazzino, attivabili come sottofondo senza ricaricarli
+    library_loops = await db.tracks.find(
+        {"is_loop": True, "deleted_at": None, "audio_url": {"$ne": None}},
+        {"_id": 0, "id": 1, "title": 1, "audio_url": 1, "duration_sec": 1, "loop_bind_speaker": 1},
+    ).sort("created_at", -1).to_list(200)
+    return {"beds": beds, "library_loops": library_loops, "active_bed_url": st.get("active_bed_url")}
+
+
+@api_router.patch("/admin/beds/library/{track_id}/activate")
+async def activate_library_loop(track_id: str):
+    """#247410 · Attiva come sottofondo sotto le voci un loop del Magazzino (tracks.is_loop)."""
+    t = await db.tracks.find_one({"id": track_id, "is_loop": True, "deleted_at": None, "audio_url": {"$ne": None}}, {"_id": 0, "audio_url": 1})
+    if not t:
+        raise HTTPException(404, "Loop non trovato nel Magazzino")
+    await db.station.update_one({"_id": "state"}, {"$set": {"active_bed_url": t["audio_url"]}}, upsert=True)
+    return {"ok": True, "active_bed_url": t["audio_url"]}
 
 
 @api_router.patch("/admin/beds/{bed_id}/activate")

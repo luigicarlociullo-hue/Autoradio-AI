@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { api, endpoints } from "../lib/api";
 import { toast } from "sonner";
 import { Music2, Upload, Pencil, Trash2, Download, Replace, PlayCircle, PauseCircle, X } from "lucide-react";
@@ -119,7 +120,8 @@ function CustomRange({ value, busy, onSave, id }) {
 
 /* ─── Popup conferma eliminazione ─── */
 function DeleteConfirm({ track, onCancel, onConfirm, busy }) {
-  return (
+  // #247410 · portal su document.body: un antenato con backdrop-filter faceva da riferimento al position:fixed e la finestra restava semi-coperta
+  return createPortal((
     <div className="fixed inset-0 z-[80] bg-black/75 backdrop-blur-sm flex items-center justify-center p-4" data-testid="act-delete-modal">
       <div className="w-full max-w-md rounded-xl p-6 bg-[#0F0F14] border border-red-500/50" style={{ boxShadow: "0 0 30px rgba(239,68,68,0.3)" }}>
         <div className="label-mono text-red-400 mb-2 flex items-center gap-2"><Trash2 className="w-4 h-4" /> ELIMINAZIONE</div>
@@ -135,7 +137,7 @@ function DeleteConfirm({ track, onCancel, onConfirm, busy }) {
         </div>
       </div>
     </div>
-  );
+  ), document.body);
 }
 
 /* ─── Pannello MATITA · tutti i campi, applicati solo su APPROVA E SALVA ─── */
@@ -178,7 +180,8 @@ function EditPanel({ track, onCancel, onSaved }) {
   };
 
   const inp = "w-full bg-black/60 border border-white/10 rounded px-3 py-2 text-sm text-white";
-  return (
+  // #247410 · portal su document.body: un antenato con backdrop-filter faceva da riferimento al position:fixed e la finestra restava semi-coperta
+  return createPortal((
     <div className="fixed inset-0 z-[80] bg-black/75 backdrop-blur-sm flex items-center justify-center p-4" data-testid="act-edit-modal">
       <div className="w-full max-w-2xl rounded-xl p-6 bg-[#0F0F14] border border-cyan-500/40 max-h-[92vh] overflow-y-auto" style={{ boxShadow: "0 0 30px rgba(0,229,255,0.2)" }}>
         <div className="flex items-center justify-between mb-4">
@@ -243,7 +246,7 @@ function EditPanel({ track, onCancel, onSaved }) {
         </div>
       </div>
     </div>
-  );
+  ), document.body);
 }
 
 /* ─── Riga brano ─── */

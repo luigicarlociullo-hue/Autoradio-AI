@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { api } from "../lib/api";
 import { toast } from "sonner";
 import { Mic2, PlayCircle, PauseCircle, Pencil, Trash2, Upload, Copy, Search, X, Download } from "lucide-react";
@@ -12,7 +13,8 @@ const fmtDate = (iso) => (iso || "").slice(0, 16).replace("T", " ");
 const inp = "bg-black/60 border border-white/10 rounded px-2 py-1.5 text-sm text-white";
 
 function Confirm({ title, lines, confirmLabel, onConfirm, onCancel, busy, testid }) {
-  return (
+  // #247410 · portal su document.body: un antenato con backdrop-filter faceva da riferimento al position:fixed e la finestra restava semi-coperta
+  return createPortal((
     <div className="fixed inset-0 z-[80] bg-black/75 backdrop-blur-sm flex items-center justify-center p-4" data-testid={testid}>
       <div className="w-full max-w-lg rounded-xl p-6 bg-[#0F0F14] border border-red-500/50">
         <div className="label-mono text-red-400 mb-2 flex items-center gap-2"><Trash2 className="w-4 h-4" /> {title}</div>
@@ -24,7 +26,7 @@ function Confirm({ title, lines, confirmLabel, onConfirm, onCancel, busy, testid
         </div>
       </div>
     </div>
-  );
+  ), document.body);
 }
 
 function EditModal({ seg, onClose, onSaved }) {
@@ -36,7 +38,8 @@ function EditModal({ seg, onClose, onSaved }) {
     try { await api.patch(`/admin/segments/voice/${seg.id}`, { title, text }); toast.success("Segmento aggiornato"); onSaved(); }
     catch (e) { toast.error(e?.response?.data?.detail || "Errore"); } finally { setBusy(false); }
   };
-  return (
+  // #247410 · portal su document.body: un antenato con backdrop-filter faceva da riferimento al position:fixed e la finestra restava semi-coperta
+  return createPortal((
     <div className="fixed inset-0 z-[80] bg-black/75 backdrop-blur-sm flex items-center justify-center p-4" data-testid="vseg-edit-modal">
       <div className="w-full max-w-2xl rounded-xl p-6 bg-[#0F0F14]" style={{ border: `1px solid ${VIOLET}66` }}>
         <div className="flex items-center justify-between mb-3"><div className="label-mono flex items-center gap-2" style={{ color: VIOLET }}><Pencil className="w-4 h-4" /> MODIFICA SEGMENTO</div>
@@ -50,7 +53,7 @@ function EditModal({ seg, onClose, onSaved }) {
         </div>
       </div>
     </div>
-  );
+  ), document.body);
 }
 
 function SegRow({ s, selected, onSelect, playing, onPlay, onEdit, onDelete, onReplace, onCopyJingle }) {

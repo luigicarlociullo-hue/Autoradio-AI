@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useRef } from "react";
+import { createPortal } from "react-dom";
 import { useAuth } from "@/lib/auth";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Radio, Power, Trash2, Sparkles, Zap, Music2, Newspaper, MessageCircle, LogOut, LogIn, Send, User, ChevronRight, Cpu, Users, RefreshCw, Megaphone, Euro, ExternalLink, Download, Sliders, Mic, PauseCircle, PlayCircle, Upload, Replace, Volume2 } from "lucide-react";
@@ -1776,7 +1777,8 @@ function TrackModal({ mode, target, onClose, onDone }) {
     }
   };
 
-  return (
+  // #247410 · portal su document.body: un antenato con backdrop-filter faceva da riferimento al position:fixed e la finestra restava semi-coperta
+  return createPortal((
     <div
       data-testid="track-modal"
       className="fixed inset-0 z-[80] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
@@ -1992,7 +1994,7 @@ function TrackModal({ mode, target, onClose, onDone }) {
         </div>
       </div>
     </div>
-  );
+  ), document.body);
 }
 
 
@@ -2788,6 +2790,7 @@ function RegiaAudioPanel() {
   const [mix, setMix] = useState({ music_vol: 100, voice_vol: 100, bed_vol: 40, master_vol: 100, crossfade_ms: 1000 });
   const [beds, setBeds] = useState([]);
   const [activeBedUrl, setActiveBedUrl] = useState(null);
+  const [libLoops, setLibLoops] = useState([]);  // #247410 · loop/sottofondi del Magazzino
   const [bedName, setBedName] = useState("");
   const [uploading, setUploading] = useState(false);
   const [ttsProvider, setTtsProvider] = useState("elevenlabs");
@@ -2809,6 +2812,7 @@ function RegiaAudioPanel() {
         crossfade_ms: m.crossfade_ms ?? 1000,
       });
       setBeds(b.beds || []);
+      setLibLoops(b.library_loops || []);
       setActiveBedUrl(b.active_bed_url || null);
       setTtsProvider(t.provider || "smart");
     } catch (e) {
@@ -2988,6 +2992,34 @@ function RegiaAudioPanel() {
           )}
         </div>
 
+        {/* #247410 · Loop/sottofondi del Magazzino: si attivano direttamente, senza ricaricarli */}
+        <div className="mb-3" data-testid="library-loops">
+          <div className="text-[10px] font-mono uppercase tracking-widest text-zinc-400 mb-1">🌀 Loop / sottofondi dal Magazzino ({libLoops.length})</div>
+          {libLoops.length === 0 && <div className="text-xs text-zinc-500 italic">Nessun loop nel Magazzino (categoria Loop / Sottofondo).</div>}
+          <div className="space-y-2">
+            {libLoops.map((lp) => {
+              const isActive = activeBedUrl === lp.audio_url;
+              return (
+                <div key={lp.id} className={`flex items-center gap-3 rounded-lg border p-2 ${isActive ? "border-pink-500/60 bg-pink-500/5" : "border-zinc-800 bg-zinc-950/50"}`} data-testid={`libloop-row-${lp.id}`}>
+                  <div className="flex-1 min-w-0 text-sm font-semibold text-white truncate flex items-center gap-2">
+                    {lp.title}
+                    {isActive && <span className="text-[10px] font-mono uppercase tracking-widest bg-pink-500 text-black px-2 py-0.5 rounded-full">ATTIVO</span>}
+                  </div>
+                  <audio controls preload="none" src={endpoints.audioUrl(lp.audio_url)} style={{ height: 28, maxWidth: 220 }} />
+                  {!isActive && (
+                    <button
+                      onClick={async () => { try { await api.patch(`/admin/beds/library/${lp.id}/activate`); setActiveBedUrl(lp.audio_url); toast.success("Sottofondo attivato — parte sotto la voce DJ"); } catch { toast.error("Errore attivazione"); } }}
+                      className="text-xs bg-emerald-500 hover:bg-emerald-400 text-black font-semibold px-3 py-1.5 rounded-full whitespace-nowrap"
+                      data-testid={`libloop-activate-${lp.id}`}
+                    >
+                      Attiva
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
         {beds.length === 0 ? (
           <div className="text-xs text-zinc-500 italic text-center py-4">Nessun bed caricato. Carica un MP3 loop (max 10MB) per usarlo come sottofondo automatico sotto la voce DJ.</div>
         ) : (
