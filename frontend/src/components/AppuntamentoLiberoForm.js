@@ -82,6 +82,8 @@ export default function AppuntamentoLiberoForm({ sources = [], djs = [], onCreat
     jingle_before: jingleSpec(f.jingle_before_id), jingle_after: jingleSpec(f.jingle_after_id),
     dj_present: !!f.dj_id, dj_comment: f.dj_comment || undefined,
     max_duration_sec: f.max_duration_sec ? Number(f.max_duration_sec) : undefined,
+    chain_after: f.chain_after || "none",
+    priority: Math.max(1, Math.min(9, Number(f.priority) || 5)),
   });
 
   const submit = async () => {
@@ -178,6 +180,22 @@ export default function AppuntamentoLiberoForm({ sources = [], djs = [], onCreat
                 <label><span className={lbl}>Data fine</span><input type="date" value={f.rr_end_date} onChange={(e) => up("rr_end_date", e.target.value)} className={inp} data-testid="appt-rr-end-date" /></label>
               </div>
             )}
+          </div>
+
+          {/* v13.61 · Concatena dopo + Priorità */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-xs" data-testid="appt-chain">
+            <label className="md:col-span-2"><span className={lbl}>⛓ Concatena dopo (facoltativo)</span>
+              <select value={f.chain_after || "none"} onChange={(e) => up("chain_after", e.target.value)} className={inp} data-testid="appt-chain-after">
+                <option value="none">Nessuno — parte al suo orario</option>
+                <option value="time_signal">Segnale orario — appena finisce il primo segnale orario uguale o successivo al suo orario</option>
+                <option value="any">Qualsiasi evento/rubrica in onda — appena finisce il primo evento Timeline uguale o successivo</option>
+              </select>
+              <div className="text-[10px] font-mono text-zinc-500 mt-1">
+                {(f.chain_after || "none") === "none" ? "Comportamento standard." : "Va in coda dopo tutti i file concatenati di quell'evento, senza pause. Se entro 15 minuti non arriva nessun evento adatto, parte da solo."}
+              </div></label>
+            <label><span className={lbl}>Priorità (1 = prima … 9 = ultima)</span>
+              <input type="number" min={1} max={9} value={f.priority ?? 5} onChange={(e) => up("priority", e.target.value)} className={inp} data-testid="appt-priority" />
+              <div className="text-[10px] font-mono text-zinc-500 mt-1">Ordina gli eventi dovuti nello stesso minuto.</div></label>
           </div>
 
           {/* 3-4 · Durata + jingle */}

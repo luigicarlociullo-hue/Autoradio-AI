@@ -7984,8 +7984,17 @@ def _sanitize_appointment(raw) -> dict:
             max_dur = max(5, min(3600, int(float(raw.get("max_duration_sec")))))
     except (TypeError, ValueError):
         max_dur = None
+    chain_after = (raw.get("chain_after") or "none").strip().lower()
+    if chain_after not in ("none", "time_signal", "any"):
+        chain_after = "none"
+    try:
+        priority = max(1, min(9, int(raw.get("priority") or 5)))
+    except (TypeError, ValueError):
+        priority = 5
     return {
         "description": _s("description", 1000),
+        "chain_after": chain_after,      # v13.61 · none | time_signal | any
+        "priority": priority,            # v13.61 · 1-9 (default 5) ordina gli eventi dovuti nello stesso minuto
         "source": source,
         "fixed_track_id": _s("fixed_track_id", 80),
         "suno_genre": _s("suno_genre", 120),
@@ -8181,6 +8190,110 @@ async def _appointment_suno_prepare():
 
 
 
+CHAIN_WAIT_MINUTES = 15
+_CHAIN_TS_KINDS = ("time_signal", "ora_esatta")
+
+
+def _timeline_order_key(ev: dict):
+    """(scheduled_at arrotondato al minuto, priority 1-9 default 5, scheduled_at)."""
+    sa = ev.get("scheduled_at") or ""
+    pr = (ev.get("appointment") or {}).get("priority") or ev.get("priority") or 5
+    try:
+        pr = max(1, min(9, int(pr)))
+    except (TypeError, ValueError):
+        pr = 5
+    return (sa[:16], pr, sa)
+
+
+def _chain_compatible(chain_after: str, kind: Optional[str]) -> bool:
+    if chain_after == "any":
+        return True
+    if chain_after == "time_signal":
+        return kind in _CHAIN_TS_KINDS
+    return False
+
+
+async def _chain_event_expected(appt: dict, from_dt: datetime, to_dt: datetime) -> bool:
+    """C'è un evento Timeline compatibile (pending o occorrenza rrule) in [from_dt, to_dt]?"""
+    ca = (appt.get("appointment") or {}).get("chain_after", "none")
+    q = {"status": "pending", "id": {"$ne": appt.get("id")},
+         "scheduled_at": {"$gte": from_dt.isoformat(), "$lte": to_dt.isoformat()}}
+    if ca == "time_signal":
+        q["kind"] = {"$in": list(_CHAIN_TS_KINDS)}
+    if await db.timeline_events.count_documents(q) > 0:
+        return True
+    tq = {"status": "template", "rrule": {"$ne": None}, "id": {"$ne": appt.get("parent_id")}}
+    if ca == "time_signal":
+        tq["kind"] = {"$in": list(_CHAIN_TS_KINDS)}
+    async for tpl in db.timeline_events.find(tq, {"_id": 0, "rrule": 1, "excluded_occurrences": 1}):
+        excl = set(tpl.get("excluded_occurrences") or [])
+        for occ in _rrule_expand(tpl.get("rrule") or {}, from_dt, to_dt):
+            if occ.isoformat() not in excl:
+                return True
+    return False
+
+
+async def _appointment_should_wait(ev: dict, now: datetime) -> bool:
+    """Appuntamento con 'Concatena dopo': resta pending se un evento compatibile è atteso
+    entro CHAIN_WAIT_MINUTES dal suo orario; scaduta l'attesa parte da solo."""
+    if ev.get("kind") != "appointment":
+        return False
+    ca = (ev.get("appointment") or {}).get("chain_after", "none")
+    if ca not in ("time_signal", "any"):
+        return False
+    try:
+        sch = datetime.fromisoformat((ev.get("scheduled_at") or "").replace("Z", "+00:00"))
+    except Exception:
+        return False
+    deadline = sch + timedelta(minutes=CHAIN_WAIT_MINUTES)
+    if now >= deadline:
+        return False
+    try:
+        return await _chain_event_expected(ev, sch, deadline)
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"[chain] expected check: {e}")
+        return False
+
+
+async def _attach_chained_appointments(doc: dict, entry: dict, now: datetime) -> dict:
+    """Dopo la promozione di `doc`, accoda gli appuntamenti pending con 'Concatena dopo'
+    compatibile il cui orario è ≤ orario evento e ≥ orario evento − 15 min (ordine: minuto, priorità)."""
+    try:
+        ev_sch = datetime.fromisoformat((doc.get("scheduled_at") or "").replace("Z", "+00:00"))
+        lo = (ev_sch - timedelta(minutes=CHAIN_WAIT_MINUTES)).isoformat()
+        cands = await db.timeline_events.find(
+            {"status": "pending", "kind": "appointment", "id": {"$ne": doc.get("id")},
+             "appointment.chain_after": {"$in": ["time_signal", "any"]},
+             "scheduled_at": {"$gte": lo, "$lte": ev_sch.isoformat()}},
+            {"_id": 0}).to_list(20)
+        cands = [c for c in cands if _chain_compatible((c.get("appointment") or {}).get("chain_after"), doc.get("kind"))]
+        if not cands:
+            return entry
+        cands.sort(key=_timeline_order_key)
+        tail = list(entry.get("follow_ups") or [])
+        for c in cands:
+            claimed = await db.timeline_events.find_one_and_update(
+                {"id": c["id"], "status": "pending"},
+                {"$set": {"status": "consumed", "consumed_at": now.isoformat(), "chained_after_event": doc.get("id")}},
+                return_document=True, projection={"_id": 0})
+            if not claimed:
+                continue
+            res = await _appointment_resolve(claimed)
+            if not res:
+                await db.timeline_events.update_one({"id": c["id"]}, {"$set": {"status": "skipped_no_audio", "note": "Appuntamento concatenato: nessun brano risolvibile"}})
+                continue
+            head = {"id": f"appt-{uuid.uuid4().hex[:10]}", "title": res["title"], "artist": res.get("artist"),
+                    "audio_url": res["audio_url"], "duration_sec": float(res["duration_sec"]),
+                    "video_url": claimed.get("video_url"), "kind": res.get("_entry_kind") or "music"}
+            tail.append(head)
+            tail.extend(list(res.get("follow_ups") or []))
+            logger.info(f"[chain] appuntamento {c['id']} '{claimed.get('title')}' accodato dopo {doc.get('kind')} {doc.get('id')} ({1 + len(res.get('follow_ups') or [])} elementi)")
+        entry["follow_ups"] = tail
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[chain] attach failed: {e}")
+    return entry
+
+
 async def _timeline_pick_due() -> Optional[dict]:
     """Ritorna un evento timeline maturo (scheduled_at <= now) e lo marca
     come `consumed` atomicamente. Ignora eventi troppo vecchi (>2h).
@@ -8194,15 +8307,24 @@ async def _timeline_pick_due() -> Optional[dict]:
     now = datetime.now(timezone.utc)
     cutoff_old = (now - timedelta(hours=2)).isoformat()
     now_iso_s = now.isoformat()
-    # find_one_and_update per atomicità (concorrenza safe)
-    doc = await db.timeline_events.find_one_and_update(
-        {"status": "pending",
-         "scheduled_at": {"$lte": now_iso_s, "$gte": cutoff_old}},
-        {"$set": {"status": "consumed", "consumed_at": now_iso_s}},
-        sort=[("scheduled_at", 1)],
-        return_document=True,
-        projection={"_id": 0},
-    )
+    # v13.61 · Eventi dovuti ordinati per (scheduled_at arrotondato al minuto, priority 1-9);
+    # claim atomico per candidato (concorrenza safe). Un appuntamento con "Concatena dopo"
+    # viene rimandato se un evento compatibile arriva entro 15 minuti (verrà accodato a quello).
+    doc = None
+    _cands = await db.timeline_events.find(
+        {"status": "pending", "scheduled_at": {"$lte": now_iso_s, "$gte": cutoff_old}},
+        {"_id": 0}).sort("scheduled_at", 1).to_list(60)
+    _cands.sort(key=_timeline_order_key)
+    for _c in _cands:
+        if await _appointment_should_wait(_c, now):
+            continue
+        _claimed = await db.timeline_events.find_one_and_update(
+            {"id": _c.get("id"), "status": "pending"},
+            {"$set": {"status": "consumed", "consumed_at": now_iso_s}},
+            return_document=True, projection={"_id": 0})
+        if _claimed:
+            doc = _claimed
+            break
     if not doc:
         return None
     # v13.22 → v13.23 · Ricorrenza (hourly / daily). Clone PRIMA di ritornare
@@ -8248,7 +8370,8 @@ async def _timeline_pick_due() -> Optional[dict]:
     if doc.get("kind") == "appointment":
         try:
             _sch = datetime.fromisoformat((doc.get("scheduled_at") or "").replace("Z", "+00:00"))
-            if (now - _sch) > timedelta(minutes=10):
+            _grace = 10 + (CHAIN_WAIT_MINUTES if (doc.get("appointment") or {}).get("chain_after", "none") != "none" else 0)
+            if (now - _sch) > timedelta(minutes=_grace):
                 await db.timeline_events.update_one({"id": doc.get("id")}, {"$set": {"status": "skipped_stale", "skip_reason": "appuntamento scaduto da oltre 10 minuti"}})
                 logger.warning(f"[appointment] {doc.get('id')} @ {doc.get('scheduled_at')} NON in onda: scaduto da oltre 10 minuti")
                 return await _timeline_pick_due()
@@ -8433,6 +8556,8 @@ async def _timeline_pick_due() -> Optional[dict]:
         # Se non c'è audio, marchiamo come skipped e riproviamo
         await db.timeline_events.update_one({"id": doc.get("id")}, {"$set": {"status": "skipped_no_audio"}})
         return None
+    # v13.61 · "Concatena dopo": appuntamenti in attesa di questo evento → accodati dopo i suoi follow_ups
+    entry = await _attach_chained_appointments(doc, entry, now)
     return entry
 
 

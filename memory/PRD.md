@@ -825,3 +825,10 @@ Vedi turni precedenti in questa sessione:
 ## v13.60 · SOTTOFONDO CASUALE (2026-10-12)
 - `station.state.bed_random_mode` + `bed_rotation_recent`; `GET/PATCH /admin/beds/random-mode`. `_bed_pick_random()`: loop Magazzino (is_loop, deleted_at None) senza ripetizioni finché il ciclo non è completo (poi riparte evitando l'ultimo). In `_bed_for_speaker`: loop agganciato allo speaker → (se ON) random → bed attivo. Pool vuoto → fallback bed attivo. OFF → identico a prima.
 - Regia → Audio: toggle "🎲 Sottofondo casuale" con stato ON/OFF, pool e progresso ciclo. Verifica in-process con loop di prova (rimossi) e curl. Preview lasciata OFF.
+
+## v13.61 · CONCATENA DOPO + PRIORITÀ (Appuntamenti) (2026-10-14)
+- `appointment.chain_after` none|time_signal|any, `appointment.priority` 1-9 (default 5), salvati nei modelli (payload form).
+- `_timeline_pick_due`: candidati dovuti ordinati con `_timeline_order_key` (scheduled_at al minuto, priority) + claim atomico per candidato; `_appointment_should_wait` rimanda un appuntamento chain se un evento compatibile (pending o occorrenza rrule) è atteso entro 15 min (CHAIN_WAIT_MINUTES); scaduta l'attesa parte da solo (stale check esteso a 10+15 min).
+- `_attach_chained_appointments(doc, entry, now)`: dopo la promozione di qualunque evento, gli appuntamenti pending compatibili con orario in [ev−15min, ev] vengono claimati, risolti con `_appointment_resolve` e accodati dopo i follow_ups dell'evento (ordine minuto/priorità), `chained_after_event` sul doc.
+- Frontend: select "⛓ Concatena dopo" + "Priorità" in AppuntamentoLiberoForm; badge ⛓ e P<n> in "Serie ricorrenti attive".
+- Verifica in-process con eventi di prova (rimossi): wait/ordine/attach/scadenza corretti. Clock e player non toccati.

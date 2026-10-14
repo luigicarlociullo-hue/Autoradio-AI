@@ -125,6 +125,14 @@ function RecurringSeriesList({ refreshKey }) {
         <div key={t.id} className="flex items-center gap-2 text-xs font-mono py-1 border-b border-white/5" data-testid={`series-row-${t.id}`}>
           <span className="px-1.5 py-0.5 rounded uppercase text-[9px]" style={{ color: "#00E5FF", border: "1px solid rgba(0,229,255,0.4)" }}>{t.kind}</span>
           <span className="flex-1 min-w-0 truncate text-white">{t.title || "—"}</span>
+          {t.appointment?.chain_after && t.appointment.chain_after !== "none" && (
+            <span className="px-1.5 py-0.5 rounded text-[9px]" style={{ color: "#FF6BAA", border: "1px solid rgba(255,107,170,0.45)" }} data-testid={`series-chain-${t.id}`} title="Concatena dopo: parte appena finisce l'evento compatibile (max 15 min di attesa)">
+              ⛓ dopo {t.appointment.chain_after === "time_signal" ? "segnale orario" : "qualsiasi evento"}
+            </span>
+          )}
+          {t.kind === "appointment" && (
+            <span className="px-1.5 py-0.5 rounded text-[9px] text-zinc-300 border border-white/15" data-testid={`series-priority-${t.id}`} title="Priorità 1-9 (ordina gli eventi dovuti nello stesso minuto)">P{t.appointment?.priority ?? 5}</span>
+          )}
           <span className="text-zinc-400 hidden md:inline">{desc(t.rrule)}</span>
           <button type="button" onClick={() => remove(t)} className="px-2 rounded text-[10px]" style={{ color: "#FF6BAA", border: "1px solid rgba(255,45,149,0.4)" }} data-testid={`series-delete-${t.id}`}>Elimina</button>
         </div>
