@@ -5034,6 +5034,47 @@ async def deactivate_bed():
     return {"ok": True}
 
 
+# v13.60 · SOTTOFONDO CASUALE — con `bed_random_mode` ON, ogni intervento DJ prende un
+# loop a caso dal Magazzino (is_loop, non eliminati) senza ripetizioni finché non sono
+# stati usati tutti (station.state.bed_rotation_recent). Il loop agganciato allo
+# speaker vince sempre. OFF → comportamento attuale (bed "Attiva").
+@api_router.get("/admin/beds/random-mode")
+async def admin_bed_random_mode_get():
+    st = await db.station.find_one({"_id": "state"}, {"bed_random_mode": 1, "bed_rotation_recent": 1}) or {}
+    pool = await db.tracks.count_documents({"is_loop": True, "deleted_at": None, "audio_url": {"$ne": None}})
+    return {"bed_random_mode": bool(st.get("bed_random_mode", False)), "pool_size": pool,
+            "recent": st.get("bed_rotation_recent") or []}
+
+
+@api_router.patch("/admin/beds/random-mode")
+async def admin_bed_random_mode_set(payload: dict):
+    on = bool(payload.get("bed_random_mode"))
+    await db.station.update_one({"_id": "state"}, {"$set": {"bed_random_mode": on, "bed_random_updated_at": now_iso()}}, upsert=True)
+    logger.info(f"[bed] sottofondo casuale → {'ON' if on else 'OFF'}")
+    return await admin_bed_random_mode_get()
+
+
+async def _bed_pick_random() -> Optional[str]:
+    """Loop casuale dal Magazzino senza ripetizioni (ciclo completo prima di ripetere)."""
+    loops = await db.tracks.find({"is_loop": True, "deleted_at": None, "audio_url": {"$ne": None}},
+                                 {"_id": 0, "audio_url": 1}).to_list(500)
+    urls = [t["audio_url"] for t in loops if t.get("audio_url")]
+    if not urls:
+        return None
+    st = await db.station.find_one({"_id": "state"}, {"bed_rotation_recent": 1}) or {}
+    recent = [u for u in (st.get("bed_rotation_recent") or []) if u in urls]
+    candidates = [u for u in urls if u not in recent]
+    if not candidates:                       # ciclo completo → ricomincia, evitando solo l'ultimo usato
+        last = recent[-1] if recent else None
+        candidates = [u for u in urls if u != last] or urls
+        recent = []
+    pick = random.choice(candidates)
+    recent = (recent + [pick])[-len(urls):]
+    await db.station.update_one({"_id": "state"}, {"$set": {"bed_rotation_recent": recent}}, upsert=True)
+    logger.info(f"[bed] sottofondo casuale → {pick} ({len(recent)}/{len(urls)} usati nel ciclo)")
+    return pick
+
+
 @api_router.get("/beds/{filename}")
 async def get_bed(filename: str, request: Request):
     if "/" in filename or ".." in filename or not filename.endswith(".mp3"):
@@ -5147,7 +5188,11 @@ async def _bed_for_speaker(dj_name: Optional[str]) -> Optional[str]:
         b = await db.beds.find_one({"loop_bind_speaker": rx, "audio_url": {"$ne": None}}, {"_id": 0, "audio_url": 1})
         if b:
             return b["audio_url"]
-    st = await db.station.find_one({"_id": "state"}, {"active_bed_url": 1}) or {}
+    st = await db.station.find_one({"_id": "state"}, {"active_bed_url": 1, "bed_random_mode": 1}) or {}
+    if st.get("bed_random_mode"):            # v13.60 · Sottofondo casuale (nessun loop agganciato allo speaker)
+        picked = await _bed_pick_random()
+        if picked:
+            return picked
     active = st.get("active_bed_url") or None
     if not active:
         return None

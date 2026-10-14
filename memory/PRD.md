@@ -821,3 +821,7 @@ Vedi turni precedenti in questa sessione:
 
 ## v13.59 · Appuntamento Libero · campo LedWall (2026-10-11)
 - `AppuntamentoLiberoForm.js`: select "🖥️ LedWall durante l'appuntamento" (nessuno / fx:effects / video da /admin/ledwall/videos) → `video_url` in POST /admin/timeline e /admin/timeline/rrule; incluso nei modelli (payload form). Nessuna modifica backend. Verificato via curl: video_url salvato su evento singolo e template rrule (poi rimossi).
+
+## v13.60 · SOTTOFONDO CASUALE (2026-10-12)
+- `station.state.bed_random_mode` + `bed_rotation_recent`; `GET/PATCH /admin/beds/random-mode`. `_bed_pick_random()`: loop Magazzino (is_loop, deleted_at None) senza ripetizioni finché il ciclo non è completo (poi riparte evitando l'ultimo). In `_bed_for_speaker`: loop agganciato allo speaker → (se ON) random → bed attivo. Pool vuoto → fallback bed attivo. OFF → identico a prima.
+- Regia → Audio: toggle "🎲 Sottofondo casuale" con stato ON/OFF, pool e progresso ciclo. Verifica in-process con loop di prova (rimossi) e curl. Preview lasciata OFF.

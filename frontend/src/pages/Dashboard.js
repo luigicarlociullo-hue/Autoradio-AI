@@ -2790,6 +2790,7 @@ function RegiaAudioPanel() {
   const [mix, setMix] = useState({ music_vol: 100, voice_vol: 100, bed_vol: 40, master_vol: 100, crossfade_ms: 1000 });
   const [beds, setBeds] = useState([]);
   const [activeBedUrl, setActiveBedUrl] = useState(null);
+  const [bedRandom, setBedRandom] = useState({ bed_random_mode: false, pool_size: 0, recent: [] });  // v13.60
   const [libLoops, setLibLoops] = useState([]);  // #247410 · loop/sottofondi del Magazzino
   const [bedName, setBedName] = useState("");
   const [uploading, setUploading] = useState(false);
@@ -2815,6 +2816,7 @@ function RegiaAudioPanel() {
       setLibLoops(b.library_loops || []);
       setActiveBedUrl(b.active_bed_url || null);
       setTtsProvider(t.provider || "smart");
+      api.get("/admin/beds/random-mode").then((r) => setBedRandom(r.data)).catch(() => {});
     } catch (e) {
       toast.error("Impossibile caricare regia audio");
     }
@@ -2877,6 +2879,13 @@ function RegiaAudioPanel() {
   };
   const deactivate = async () => {
     try { await endpoints.bedDeactivate(); setActiveBedUrl(null); toast.success("Bed spento"); } catch (e) {}
+  };
+  const toggleBedRandom = async () => {
+    try {
+      const r = await api.patch("/admin/beds/random-mode", { bed_random_mode: !bedRandom.bed_random_mode });
+      setBedRandom(r.data);
+      toast.success(r.data.bed_random_mode ? `Sottofondo casuale ON · ${r.data.pool_size} loop in rotazione` : "Sottofondo casuale OFF · torna il sottofondo attivato");
+    } catch (e) { toast.error("Errore interruttore sottofondo casuale"); }
   };
   const remove = async (id, name) => {
     if (!window.confirm(`Eliminare "${name}"?`)) return;
@@ -2990,6 +2999,25 @@ function RegiaAudioPanel() {
               Spegni sottofondo
             </button>
           )}
+        </div>
+
+        {/* v13.60 · Sottofondo casuale: un loop diverso (senza ripetizioni) sotto ogni intervento DJ */}
+        <div className="mb-3 rounded-lg p-2.5 flex flex-wrap items-center gap-3" data-testid="bed-random-panel"
+          style={{ background: bedRandom.bed_random_mode ? "rgba(208,128,255,0.08)" : "rgba(255,255,255,0.03)", border: `1px solid ${bedRandom.bed_random_mode ? "rgba(208,128,255,0.55)" : "rgba(255,255,255,0.1)"}` }}>
+          <button type="button" onClick={toggleBedRandom} data-testid="bed-random-toggle" className="flex items-center gap-2 select-none" title="ON: ogni intervento DJ prende un loop a caso dal Magazzino senza ripetizioni. Il loop agganciato a uno speaker vince sempre.">
+            <span className="relative inline-block w-12 h-6 rounded-full transition-colors" style={{ background: bedRandom.bed_random_mode ? "#D080FF" : "#3f3f46" }}>
+              <span className="absolute top-0.5 w-5 h-5 rounded-full bg-white transition-all" style={{ left: bedRandom.bed_random_mode ? 26 : 2 }} />
+            </span>
+            <span className="font-mono text-xs font-black" style={{ color: bedRandom.bed_random_mode ? "#D080FF" : "#a1a1aa" }} data-testid="bed-random-state">{bedRandom.bed_random_mode ? "ON" : "OFF"}</span>
+          </button>
+          <div className="min-w-0">
+            <div className="text-xs font-bold text-white">🎲 Sottofondo casuale</div>
+            <div className="text-[10px] font-mono text-zinc-400" data-testid="bed-random-info">
+              {bedRandom.bed_random_mode
+                ? `${bedRandom.pool_size} loop in rotazione · usati nel ciclo: ${bedRandom.recent?.length || 0}/${bedRandom.pool_size} · i loop agganciati a uno speaker hanno la precedenza`
+                : `OFF · si usa il sottofondo attivato con "Attiva"${bedRandom.pool_size ? ` (${bedRandom.pool_size} loop disponibili nel Magazzino)` : ""}`}
+            </div>
+          </div>
         </div>
 
         {/* #247410 · Loop/sottofondi del Magazzino: si attivano direttamente, senza ricaricarli */}
