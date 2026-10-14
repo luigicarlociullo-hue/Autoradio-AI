@@ -2792,6 +2792,7 @@ function RegiaAudioPanel() {
   const [activeBedUrl, setActiveBedUrl] = useState(null);
   const [bedRandom, setBedRandom] = useState({ bed_random_mode: false, pool_size: 0, recent: [] });  // v13.60
   const [libLoops, setLibLoops] = useState([]);  // #247410 · loop/sottofondi del Magazzino
+  const [pickLoop, setPickLoop] = useState("");  // #247410 · sottofondo fisso scelto dal Magazzino
   const [bedName, setBedName] = useState("");
   const [uploading, setUploading] = useState(false);
   const [ttsProvider, setTtsProvider] = useState("elevenlabs");
@@ -2972,7 +2973,26 @@ function RegiaAudioPanel() {
 
       {/* Upload bed + lista */}
       <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-4">
-        <div className="flex flex-wrap items-end gap-3 mb-4">
+        {/* #247410 · Sottofondo FISSO scelto dal Magazzino (usato sotto tutti i vocali quando 🎲 casuale e' spento) */}
+        <div className="flex flex-wrap items-end gap-2 mb-3" data-testid="bed-pick-from-magazzino">
+          <div className="flex-1 min-w-0">
+            <div className="text-[10px] font-mono uppercase tracking-widest text-zinc-400 mb-1">Sottofondo fisso sotto tutti i vocali (dal Magazzino)</div>
+            <select value={pickLoop} onChange={(e) => setPickLoop(e.target.value)} className="w-full rounded-lg bg-zinc-950 border border-zinc-800 px-3 py-2 text-sm text-white" data-testid="bed-pick-select">
+              <option value="">— scegli un loop / sottofondo del Magazzino —</option>
+              {libLoops.map((lp) => <option key={lp.id} value={lp.id}>{lp.title}{activeBedUrl === lp.audio_url ? "  · ATTIVO" : ""}</option>)}
+            </select>
+          </div>
+          <button type="button" disabled={!pickLoop} className="btn-primary text-xs px-4 py-2 disabled:opacity-40" data-testid="bed-pick-activate"
+            onClick={async () => { const lp = libLoops.find((x) => x.id === pickLoop); if (!lp) return; try { await api.patch(`/admin/beds/library/${lp.id}/activate`); setActiveBedUrl(lp.audio_url); toast.success(`Sottofondo fisso: ${lp.title}`); } catch { toast.error("Errore attivazione"); } }}>
+            Usa sotto tutti i vocali
+          </button>
+        </div>
+        {bedRandom.bed_random_mode && (
+          <div className="text-[11px] text-purple-300 mb-3" data-testid="bed-random-hint">🎲 Sottofondo casuale ACCESO: il sottofondo fisso verrà usato quando lo spegni.</div>
+        )}
+        <details className="mb-4" data-testid="bed-upload-advanced">
+          <summary className="text-[11px] text-zinc-500 cursor-pointer">Carica un loop dal PC (facoltativo · di solito basta il Magazzino)</summary>
+        <div className="flex flex-wrap items-end gap-3 mt-2">
           <form onSubmit={upload} className="flex flex-wrap items-end gap-2 flex-1" data-testid="bed-upload-form">
             <input
               type="text" value={bedName} onChange={(e) => setBedName(e.target.value)}
@@ -2994,12 +3014,13 @@ function RegiaAudioPanel() {
               {uploading ? "Carico…" : "Upload Loop"}
             </button>
           </form>
+        </div>
+        </details>
           {activeBedUrl && (
-            <button onClick={deactivate} className="text-xs text-zinc-400 hover:text-pink-400 underline" data-testid="bed-deactivate-btn">
+            <button onClick={deactivate} className="text-xs text-zinc-400 hover:text-pink-400 underline mb-3" data-testid="bed-deactivate-btn">
               Spegni sottofondo
             </button>
           )}
-        </div>
 
         {/* v13.60 · Sottofondo casuale: un loop diverso (senza ripetizioni) sotto ogni intervento DJ */}
         <div className="mb-3 rounded-lg p-2.5 flex flex-wrap items-center gap-3" data-testid="bed-random-panel"

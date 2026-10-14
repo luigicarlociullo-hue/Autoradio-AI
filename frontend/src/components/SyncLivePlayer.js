@@ -172,29 +172,39 @@ export default function SyncLivePlayer() {
     return () => window.removeEventListener("rai:voice-over:play", trigger);
   }, []);
 
-  // Deriva rispetto al clock del server, corretta SOLO con il playbackRate (mai con un seek):
-  // atteso = server_time - live_delay; sentito = hls.playingDate (PROGRAM-DATE-TIME del segnale
-  // che sta suonando).
-  // Ticket Android "stonatura": il vecchio 1.04x/0.96x senza isteresi oscillava (rallenta/accelera)
-  // e su Android il ±4% si sente come stonatura. Ora: correzione lieve (±1.5%) con pitch preservato,
-  // parte solo oltre 3s di deriva e torna a 1x solo sotto 0.5s (niente ping-pong).
-  const rateModeRef = useRef(0);   // -1 rallenta, 0 normale, +1 accelera
+  // Deriva rispetto al clock del server: atteso = server_time - live_delay; sentito = hls.playingDate.
+  // #247410 · Niente piu' correzione di velocita': anche ±1.5% con pitch preservato si sente
+  // ("rallenta/accelera", soprattutto sui brani lenti). Il lettore resta sempre a 1x; se la
+  // deriva supera 8s si riallinea con un riaggancio SOLO al confine tra due brani, quando
+  // per chi ascolta finisce il brano corrente (rimanente server + ritardo live + deriva):
+  // nessun taglio a meta' brano e nessuna variazione di velocita' udibile.
+  const driftRef = useRef(0);
+  const boundaryTimerRef = useRef(null);
+  const scheduleBoundaryResync = (d, why) => {
+    if (boundaryTimerRef.current) return;           // gia' programmato per il prossimo confine
+    const rem = Number(d?.current?.remaining_sec);
+    const sec = (Number(d?.live_delay_sec) || 0) + (driftRef.current || 0) + (Number.isFinite(rem) ? rem : 0);
+    const ms = Math.max(0, Math.min(300, sec)) * 1000 + 300;
+    boundaryTimerRef.current = setTimeout(() => {
+      boundaryTimerRef.current = null;
+      const a = audioRef.current;
+      if (!a || a.paused || !hlsRef.current) return;   // l'ascoltatore e' uscito nel frattempo
+      console.warn(`[SyncLive] riaggancio al confine tra brani (${why})`);
+      watchRef.current.lastResync = Date.now();
+      startSync(true).catch(() => {});
+    }, ms);
+  };
+  useEffect(() => () => { if (boundaryTimerRef.current) clearTimeout(boundaryTimerRef.current); }, []);
   const driftCorrect = (d) => {
     const hls = hlsRef.current;
     const audio = audioRef.current;
+    if (audio && audio.playbackRate !== 1) audio.playbackRate = 1;
     if (!hls || !audio || audio.paused || !hls.playingDate || !d?.server_time) return;
     const expected = new Date(d.server_time).getTime() - (Number(d.live_delay_sec) || 0) * 1000;
     const drift = (expected - hls.playingDate.getTime()) / 1000;   // >0 = siamo indietro
     if (Math.abs(drift) > 120) return;    // incoerente (cambio finestra / pod addormentato): non toccare
-    let mode = rateModeRef.current;
-    if (Math.abs(drift) < 0.5) mode = 0;
-    else if (drift > 3) mode = 1;
-    else if (drift < -3) mode = -1;
-    else if ((mode === 1 && drift < 0) || (mode === -1 && drift > 0)) mode = 0;  // superato lo zero
-    rateModeRef.current = mode;
-    try { audio.preservesPitch = true; audio.webkitPreservesPitch = true; } catch {}
-    const rate = mode === 1 ? 1.015 : mode === -1 ? 0.985 : 1;
-    if (audio.playbackRate !== rate) audio.playbackRate = rate;
+    driftRef.current = drift;
+    if (Math.abs(drift) > 8) scheduleBoundaryResync(d, `deriva ${drift.toFixed(1)}s`);
   };
 
   // Coda riscritta in testa (segnale orario, talk DJ, evento Timeline inseriti DAVANTI a brani gia'
@@ -217,9 +227,8 @@ export default function SyncLivePlayer() {
       if (seenNew) {
         const w = watchRef.current;
         if (Date.now() - w.lastResync < 20000) return;
-        console.warn("[SyncLive] coda riscritta in testa, resync automatico");
-        w.lastResync = Date.now();
-        startSync(true).catch(() => {});
+        // #247410 · prima il resync era immediato e tagliava il brano in ascolto: ora al confine
+        scheduleBoundaryResync(d, "coda riscritta in testa");
         return;
       }
     }
@@ -380,7 +389,7 @@ export default function SyncLivePlayer() {
           // leggero speed-up (max 1.05x) invece di saltare e mangiare inizi/code.
           liveSyncDuration: 20,
           liveMaxLatencyDuration: 3600,
-          maxLiveSyncPlaybackRate: 1,         // la correzione di deriva e' in driftCorrect() (rate 0.96-1.04, mai seek)
+          maxLiveSyncPlaybackRate: 1,         // la deriva si corregge in driftCorrect() con un riaggancio al confine tra brani, velocita' sempre 1x
           lowLatencyMode: false,
           enableWorker: true,
           backBufferLength: 60,               // tiene indietro la finestra gia' suonata

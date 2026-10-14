@@ -27,7 +27,10 @@ const KIND_META = {
   insert:       { icon: "▸",  label: "Inserto",        color: "#D080FF" },
   ad:           { icon: "📢", label: "Spot",           color: "#FF5577" },
   ad_break:     { icon: "📢", label: "Break Pubblicitario", color: "#FF8A3D" },
-  music:        { icon: "🎵", label: "Disco del Giorno", color: "#3AE0FF" },
+  music:        { icon: "🎵", label: "Brano singolo", color: "#3AE0FF" },
+  // #247410 · gli Appuntamenti (Disco del Giorno, Umani vs Algoritmo, ecc.) hanno kind "appointment":
+  // prima mancava qui, quindi il filtro "Disco del Giorno" (kind music, vecchio sistema) restava sempre vuoto.
+  appointment:  { icon: "✨", label: "Appuntamenti", color: "#FF6BAA" },
 };
 
 const kindMeta = (k) => KIND_META[k] || { icon: "•", label: k || "evento", color: "#888" };
@@ -291,7 +294,8 @@ export default function AdminCalendar() {
           />
         </div>
         <div className="flex items-center gap-1.5 flex-wrap">
-          {[["all", "Tutti"], ...Object.entries(KIND_META).map(([k, m]) => [k, m.label])].map(([k, label]) => (
+          {/* #247410 · solo i tipi presenti in calendario (niente filtri vuoti del vecchio sistema) */}
+          {[["all", "Tutti"], ...Object.entries(KIND_META).filter(([k]) => k === filterKind || events.some((e) => e.kind === k)).map(([k, m]) => [k, m.label])].map(([k, label]) => (
             <button
               key={k}
               onClick={() => setFilterKind(k)}

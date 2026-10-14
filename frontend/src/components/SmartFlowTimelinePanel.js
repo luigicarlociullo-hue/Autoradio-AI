@@ -103,12 +103,27 @@ const _DAYS_IT = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom"];
 function RecurringSeriesList({ refreshKey }) {
   const [rows, setRows] = useState([]);
   const load = async () => {
-    try { const r = await api.get(`/admin/timeline`, { params: { status: "template", limit: 200 } }); setRows(r.data.events || []); } catch {}
+    try {
+      const [t, pd] = await Promise.all([
+        api.get(`/admin/timeline`, { params: { status: "template", limit: 200 } }),
+        api.get(`/admin/timeline`, { params: { status: "pending", limit: 200 } }),
+      ]);
+      // #247410 · anche gli eventi con "Ricorrenza: ogni ora/giorno/settimana" (si ripetono clonandosi,
+      // non sono template): prima la lista diceva "0 serie" anche con eventi ricorrenti attivi.
+      const simple = (pd.data.events || []).filter((e) => (e.recurrence && e.recurrence !== "none") || e.repeat_daily);
+      setRows([...(t.data.events || []), ...simple]);
+    } catch {}
   };
   useEffect(() => { load(); const iv = setInterval(load, 30000); return () => clearInterval(iv); }, [refreshKey]);
   const remove = async (t) => {
     if (!window.confirm(`Eliminare la serie "${t.title || t.kind}" e tutte le sue prossime occorrenze?`)) return;
     try { await api.delete(`/admin/timeline/${t.id}`); toast.success("Serie eliminata"); load(); } catch { toast.error("Errore eliminazione serie"); }
+  };
+  const descSimple = (e) => {
+    const rec = e.recurrence || (e.repeat_daily ? "daily" : "none");
+    const d = new Date(e.scheduled_at);
+    const hm = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+    return rec === "hourly" ? `ogni ora · prossima ${hm}` : rec === "weekly" ? `ogni settimana · prossima ${hm}` : `ogni giorno alle ${hm}`;
   };
   const desc = (r = {}) => {
     const pad = (n) => String(n).padStart(2, "0");
@@ -133,7 +148,7 @@ function RecurringSeriesList({ refreshKey }) {
           {t.kind === "appointment" && (
             <span className="px-1.5 py-0.5 rounded text-[9px] text-zinc-300 border border-white/15" data-testid={`series-priority-${t.id}`} title="Priorità 1-9 (ordina gli eventi dovuti nello stesso minuto)">P{t.appointment?.priority ?? 5}</span>
           )}
-          <span className="text-zinc-400 hidden md:inline">{desc(t.rrule)}</span>
+          <span className="text-zinc-400 hidden md:inline">{t.rrule ? desc(t.rrule) : descSimple(t)}</span>
           <button type="button" onClick={() => remove(t)} className="px-2 rounded text-[10px]" style={{ color: "#FF6BAA", border: "1px solid rgba(255,45,149,0.4)" }} data-testid={`series-delete-${t.id}`}>Elimina</button>
         </div>
       ))}
