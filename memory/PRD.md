@@ -832,3 +832,7 @@ Vedi turni precedenti in questa sessione:
 - `_attach_chained_appointments(doc, entry, now)`: dopo la promozione di qualunque evento, gli appuntamenti pending compatibili con orario in [ev−15min, ev] vengono claimati, risolti con `_appointment_resolve` e accodati dopo i follow_ups dell'evento (ordine minuto/priorità), `chained_after_event` sul doc.
 - Frontend: select "⛓ Concatena dopo" + "Priorità" in AppuntamentoLiberoForm; badge ⛓ e P<n> in "Serie ricorrenti attive".
 - Verifica in-process con eventi di prova (rimossi): wait/ordine/attach/scadenza corretti. Clock e player non toccati.
+
+## v13.62 · DISCLAIMER CONTENUTI UTENTE (2026-10-15)
+- `components/UserContentDisclaimer.js`: checkbox obbligatoria + testo (responsabilità utente, divieto contenuti offensivi/illegali/violazione diritti, R-A.I. non responsabile), `useUgcAccepted` persistente in sessionStorage `rai:ugc:accepted`.
+- Applicato a: ChatMini (testo + vocale MicButton disabilitato finché non accettato), Advertise (/pubblicita form campagna), Partner (/partner upload spot). Submit (/submit Umani vs Algoritmo) aveva già la dichiarazione obbligatoria → non toccato. Senza spunta: pulsanti disabilitati + guard nel submit.

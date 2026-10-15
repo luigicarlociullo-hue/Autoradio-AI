@@ -3,6 +3,7 @@ import { MessageCircle, Send } from "lucide-react";
 import { endpoints } from "@/lib/api";
 import MicButton from "@/components/MicButton";
 import { toast } from "sonner";
+import { UserContentDisclaimer, useUgcAccepted } from "@/components/UserContentDisclaimer";
 
 /**
  * ChatMini — CHAT NEURALE compatta per la colonna destra del cruscotto.
@@ -13,6 +14,7 @@ export default function ChatMini({ heightClass = "h-56" }) {
   const [name, setName] = useState("");
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
+  const [ugcOk, setUgcOk] = useUgcAccepted();  // disclaimer contenuti utente (obbligatorio)
   const [avatar, setAvatar] = useState(null);   // Identità digitale (v13.3)
   const scrollRef = useRef(null);
   const sessionStartRef = useRef(new Date().toISOString());
@@ -60,6 +62,7 @@ export default function ChatMini({ heightClass = "h-56" }) {
     if (e) e.preventDefault();
     const t = text.trim();
     if (!t || busy) return;
+    if (!ugcOk) { toast.error("Prima accetta le condizioni sui contenuti"); return; }
     setBusy(true);
     try {
       await endpoints.submitQuestion({ name: name || "Ascoltatore", question: t, source: "web" });
@@ -87,6 +90,7 @@ export default function ChatMini({ heightClass = "h-56" }) {
   const onVoice = async (transcript) => {
     const clean = (transcript || "").trim();
     if (!clean) return;
+    if (!ugcOk) { toast.error("Prima accetta le condizioni sui contenuti"); return; }
     setBusy(true);
     try {
       await endpoints.submitQuestion({
@@ -192,17 +196,18 @@ export default function ChatMini({ heightClass = "h-56" }) {
             >
               La tua voce in onda: registra ora!
             </span>
-            <MicButton disabled={busy} authorName={name} onTranscribed={onVoice} />
+            <MicButton disabled={busy || !ugcOk} authorName={name} onTranscribed={onVoice} />
           </div>
           <button
             type="submit"
-            disabled={busy || !text.trim()}
+            disabled={busy || !text.trim() || !ugcOk}
             data-testid="chat-mini-send"
             className="btn-primary inline-flex items-center gap-1.5 !text-[10px] disabled:opacity-40 whitespace-nowrap !px-3 !py-2"
           >
             <Send className="w-3 h-3" /> INVIA
           </button>
         </div>
+        <UserContentDisclaimer accepted={ugcOk} onChange={setUgcOk} testid="chat-mini-disclaimer" compact />
       </form>
     </div>
   );

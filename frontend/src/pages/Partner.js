@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import { Link } from "react-router-dom";
 import { Building2, Send, Upload, ArrowLeft, Sparkles, Mail } from "lucide-react";
 import { toast } from "sonner";
+import { UserContentDisclaimer, useUgcAccepted } from "@/components/UserContentDisclaimer";
 
 export default function Partner() {
   const backend = process.env.REACT_APP_BACKEND_URL;
@@ -15,11 +16,13 @@ export default function Partner() {
   const [end, setEnd] = useState("");
   const [freq, setFreq] = useState(2);
   const [busy, setBusy] = useState(false);
+  const [ugcOk, setUgcOk] = useUgcAccepted();  // disclaimer contenuti (obbligatorio)
 
   const submitUpload = async () => {
     if (!file) return toast.error("Seleziona un file MP3");
     if (!title.trim()) return toast.error("Titolo obbligatorio");
     if (!brand.trim()) return toast.error("Nome brand obbligatorio");
+    if (!ugcOk) return toast.error("Prima accetta le condizioni sui contenuti");
     setBusy(true);
     try {
       const fd = new FormData();
@@ -166,9 +169,10 @@ export default function Partner() {
               </div>
             </div>
 
+            <div className="mb-4"><UserContentDisclaimer accepted={ugcOk} onChange={setUgcOk} testid="partner-disclaimer" /></div>
             <button
               onClick={submitUpload}
-              disabled={busy}
+              disabled={busy || !ugcOk}
               data-testid="partner-submit"
               className="btn-primary inline-flex items-center gap-2"
               style={{ background: "linear-gradient(135deg, #FF6B1A 0%, #FFB84D 100%)" }}

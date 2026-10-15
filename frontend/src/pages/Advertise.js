@@ -4,6 +4,7 @@ import { Megaphone, Sparkles, Check, ArrowLeft, ShieldCheck, Zap } from "lucide-
 import { endpoints, api } from "@/lib/api";
 import BrandName from "@/components/BrandName";
 import { toast } from "sonner";
+import { UserContentDisclaimer, useUgcAccepted } from "@/components/UserContentDisclaimer";
 
 export default function Advertise() {
   const [tiers, setTiers] = useState({});
@@ -13,6 +14,7 @@ export default function Advertise() {
   const [message, setMessage] = useState("");
   const [email, setEmail] = useState("");
   const [busy, setBusy] = useState(false);
+  const [ugcOk, setUgcOk] = useUgcAccepted();  // disclaimer contenuti (obbligatorio)
 
   useEffect(() => {
     api.get("/ads/tiers").then(r => {
@@ -27,6 +29,7 @@ export default function Advertise() {
       toast.error("Compila brand e messaggio");
       return;
     }
+    if (!ugcOk) { toast.error("Prima accetta le condizioni sui contenuti"); return; }
     setBusy(true);
     try {
       const r = await api.post("/ads/create", {
@@ -162,9 +165,10 @@ export default function Advertise() {
               <div className="pb-2 text-xs font-mono text-zinc-500">IVA inclusa</div>
             </div>
 
+            <div className="mt-6"><UserContentDisclaimer accepted={ugcOk} onChange={setUgcOk} testid="ad-disclaimer" /></div>
             <button
               type="submit"
-              disabled={busy}
+              disabled={busy || !ugcOk}
               data-testid="ad-checkout-button"
               className="btn-primary mt-6 w-full flex items-center justify-center gap-2 text-base py-4"
             >
