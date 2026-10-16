@@ -204,7 +204,7 @@ export default function SyncLivePlayer() {
     const drift = (expected - hls.playingDate.getTime()) / 1000;   // >0 = siamo indietro
     if (Math.abs(drift) > 120) return;    // incoerente (cambio finestra / pod addormentato): non toccare
     driftRef.current = drift;
-    if (Math.abs(drift) > 8) scheduleBoundaryResync(d, `deriva ${drift.toFixed(1)}s`);
+    if (drift > 8) scheduleBoundaryResync(d, `deriva ${drift.toFixed(1)}s`);
   };
 
   // Coda riscritta in testa (segnale orario, talk DJ, evento Timeline inseriti DAVANTI a brani gia'
@@ -227,8 +227,10 @@ export default function SyncLivePlayer() {
       if (seenNew) {
         const w = watchRef.current;
         if (Date.now() - w.lastResync < 20000) return;
-        // #247410 · prima il resync era immediato e tagliava il brano in ascolto: ora al confine
-        scheduleBoundaryResync(d, "coda riscritta in testa");
+        console.warn("[SyncLive] coda riscritta in testa, resync automatico");
+        w.lastResync = Date.now();
+        if (boundaryTimerRef.current) { clearTimeout(boundaryTimerRef.current); boundaryTimerRef.current = null; }
+        startSync(true).catch(() => {});
         return;
       }
     }
