@@ -1066,3 +1066,65 @@ a.powered-by-signature:hover {
 }
 .rai-cta-btn:hover { transform: translateY(-2px) scale(1.02); box-shadow: 0 0 36px rgba(0, 229, 255, 0.55), inset 0 -2px 0 rgba(0, 0, 0, 0.18); }
 .rai-cta-btn:active { transform: scale(0.98); }
+
+/* ═══════════════════ v13.65 · LIVE MODE (dopo "Entra in diretta") ═══════════════════ */
+/* LedWall: in vetrina è uno schermo incassato (scala .94, angoli tondi, più scuro); in diretta esplode a tutto hero */
+.rai-ledlayer {
+  transform: scale(0.94);
+  border-radius: 26px;
+  overflow: hidden;
+  filter: brightness(0.82) saturate(0.95);
+  transition: transform .9s cubic-bezier(.16,1,.3,1), border-radius .9s ease, filter .9s ease;
+  will-change: transform;
+}
+.rai-ledlayer.is-live { transform: scale(1); border-radius: 0; filter: brightness(1) saturate(1.08); }
+.rai-hero-veil { transition: opacity .8s ease; }
+.rai-hero-veil.is-live { opacity: 0; }
+.rai-hero-content { transition: opacity .55s ease, transform .8s cubic-bezier(.16,1,.3,1), visibility 0s linear 0s; }
+.rai-hero-content.is-live { opacity: 0; transform: scale(0.9) translateY(-28px); visibility: hidden; transition: opacity .55s ease, transform .8s cubic-bezier(.16,1,.3,1), visibility 0s linear .6s; }
+.rai-hero-content.is-live, .rai-hero-content.is-live * { pointer-events: none !important; }
+
+/* Nav in diretta: solo icone, più bassa; auto-hide dopo 3s (torna al movimento) */
+.rai-topnav { transition: transform .45s cubic-bezier(.2,.7,.2,1), background-color .4s ease, border-color .4s ease; }
+.rai-topnav.is-live { background: rgba(3, 6, 14, 0.62); border-bottom-color: rgba(0, 229, 255, 0.18); }
+.rai-topnav.is-live .rai-nav-label { display: none; }
+.rai-topnav.is-live .rai-nav-btn { padding: 7px 9px; gap: 0; }
+.rai-topnav.is-live .rai-nav-btn svg { width: 15px; height: 15px; }
+.rai-topnav.is-hidden { transform: translateY(-105%); }
+
+/* Burst d'ingresso: flash + onde d'urto + scritta */
+@keyframes rai-burst-flash { 0% { opacity: .95; } 60% { opacity: .35; } 100% { opacity: 0; } }
+@keyframes rai-burst-ring { 0% { transform: translate(-50%,-50%) scale(.1); opacity: .9; } 100% { transform: translate(-50%,-50%) scale(3.2); opacity: 0; } }
+@keyframes rai-burst-label { 0% { opacity: 0; transform: translate(-50%,-50%) scale(.7); letter-spacing: .4em; } 25% { opacity: 1; transform: translate(-50%,-50%) scale(1.04); letter-spacing: .08em; } 70% { opacity: 1; } 100% { opacity: 0; transform: translate(-50%,-50%) scale(1.1); } }
+.rai-live-burst { background: radial-gradient(circle at 50% 50%, rgba(255,255,255,.85) 0%, rgba(0,229,255,.55) 22%, rgba(255,20,147,.25) 45%, rgba(0,0,0,0) 70%); animation: rai-burst-flash 1.3s ease-out forwards; }
+.rai-live-ring { position: absolute; left: 50%; top: 50%; width: 42vmin; height: 42vmin; border-radius: 50%; border: 3px solid rgba(0,229,255,.9); box-shadow: 0 0 40px rgba(0,229,255,.7), inset 0 0 30px rgba(0,229,255,.4); animation: rai-burst-ring 1.4s cubic-bezier(.2,.8,.2,1) forwards; }
+.rai-live-ring-2 { border-color: rgba(255,20,147,.85); box-shadow: 0 0 40px rgba(255,20,147,.6); animation-delay: .18s; }
+.rai-live-label { position: absolute; left: 50%; top: 50%; white-space: nowrap; color: #fff; font-size: clamp(1.1rem, 4.5vw, 3rem); text-shadow: 0 0 22px rgba(0,229,255,.9), 0 0 60px rgba(255,20,147,.6); animation: rai-burst-label 1.9s ease-out forwards; }
+
+/* Barra player compatta in basso */
+.rai-livebar {
+  background: rgba(3, 6, 14, 0.84);
+  backdrop-filter: blur(20px) saturate(1.3);
+  -webkit-backdrop-filter: blur(20px) saturate(1.3);
+  border-top: 1px solid rgba(0, 229, 255, 0.35);
+  box-shadow: 0 -10px 40px rgba(0, 0, 0, 0.6), 0 -1px 0 rgba(255, 20, 147, 0.15);
+  animation: rai-livebar-in .6s cubic-bezier(.16,1,.3,1) both;
+}
+@keyframes rai-livebar-in { from { transform: translateY(110%); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+.rai-livebar-play {
+  color: #02040A; font-weight: 900;
+  background: linear-gradient(135deg, #00E5FF 0%, #00A9FF 60%, #FF1493 140%);
+  box-shadow: 0 0 22px rgba(0, 229, 255, 0.55), inset 0 -2px 0 rgba(0, 0, 0, 0.18);
+  transition: transform .15s ease, box-shadow .3s ease, background .3s ease;
+}
+.rai-livebar-play.is-on { background: linear-gradient(135deg, #FF1493 0%, #FF3EA5 55%, #00E5FF 150%); box-shadow: 0 0 26px rgba(255, 20, 147, 0.65), inset 0 -2px 0 rgba(0, 0, 0, 0.18); }
+.rai-livebar-play:hover { transform: scale(1.06); }
+.rai-livebar-play:active { transform: scale(0.95); }
+.rai-livebar-icon { border: 1px solid rgba(0, 229, 255, 0.25); background: rgba(0, 229, 255, 0.06); transition: background-color .2s ease, border-color .2s ease; }
+.rai-livebar-icon:hover { background: rgba(0, 229, 255, 0.16); border-color: rgba(0, 229, 255, 0.7); }
+@keyframes rai-dot-pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .35; transform: scale(.7); } }
+.rai-livebar-dot { width: 7px; height: 7px; border-radius: 50%; background: #FF1493; box-shadow: 0 0 10px #FF1493; animation: rai-dot-pulse 1.2s ease-in-out infinite; }
+.rai-livebar-range { -webkit-appearance: none; appearance: none; height: 4px; border-radius: 999px; background: linear-gradient(90deg, #00E5FF, #FF1493); outline: none; cursor: pointer; }
+.rai-livebar-range::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%; background: #fff; box-shadow: 0 0 10px rgba(0,229,255,.8); border: 2px solid #00E5FF; }
+.rai-livebar-range::-moz-range-thumb { width: 14px; height: 14px; border-radius: 50%; background: #fff; border: 2px solid #00E5FF; }
+@media (prefers-reduced-motion: reduce) { .rai-ledlayer, .rai-hero-content, .rai-topnav, .rai-livebar { transition: none; animation: none; } .rai-live-burst, .rai-live-ring, .rai-live-label { animation-duration: .01s; } }
