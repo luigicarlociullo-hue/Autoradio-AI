@@ -212,28 +212,38 @@ export default function SyncLivePlayer() {
   // sequenza -> timeline incoerente -> silenzio a fine brano. Se un elemento nuovo compare PRIMA di
   // uno gia' annunciato, resync immediato (stesso effetto di Esci/Entra), invece di aspettare lo stallo.
   const queueSigRef = useRef(null);
+  // #247410 · Regola rigorosa: un avanzamento normale toglie elementi SOLO in testa e ne aggiunge
+  // SOLO in coda (nuova lista = continuazione della precedente). Qualsiasi altra differenza
+  // (segnale orario/evento/appuntamento come nuovo "current", elementi inseriti in mezzo) = coda
+  // riscritta -> resync. Prima serviva un elemento gia' visto DOPO quelli nuovi: se segnale orario +
+  // catena dell'appuntamento riempivano tutta la finestra (5 elementi) il resync non partiva mai e si
+  // continuava ad ascoltare la coda vecchia (21:03: niente segnale orario ne' Disco del Giorno).
+  const isQueueRewrite = (prev, ids) => {
+    if (!prev || !prev.length || !ids.length) return false;
+    const k = prev.indexOf(ids[0]);
+    if (k === -1) return true;                       // in testa c'e' un elemento mai annunciato
+    for (let i = 0; k + i < prev.length && i < ids.length; i++) {
+      if (ids[i] !== prev[k + i]) return true;       // inserimento/riordino in mezzo alla coda
+    }
+    return false;
+  };
   const detectQueueRewrite = (d) => {
     const ids = [d?.current, ...(d?.next || [])]
       .map((t) => t?.id || t?.audio_url)
       .filter(Boolean);
     const prev = queueSigRef.current;
-    queueSigRef.current = ids;
     const audio = audioRef.current;
-    if (!prev || !hlsRef.current || !audio || audio.paused) return;
-    const prevSet = new Set(prev);
-    let seenNew = false;
-    for (const id of ids) {
-      if (!prevSet.has(id)) { seenNew = true; continue; }
-      if (seenNew) {
-        const w = watchRef.current;
-        if (Date.now() - w.lastResync < 20000) return;
-        console.warn("[SyncLive] coda riscritta in testa, resync automatico");
-        w.lastResync = Date.now();
-        if (boundaryTimerRef.current) { clearTimeout(boundaryTimerRef.current); boundaryTimerRef.current = null; }
-        startSync(true).catch(() => {});
-        return;
-      }
-    }
+    if (!prev || !hlsRef.current || !audio || audio.paused) { queueSigRef.current = ids; return; }
+    if (!isQueueRewrite(prev, ids)) { queueSigRef.current = ids; return; }
+    const w = watchRef.current;
+    // In cooldown: NON aggiornare la firma, cosi' la riscrittura viene rilevata di nuovo al prossimo
+    // poll e il resync parte appena finisce il cooldown (prima veniva persa per sempre).
+    if (Date.now() - w.lastResync < 20000) return;
+    queueSigRef.current = ids;
+    console.warn("[SyncLive] coda riscritta, resync automatico");
+    w.lastResync = Date.now();
+    if (boundaryTimerRef.current) { clearTimeout(boundaryTimerRef.current); boundaryTimerRef.current = null; }
+    startSync(true).catch(() => {});
   };
 
   // Poll /api/stream/now ogni 5s per il display "cosa sta suonando" + coda
