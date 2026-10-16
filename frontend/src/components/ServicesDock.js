@@ -78,11 +78,12 @@ function dockBtnStyle(accent) {
   };
 }
 
-function StudiosDialog() {
+// v13.64 · `trigger` opzionale: la Home monta gli stessi dialog dalla barra di navigazione in alto.
+export function StudiosDialog({ trigger = null }) {
   return (
     <Dialog>
       <DialogTrigger asChild>
-        <button
+        {trigger || <button
           type="button"
           data-testid="dock-studios"
           title="R-A.I. Virtual Studios"
@@ -90,7 +91,7 @@ function StudiosDialog() {
           style={dockBtnStyle("#00E5FF")}
         >
           <Building2 className="w-4 h-4 text-cyan-300" />
-        </button>
+        </button>}
       </DialogTrigger>
       <DialogContent
         className="bg-black text-white p-0 border-0 max-w-[96vw] w-[96vw] sm:max-w-[92vw] md:max-w-[88vw]"
@@ -129,11 +130,11 @@ function StudiosDialog() {
   );
 }
 
-function ContattiDialog() {
+export function ContattiDialog({ trigger = null }) {
   return (
     <Dialog>
       <DialogTrigger asChild>
-        <button
+        {trigger || <button
           type="button"
           data-testid="dock-contatti"
           title="Comunicazione Ufficiale"
@@ -141,7 +142,7 @@ function ContattiDialog() {
           style={dockBtnStyle("#B8ECFF")}
         >
           <Mail className="w-4 h-4" style={{ color: "#B8ECFF" }} />
-        </button>
+        </button>}
       </DialogTrigger>
       <DialogContent
         data-testid="contatti-dialog"
