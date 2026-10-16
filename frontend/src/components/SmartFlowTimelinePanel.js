@@ -96,6 +96,60 @@ function AssetPicker({ sources, value, onChange, placeholder = "- seleziona dal 
   );
 }
 
+// v13.63 · PRE-SEGNALE ORARIO — file del Magazzino (qualsiasi categoria) in onda subito
+// prima del segnale orario automatico, senza pause. Senza file → segnale orario come oggi.
+function PreTimeSignalBox({ sources }) {
+  const [cfg, setCfg] = useState(null);
+  const [pick, setPick] = useState("");
+  const [busy, setBusy] = useState(false);
+  const load = async () => { try { const r = await api.get("/admin/time-signal/pre-audio"); setCfg(r.data.pre_audio || null); } catch {} };
+  useEffect(() => { load(); }, []);
+  const save = async () => {
+    if (!pick) return;
+    setBusy(true);
+    try {
+      const r = await api.put("/admin/time-signal/pre-audio", { track_id: pick });
+      setCfg(r.data.pre_audio); setPick("");
+      toast.success("Pre-segnale orario impostato");
+    } catch (e) { toast.error(e?.response?.data?.detail || "Errore salvataggio"); }
+    finally { setBusy(false); }
+  };
+  const remove = async () => {
+    if (!window.confirm("Rimuovere il pre-segnale orario? Il segnale orario partirà direttamente.")) return;
+    setBusy(true);
+    try { await api.delete("/admin/time-signal/pre-audio"); setCfg(null); toast.success("Pre-segnale rimosso"); }
+    catch { toast.error("Errore rimozione"); }
+    finally { setBusy(false); }
+  };
+  return (
+    <div className="mt-2 rounded p-2" style={{ background: "rgba(255,184,77,0.05)", border: "1px dashed rgba(255,184,77,0.4)" }} data-testid="ts-pre-audio-box">
+      <div className="text-[10px] font-mono mb-1" style={{ color: "#FFB84D" }}>
+        ⏮️ Pre-segnale orario · file in onda SUBITO PRIMA del segnale orario, senza pause (es. stacco, sigla, FX).
+      </div>
+      {cfg ? (
+        <div className="flex items-center gap-2 flex-wrap" data-testid="ts-pre-audio-current">
+          <span className="text-xs text-white font-mono truncate">
+            ● {cfg.artist ? `${cfg.artist} — ` : ""}{cfg.title || cfg.track_id}{cfg.duration_sec ? ` (${Math.round(cfg.duration_sec)}s)` : ""}
+          </span>
+          <button type="button" onClick={remove} disabled={busy} data-testid="ts-pre-audio-remove"
+            className="px-3 py-1 rounded text-xs font-bold" style={{ background: "rgba(255,45,149,0.2)", border: "1px solid rgba(255,45,149,0.5)", color: "#fff" }}>
+            ✕ Rimuovi
+          </button>
+        </div>
+      ) : (
+        <div className="text-[10px] font-mono text-zinc-500 mb-1" data-testid="ts-pre-audio-empty">○ Nessun file: il segnale orario parte direttamente.</div>
+      )}
+      <div className="flex gap-2 items-end mt-1">
+        <AssetPicker sources={sources} value={pick} onChange={setPick} testid="ts-pre-audio" className="flex-1 min-w-0" placeholder="- scegli il pre-segnale dal Magazzino -" />
+        <button type="button" onClick={save} disabled={busy || !pick} data-testid="ts-pre-audio-save"
+          className="px-3 py-1.5 rounded text-xs font-bold mb-4 disabled:opacity-40" style={{ background: "rgba(255,184,77,0.2)", border: "1px solid rgba(255,184,77,0.5)", color: "#fff" }}>
+          {busy ? "…" : cfg ? "Sostituisci" : "Imposta"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // #247410 · Le serie ricorrenti sono salvate come "template" e non comparivano mai nella
 // lista "In attesa" (solo eventi pending, creati ~90s prima della messa in onda): il cliente
 // pensava che creando una nuova serie la precedente venisse cancellata. Qui le mostriamo tutte.
@@ -825,6 +879,7 @@ export default function SmartFlowTimelinePanel() {
                   </button>
                 </div>
               </div>
+              <PreTimeSignalBox sources={sources} />
             </div>
           )}
 

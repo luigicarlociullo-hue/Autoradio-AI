@@ -836,3 +836,9 @@ Vedi turni precedenti in questa sessione:
 ## v13.62 · DISCLAIMER CONTENUTI UTENTE (2026-10-15)
 - `components/UserContentDisclaimer.js`: checkbox obbligatoria + testo (responsabilità utente, divieto contenuti offensivi/illegali/violazione diritti, R-A.I. non responsabile), `useUgcAccepted` persistente in sessionStorage `rai:ugc:accepted`.
 - Applicato a: ChatMini (testo + vocale MicButton disabilitato finché non accettato), Advertise (/pubblicita form campagna), Partner (/partner upload spot). Submit (/submit Umani vs Algoritmo) aveva già la dichiarazione obbligatoria → non toccato. Senza spunta: pulsanti disabilitati + guard nel submit.
+
+## v13.63 · PRE-SEGNALE ORARIO (2026-10-16)
+- `station.state.time_signal_pre_audio` = {track_id,title,artist,audio_url,duration_sec} · endpoint Regia `GET/PUT/DELETE /api/admin/time-signal/pre-audio` (PUT body {track_id} dal Magazzino, qualsiasi categoria).
+- Unico aggancio: `_timeline_pick_due` → `_ts_pre_audio_wrap(entry)` SOLO per eventi ora_esatta/time_signal con audio risolto: il pre-file diventa la entry promossa (kind=time_signal → LedWall orologio) e il segnale orario + i suoi follow-up (minuto, spot, appuntamenti) passano come follow_ups (zero-gap, stesso meccanismo ORA→MINUTO). Senza config → inerte. Logica TS/player//api/stream non toccati.
+- UI: `PreTimeSignalBox` in `SmartFlowTimelinePanel.js` (visibile con kind=Segnale orario): stato, AssetPicker, Imposta/Sostituisci, Rimuovi con conferma. testid `ts-pre-audio-*`.
+- Verifica: curl 401 unauth, GET/PUT/DELETE ok, 404 su track inesistente; test in-process wrap (ordine pre→TS→minuto→spot, inerte senza config). E2E su evento reale NON possibile in preview (nessun segnale orario permanente per l'ora corrente: evento saltato, pre-file correttamente NON inserito). Config di test rimossa: in preview nessun pre-file impostato.

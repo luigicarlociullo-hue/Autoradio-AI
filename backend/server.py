@@ -8558,7 +8558,79 @@ async def _timeline_pick_due() -> Optional[dict]:
         return None
     # v13.61 · "Concatena dopo": appuntamenti in attesa di questo evento → accodati dopo i suoi follow_ups
     entry = await _attach_chained_appointments(doc, entry, now)
+    if doc.get("kind") in ("ora_esatta", "time_signal"):
+        entry = await _ts_pre_audio_wrap(entry)  # v13.63 · pre-segnale orario (inerte se non configurato)
     return entry
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# v13.63 · PRE-SEGNALE ORARIO — file del Magazzino (qualsiasi categoria) che va in onda
+# subito prima del segnale orario, zero-gap. Config in station.state.time_signal_pre_audio.
+# Il segnale orario (con i suoi follow-up: minuto, spot, appuntamenti) diventa il primo
+# follow_up del pre-file: stesso meccanismo d'iniezione già usato per ORA→MINUTO.
+# ═══════════════════════════════════════════════════════════════════════════
+async def _ts_pre_audio_get() -> Optional[dict]:
+    st = await db.station.find_one({"_id": "state"}, {"time_signal_pre_audio": 1}) or {}
+    cfg = st.get("time_signal_pre_audio")
+    return cfg if isinstance(cfg, dict) and cfg.get("audio_url") else None
+
+
+async def _ts_pre_audio_wrap(ts_entry: dict) -> dict:
+    cfg = await _ts_pre_audio_get()
+    if not cfg or not ts_entry.get("audio_url"):
+        return ts_entry
+    ts_as_follow_up = {
+        "id": ts_entry.get("id"), "title": ts_entry.get("title"), "artist": ts_entry.get("artist"),
+        "audio_url": ts_entry["audio_url"], "kind": ts_entry.get("kind"),
+        "duration_sec": ts_entry.get("real_duration_sec") or ts_entry.get("duration_sec"),
+        "video_url": ts_entry.get("video_url"),
+    }
+    head = dict(ts_entry)
+    head.update({
+        "id": f"tspre-{uuid.uuid4().hex[:10]}",
+        "title": cfg.get("title") or "Pre-segnale orario",
+        "artist": cfg.get("artist") or "R-A.I.",
+        "audio_url": cfg["audio_url"],
+        "duration_sec": _pad_short(float(cfg.get("duration_sec") or 10)),
+        "real_duration_sec": None,
+        "kind": "time_signal",  # LedWall resta in modalità orologio
+        "is_ts_pre_audio": True,
+        "video_url": None,
+        "follow_up": None,
+        "follow_ups": [ts_as_follow_up] + list(ts_entry.get("follow_ups") or []),
+    })
+    logger.info(f"[time-signal] pre-segnale '{head['title']}' → {ts_entry.get('title')}")
+    return head
+
+
+@api_router.get("/admin/time-signal/pre-audio")
+async def admin_ts_pre_audio_get():
+    return {"pre_audio": await _ts_pre_audio_get()}
+
+
+@api_router.put("/admin/time-signal/pre-audio")
+async def admin_ts_pre_audio_put(payload: dict):
+    track_id = (payload.get("track_id") or "").strip()
+    if not track_id:
+        raise HTTPException(400, "track_id richiesto")
+    t = await db.tracks.find_one(
+        {"id": track_id, "deleted_at": None},
+        {"_id": 0, "id": 1, "title": 1, "artist": 1, "audio_url": 1, "duration_sec": 1})
+    if not t or not t.get("audio_url"):
+        raise HTTPException(404, "File non trovato nel Magazzino")
+    cfg = {"track_id": t["id"], "title": t.get("title"), "artist": t.get("artist"),
+           "audio_url": t["audio_url"], "duration_sec": float(t.get("duration_sec") or 0) or None,
+           "updated_at": now_iso()}
+    await db.station.update_one({"_id": "state"}, {"$set": {"time_signal_pre_audio": cfg}}, upsert=True)
+    logger.info(f"[time-signal] pre-segnale impostato: {cfg['title']} ({cfg['track_id']})")
+    return {"ok": True, "pre_audio": cfg}
+
+
+@api_router.delete("/admin/time-signal/pre-audio")
+async def admin_ts_pre_audio_delete():
+    await db.station.update_one({"_id": "state"}, {"$unset": {"time_signal_pre_audio": ""}})
+    logger.info("[time-signal] pre-segnale rimosso")
+    return {"ok": True, "pre_audio": None}
 
 
 @api_router.post("/admin/timeline")
