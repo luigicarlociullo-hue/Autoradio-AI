@@ -1,4 +1,5 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { Link } from "react-router-dom";
 import {
   Play, Pause, SkipForward, Radio, Send, Volume2, Sparkles, Users,
@@ -666,7 +667,7 @@ export default function PublicRadio() {
   const wakeLockRef = useRef(null);
   const nativeFsRef = useRef(false);   // true solo se il fullscreen nativo è davvero attivo
   const enterLedFs = async () => {
-    setLedFs(true);
+    try { flushSync(() => setLedFs(true)); } catch (e) { setLedFs(true); }  // monta il layer FS subito, dentro il gesto utente
     const el = ledFsRef.current;
     try {
       if (el?.requestFullscreen) { await el.requestFullscreen({ navigationUI: "hide" }); nativeFsRef.current = true; }
@@ -708,11 +709,9 @@ export default function PublicRadio() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ledFs]);
 
-  // v13.67 · STATO DIRETTA — la pagina NON si trasforma: parte l'audio e il LedWall diventa
-  // cliccabile (→ fullscreen). La barra player vive solo dentro il fullscreen. Su mobile in
-  // orientamento orizzontale il fullscreen parte da solo al click su "Entra in diretta".
-  // Il player non viene toccato: la barra lo pilota con gli eventi esistenti
-  // (rai:sync:pause → stop, rai:sync:skip → riaggancio al clock live).
+  // v13.68 · DUE STATI: VETRINA (prima del play) e DIRETTA (consolle precedente ripristinata, commit 4de1250).
+  // Il SyncLivePlayer è montato UNA sola volta in un host stabile e il suo nodo DOM viene spostato
+  // nello slot del layout attivo (vetrina/consolle): l'audio non si interrompe mai al cambio di stato.
   const [volume, setVolume] = useState(() => { try { const v = localStorage.getItem("rai:volume"); return v === null ? 1 : Math.min(1, Math.max(0, Number(v))); } catch { return 1; } });
   const [muted, setMuted] = useState(false);
   const liveBarToggle = () => {
@@ -724,7 +723,7 @@ export default function PublicRadio() {
     try { return window.matchMedia("(orientation: landscape)").matches && (window.matchMedia("(pointer: coarse)").matches || window.innerHeight < 500); }
     catch (e) { return false; }
   };
-  // click su "Entra in diretta" (catturato nel gesto utente → fullscreen nativo consentito)
+  // click su "Entra in diretta" (catturato nel gesto utente → fullscreen nativo consentito su mobile orizzontale)
   const onPlayerClickCapture = (e) => {
     try {
       if (e.target?.closest?.('[data-testid="sync-live-toggle"]') && !syncPlaying && isMobileLandscape()) enterLedFs();
@@ -739,8 +738,7 @@ export default function PublicRadio() {
   const audioOnRef = useRef(false);
   audioOnRef.current = audioOn;
   useEffect(() => {
-    // telefono ruotato in orizzontale mentre suona (supporto auto) → fullscreen (fallback CSS se il nativo richiede un gesto)
-    const onOrient = () => { setTimeout(() => { if (audioOnRef.current && !ledFsRef.current?.matches?.(".rai-fs-active") && isMobileLandscape()) enterLedFs(); }, 150); };
+    const onOrient = () => { setTimeout(() => { if (audioOnRef.current && !ledFsRef.current && isMobileLandscape()) enterLedFs(); }, 150); };
     window.addEventListener("orientationchange", onOrient);
     return () => window.removeEventListener("orientationchange", onOrient);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -756,7 +754,46 @@ export default function PublicRadio() {
     return () => clearTimeout(t);
   }, [volume, muted, syncPlaying]);
   const barPlaying = audioOn;
-  const ctrlTop = ledFs ? "top-3" : "top-[4.25rem]";
+
+  // host stabile del player + slot per stato
+  const playerHostRef = useRef(null);
+  const vetrinaSlotRef = useRef(null);
+  const consoleSlotRef = useRef(null);
+  useLayoutEffect(() => {
+    const host = playerHostRef.current;
+    const slot = audioOn ? consoleSlotRef.current : vetrinaSlotRef.current;
+    if (host && slot && host.parentNode !== slot) slot.appendChild(host);
+  });
+
+  // 2 · ogni ingresso in diretta → LedWall parte con il logo rotante
+  useEffect(() => { if (audioOn) setLedEffect("logo"); }, [audioOn]);
+
+  // 1 · fullscreen: controlli solo al tocco/click (spariscono dopo 3s), info brano al centro ad ogni cambio
+  const [fsCtrlVisible, setFsCtrlVisible] = useState(true);
+  const fsCtrlTimerRef = useRef(null);
+  const pokeFsCtrl = () => {
+    setFsCtrlVisible(true);
+    if (fsCtrlTimerRef.current) clearTimeout(fsCtrlTimerRef.current);
+    fsCtrlTimerRef.current = setTimeout(() => setFsCtrlVisible(false), 3000);
+  };
+  useEffect(() => {
+    if (!ledFs) return;
+    pokeFsCtrl();
+    return () => { if (fsCtrlTimerRef.current) clearTimeout(fsCtrlTimerRef.current); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ledFs]);
+  const [fsTrackInfo, setFsTrackInfo] = useState(null);
+  const fsTrackTimerRef = useRef(null);
+  const fsTrackKey = `${displayCurrent?.id || ""}|${displayCurrent?.title || ""}|${displayCurrent?.artist || ""}`;
+  useEffect(() => {
+    if (!ledFs || !displayCurrent?.title) { setFsTrackInfo(null); return; }
+    setFsTrackInfo({ title: displayCurrent.title, artist: displayCurrent.artist || displayCurrent.dj_name || "", kind: displayCurrent.kind });
+    if (fsTrackTimerRef.current) clearTimeout(fsTrackTimerRef.current);
+    fsTrackTimerRef.current = setTimeout(() => setFsTrackInfo(null), 4500);
+    return () => { if (fsTrackTimerRef.current) clearTimeout(fsTrackTimerRef.current); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ledFs, fsTrackKey]);
+  const ctrlTop = "top-[4.25rem]";
   // v13.64 · HOME REDESIGN — LedWall in rotazione automatica + fullscreen (desktop/mobile)
   const activeLedEffect = ledEffect === "rotate" ? LED_ROTATION[ledRotIdx % LED_ROTATION.length] : ledEffect;
 
@@ -768,7 +805,608 @@ export default function PublicRadio() {
   const navBtnClass = (extra = "") => `rai-nav-btn focusable ${extra}`.trim();
 
   return (
-    <div className="relative min-h-screen text-white rai-home" data-audio-on={audioOn ? "true" : "false"}>
+    <div className="relative min-h-screen text-white rai-home" data-audio-on={audioOn ? "true" : "false"} data-home-state={audioOn ? "diretta" : "vetrina"}>
+      {/* v13.68 · host stabile del SyncLivePlayer: montato una volta sola, il nodo viene spostato nello slot attivo */}
+      <div style={{ display: "contents" }} onClickCapture={onPlayerClickCapture}>
+        <div ref={playerHostRef} data-testid="sync-player-host"><SyncLivePlayer /></div>
+      </div>
+      {/* v13.68 · LEDWALL A SCHERMO INTERO (layer unico a livello root: sopravvive al cambio vetrina↔consolle).
+          Nessun overlay permanente: controlli solo al tocco (3s), info brano al centro ad ogni cambio (4.5s). */}
+      {ledFs && (
+        <div ref={ledFsRef} className="fixed inset-0 z-[100] bg-black rai-fs-wrap rai-fs-active select-none" data-testid="home-ledwall-fs"
+          data-fullscreen="true" data-controls-visible={fsCtrlVisible ? "true" : "false"}
+          onPointerDown={pokeFsCtrl} onPointerMove={pokeFsCtrl}>
+          <LedWall
+            isPlaying={audioOn || broadcastMode === "live_external"}
+            current={effectiveCurrent}
+            trackOverlay={trackOverlay}
+            djs={djs}
+            fillHeight
+            effect={ledEffect}
+          />
+          <div className={`absolute inset-x-0 top-0 z-[110] flex items-start justify-between p-3 transition-opacity duration-500 ${fsCtrlVisible ? "opacity-100" : "opacity-0 pointer-events-none"}`} data-testid="fs-controls">
+            <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+              <label className="sr-only" htmlFor="ledwall-fs-effect-select">Effetto visivo</label>
+              <select
+                id="ledwall-fs-effect-select"
+                value={ledEffect}
+                onChange={(e) => { setLedEffect(e.target.value); try { localStorage.setItem("rai:ledwall:effect", e.target.value); } catch {} }}
+                data-testid="ledwall-fs-effect-select"
+                className="bg-black/70 border border-cyan-400/30 rounded px-1.5 py-1 text-[11px] font-mono text-cyan-100"
+              >
+                <option value="logo">Logo rotante a ritmo</option>
+                <option value="rotate">Rotazione automatica</option>
+                <option value="auto">Onde sinusoidali</option>
+                <option value="gradient">Gradiente animato</option>
+                <option value="rings">Anelli/particelle a ritmo</option>
+                <option value="eq">Barre EQ/waveform</option>
+                <option value="starfield">Starfield/warp</option>
+                <option value="holo">Sfera olografica</option>
+              </select>
+            </div>
+            <button type="button" onClick={(e) => { e.stopPropagation(); exitLedFs(); }} data-testid="ledwall-fullscreen-exit" aria-label="Esci dallo schermo intero"
+              className="inline-flex items-center gap-1.5 rounded-full px-3 py-2 text-[11px] font-mono uppercase tracking-widest focusable"
+              style={{ background: "rgba(0,0,0,0.6)", border: "1px solid rgba(0,229,255,0.4)", color: "#CFF8FF", backdropFilter: "blur(8px)" }}>
+              <Minimize2 className="w-4 h-4" /> Esci
+            </button>
+          </div>
+          {fsTrackInfo && (
+            <div className="absolute inset-0 z-[105] flex items-center justify-center pointer-events-none px-6" data-testid="fs-track-info">
+              <div className="rai-fs-track text-center">
+                <div className="text-[10px] font-mono uppercase tracking-[0.35em] text-cyan-300/90 mb-2">In onda</div>
+                <div className="font-display font-black text-2xl sm:text-4xl lg:text-5xl text-white leading-tight line-clamp-2 break-words">{fsTrackInfo.title}</div>
+                {fsTrackInfo.artist && <div className="mt-2 text-sm sm:text-lg text-zinc-200 font-mono tracking-wide line-clamp-1">{fsTrackInfo.artist}</div>}
+              </div>
+            </div>
+          )}
+          {!audioOn && (
+            <LiveBar
+              inFullscreen playing={barPlaying} onToggle={liveBarToggle} current={displayCurrent} kindCurrent={effectiveCurrent}
+              muted={muted} setMuted={setMuted} volume={volume} setVolume={setVolume}
+              onExitFullscreen={exitLedFs}
+            />
+          )}
+        </div>
+      )}
+      {audioOn ? (
+        <>
+      {/* ================ STATO DIRETTA · consolle precedente (ripristinata dal commit 4de1250) ================ */}
+      <ServicesDock />
+      {/* Console background: nero + grid + orbi blu + scanlines */}
+      <div
+        aria-hidden
+        className="fixed inset-0 pointer-events-none overflow-hidden rai-bg"
+        style={{ zIndex: 0 }}
+        data-testid="animated-bg"
+      >
+        <div className="rai-bg-grid" />
+        <div className="rai-bg-orb rai-bg-orb-1" />
+        <div className="rai-bg-orb rai-bg-orb-2" />
+        <div className="rai-bg-orb rai-bg-orb-3" />
+        <div className="rai-bg-scan" />
+        <div
+          className="absolute inset-0"
+          style={{
+            background:
+              "linear-gradient(180deg, rgba(2,4,10,0.55) 0%, rgba(2,4,10,0.75) 55%, rgba(2,4,10,0.94) 100%)",
+          }}
+        />
+      </div>
+
+      {/* ================ HEADER — Console top bezel ================ */}
+      <header className="glass sticky top-0 z-40 relative">
+        <div className="max-w-7xl mx-auto px-4 py-2.5 flex items-center justify-between gap-3 flex-wrap">
+          <div className="flex items-center gap-3 min-w-0 relative header-brand-group">
+            {/* SIMBOLO GRAFICO R-A.I. — con firma autografo attaccata al bordo */}
+            <div
+              className="w-14 h-14 shrink-0 flex items-center justify-center"
+              data-testid="rai-logo"
+              style={{ filter: "drop-shadow(0 0 10px rgba(0,229,255,0.55))" }}
+            >
+              <RaiOrbLogo size={56} />
+              {/* Firma autografo — appena sopra-destra del cerchio, in diagonale */}
+              <a
+                href="https://www.facebook.com/profile.php?id=61592908061493"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="powered-by-signature focusable"
+                data-testid="powered-by"
+                title="L&C Project · Facebook"
+              >
+                Powered by <span className="lc-brand">L&amp;C Project</span>
+              </a>
+            </div>
+            <div className="min-w-0">
+              <BrandName className="font-display font-black text-lg sm:text-xl text-glow-blue" />
+              <div className="label-mono !text-[9px] !tracking-widest mt-0.5">
+                AI CONTROL ROOM
+              </div>
+            </div>
+          </div>
+
+          {/* Main Partner slot inline nell'header */}
+          <div className="hidden md:flex flex-1 justify-center min-w-0">
+            <MainPartnerSlot />
+          </div>
+
+          <nav className="flex items-center gap-2">
+            {onAir ? (
+              <div className="on-air-badge !py-1 !px-3 !text-[11px]" data-testid="live-indicator">
+                <span className="dot" />
+                <span>ON AIR</span>
+              </div>
+            ) : (
+              <div className="standby-badge !py-1 !px-3 !text-[11px]" data-testid="standby-indicator">
+                <span className="dot" />
+                <span>STANDBY</span>
+              </div>
+            )}
+            <a
+              href="/dashboard"
+              target="_blank"
+              rel="noopener noreferrer"
+              data-testid="admin-link"
+              className="btn-outline focusable !py-1.5 !px-2.5 !text-[11px] inline-flex items-center"
+            >
+              <Cpu className="w-3.5 h-3.5 mr-1.5" /> Regia
+            </a>
+          </nav>
+        </div>
+        {/* Main Partner mobile — sotto header */}
+        <div className="md:hidden px-4 pb-2">
+          <MainPartnerSlot />
+        </div>
+      </header>
+
+      {/* ================ HERO — Stazione broadcast 3-col (v13.45) ================
+          Desktop: SX player + brano in onda · CENTRO LedWall dominante · DX info essenziali.
+          Mobile: LedWall a piena larghezza per primo, poi player, poi info, poi chat. */}
+      <section className="max-w-7xl mx-auto px-3 sm:px-4 pt-2 pb-0 relative z-10" data-testid="home-hero">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 lg:gap-4 items-stretch">
+
+          {/* ── SX (3/12): PLAYER + BRANO IN ONDA ── */}
+          <div className="order-2 lg:order-1 lg:col-span-3 console-panel p-4 flex flex-col min-w-0" data-testid="home-player-col">
+            <CornerAccents />
+            <div className="flex items-center justify-between gap-2">
+              {onAir ? (
+                <span className="on-air-badge !py-0.5 !px-2 !text-[10px]"><span className="dot" /> ON AIR</span>
+              ) : (
+                <span className="standby-badge !py-0.5 !px-2 !text-[10px]"><span className="dot" /> STANDBY</span>
+              )}
+              {displayCurrent?.kind && <KindBadge kind={displayCurrent.kind} />}
+            </div>
+
+            {/* Copertina (se disponibile) oppure avatar R-AI */}
+            <div className="mt-4 flex items-center gap-3">
+              {displayCurrent?.image_url ? (
+                <img src={displayCurrent.image_url} alt="" className="w-20 h-20 rounded-lg object-cover shrink-0"
+                  style={{ boxShadow: "0 0 18px rgba(0,229,255,0.35)" }} data-testid="now-playing-cover" />
+              ) : (
+                <BigCue
+                  size={80}
+                  mode={(function () {
+                    const k = (effectiveCurrent?.kind || "").toLowerCase();
+                    if (!isPlaying && !isPreparing) return "idle";
+                    if (isPreparing) return "thinking";
+                    if (["talk","joke","weather","horoscope","interview","motivation","history","news","answer","community"].includes(k)) return "speaking";
+                    if (k === "music") return "happy";
+                    if (k === "time_signal") return "alert";
+                    if (k === "jingle") return "listen";
+                    return "idle";
+                  })()}
+                />
+              )}
+              <div className="min-w-0 flex-1" data-testid="now-playing-title">
+                <div className="text-[9px] font-mono uppercase tracking-[0.3em] text-cyan-400/80">In onda</div>
+                <div className="font-display text-base sm:text-lg font-black text-white leading-tight line-clamp-3 break-words" data-testid="current-title">
+                  {displayCurrent?.title || "R-A.I. Radio"}
+                </div>
+                <div className="text-sm text-zinc-300 line-clamp-2 mt-0.5" data-testid="current-artist">
+                  {displayCurrent?.artist || displayCurrent?.dj_name || "La radio che pensa da sola"}
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-3"><Waveform active={isPlaying} /></div>
+
+            <div className="mt-4" ref={consoleSlotRef} data-testid="console-player-slot" />
+
+            {/* elementi tecnici nascosti dalla home (restano nel codice) */}
+            {/* Ticket #247410: rimosso su decisione del cliente — era solo decorativo
+                (frasi tecniche casuali). Resta solo il Live Brain reale, piu' in basso,
+                ora con lo stesso verde "vecchio monitor". Il componente resta nel codice. */}
+            {false && <LiveBrainTicker current={effectiveCurrent} />}
+            {false && <CueThinking current={effectiveCurrent} />}
+          </div>
+
+          {/* ── CENTRO (6/12): LEDWALL dominante · su mobile per primo, piena larghezza ── */}
+          <div className="order-1 lg:order-2 lg:col-span-6 relative flex flex-col min-w-0 -mx-3 sm:mx-0 cursor-pointer" data-testid="home-ledwall-col"
+            style={{ minHeight: "min(62vw, 560px)" }}
+            data-clickable="true" role="button" aria-label="Apri il LedWall a schermo intero" title="Tocca per lo schermo intero"
+            onClick={enterLedFs}>
+            <div className="absolute -top-2 right-3 z-20 hidden sm:block"><VuMeter /></div>
+            <div className="absolute top-2 left-3 z-20 flex items-center gap-1.5" data-testid="ledwall-effect-control" onClick={(e) => e.stopPropagation()}>
+              <label className="sr-only" htmlFor="ledwall-effect-select">Effetto visivo</label>
+              <select
+                id="ledwall-effect-select"
+                value={ledEffect}
+                onChange={(e) => { setLedEffect(e.target.value); try { localStorage.setItem("rai:ledwall:effect", e.target.value); } catch {} }}
+                data-testid="ledwall-effect-select"
+                className="bg-black/70 border border-cyan-400/30 rounded px-1.5 py-0.5 text-[10px] font-mono text-cyan-100"
+              >
+                <option value="logo">Logo rotante a ritmo</option>
+                <option value="auto">Auto (onde sinusoidali)</option>
+                <option value="gradient">Gradiente animato</option>
+                <option value="rings">Anelli/particelle a ritmo</option>
+                <option value="eq">Barre EQ/waveform</option>
+                <option value="starfield">Starfield/warp</option>
+                <option value="holo">Sfera olografica</option>
+              </select>
+            </div>
+            {!ledFs && <LedWall
+              isPlaying={isPlaying || syncPlaying || broadcastMode === "live_external"}
+              current={effectiveCurrent}
+              trackOverlay={trackOverlay}
+              djs={djs}
+              fillHeight
+              effect={ledEffect}
+            />}
+          </div>
+
+          {/* ── DX (3/12): INFO ESSENZIALI + chat ── */}
+          <div className="order-3 lg:order-3 lg:col-span-3 flex flex-col gap-3 min-w-0" data-testid="home-info-col">
+            <div className="console-panel p-4 flex flex-col gap-4">
+              <CornerAccents />
+              <div data-testid="home-next-track">
+                <div className="text-[9px] font-mono uppercase tracking-[0.3em] text-zinc-500">A seguire</div>
+                <div className="font-display font-bold text-white text-base leading-tight mt-1 line-clamp-2">
+                  {streamNext?.title || "In preparazione…"}
+                </div>
+                {streamNext?.artist && <div className="text-xs text-zinc-400 truncate">{streamNext.artist}</div>}
+              </div>
+              <div data-testid="home-regia-status">
+                <div className="text-[9px] font-mono uppercase tracking-[0.3em] text-zinc-500">Regia</div>
+                <div className="flex items-center gap-2 mt-1 flex-wrap">
+                  <span className="font-display font-bold text-white text-base">
+                    {broadcastMode === "live_external" ? "Diretta manuale" : onAir ? "Automazione AI attiva" : "In attesa del Play"}
+                  </span>
+                  <span className="w-2 h-2 rounded-full" style={{ background: onAir ? "#FF6B1A" : "#00BFFF", boxShadow: `0 0 10px ${onAir ? "#FF6B1A" : "#00BFFF"}` }} />
+                </div>
+                <div className="text-xs text-zinc-400 mt-0.5">
+                  {effectiveCurrent?.dj_name ? `Al microfono: ${effectiveCurrent.dj_name}` : `${djs.length} speaker in studio`} · {station.listeners || 0} in ascolto
+                </div>
+              </div>
+              <div data-testid="home-last-dj-message">
+                <div className="text-[9px] font-mono uppercase tracking-[0.3em] text-zinc-500">Ultimo messaggio del DJ</div>
+                <p className="text-sm text-zinc-200 leading-relaxed mt-1 line-clamp-4 italic">
+                  {lastDjLine ? `“${lastDjLine}”` : "I DJ stanno per prendere la parola…"}
+                </p>
+              </div>
+            </div>
+            <div className="flex flex-col flex-1 min-h-[220px] lg:min-h-0" style={{ maxHeight: 360 }} data-testid="home-chat-col">
+              <ChatMini heightClass="h-full" />
+            </div>
+          </div>
+        </div>
+
+        {/* LIVE MANUAL banner (arancione = alert) */}
+        {broadcastMode === "live_external" && (
+          <div
+            data-testid="live-external-banner"
+            className="mt-4 rounded-xl p-4 flex flex-col md:flex-row items-center gap-4 glow-orange"
+            style={{
+              background: "linear-gradient(180deg, rgba(255,107,26,0.10) 0%, rgba(255,107,26,0.04) 100%)",
+              border: "1px solid rgba(255,107,26,0.5)",
+            }}
+          >
+            <div className="flex items-center gap-3">
+              <div className="on-air-badge"><span className="dot" /><span>LIVE MANUAL</span></div>
+              <div className="text-white font-bold font-mono uppercase tracking-widest text-sm">Voce umana in diretta</div>
+            </div>
+            {manualStreamUrl ? (
+              <audio
+                ref={externalAudioRef}
+                data-testid="external-audio"
+                src={manualStreamUrl}
+                controls
+                autoPlay
+                crossOrigin="anonymous"
+                className="flex-1 min-w-[220px] w-full"
+                style={{ maxWidth: 640 }}
+              />
+            ) : (
+              <div className="text-amber-300 text-sm">
+                URL stream non ancora impostato — l'admin lo configura dalla Control Room.
+              </div>
+            )}
+          </div>
+        )}
+
+      </section>
+
+      {/* ================ LIVE BRAIN — terminale operazioni AI, prima delle Stelle (v13.46) ================ */}
+      <section className="max-w-7xl mx-auto px-3 sm:px-4 pt-3 pb-1 relative z-10" data-testid="home-live-brain">
+        <LiveBrain current={effectiveCurrent} segments={segments} />
+      </section>
+
+      {/* ================ LE STELLE DI NEURONI — barretta spie tra hero e team (v13.5) ================ */}
+      <div data-testid="radioscope-section" className="relative z-10">
+        <RadioscopoWidget />
+      </div>
+
+      {/* ================ TEAM STRIP — attaccato al mixer (v13.5) ================ */}
+      <section className="max-w-7xl mx-auto px-4 pt-1 pb-2 relative z-10" data-testid="rai-team-strip">
+        <div
+          className="flex items-center gap-3 rounded-xl px-4 py-3 overflow-x-auto"
+          style={{
+            background: "linear-gradient(180deg, rgba(4,10,22,0.35) 0%, rgba(2,6,15,0.55) 100%)",
+            backdropFilter: "blur(14px) saturate(1.2)",
+            WebkitBackdropFilter: "blur(14px) saturate(1.2)",
+            border: "1px solid rgba(0,229,255,0.20)",
+            boxShadow: "0 0 18px rgba(0,191,255,0.12), inset 0 0 10px rgba(0,229,255,0.08)",
+          }}
+        >
+          <div className="shrink-0 flex flex-col leading-none pr-2 border-r border-cyan-500/15">
+            <span className="text-[9px] font-mono uppercase tracking-widest text-cyan-500">STAFF</span>
+            <span
+              className="text-[11px] font-bold text-glow-blue"
+              data-testid="rai-team-heading"
+              style={{ fontFamily: '"Orbitron","Share Tech Mono",ui-monospace,monospace', letterSpacing: "0.08em" }}
+            >
+              R-A.I. TEAM
+            </span>
+          </div>
+          <div className="flex items-center gap-3 flex-1 min-w-0">
+            {djs
+              .slice()
+              .sort((a, b) => (a.night_slot ? 1 : 0) - (b.night_slot ? 1 : 0) || (a.night_slot || 0) - (b.night_slot || 0))
+              .map(dj => (
+                <Dialog key={dj.id}>
+                  <DialogTrigger asChild>
+                    <button
+                      type="button"
+                      data-testid={`team-chip-${dj.name}`}
+                      className="flex flex-col items-center gap-0.5 shrink-0 hover:-translate-y-0.5 transition-transform focusable"
+                      title={dj.name}
+                    >
+                      <div
+                        className="w-11 h-11 rounded-full overflow-hidden bg-black"
+                        style={{
+                          border: `1px solid ${dj.accent_color || "#00BFFF"}99`,
+                          boxShadow: `0 0 10px ${dj.accent_color || "#00BFFF"}88`,
+                        }}
+                      >
+                        {dj.avatar_url && (
+                          <img src={dj.avatar_url} alt={dj.name} className="w-full h-full object-cover" loading="lazy" />
+                        )}
+                      </div>
+                      <span
+                        className="text-[10px] font-black leading-none dj-name-force"
+                        style={{
+                          fontFamily: '"Orbitron","Share Tech Mono",ui-monospace,monospace',
+                          letterSpacing: "0.05em",
+                          color: dj.accent_color || "#00BFFF",
+                          textShadow: `0 0 6px ${dj.accent_color || "#00BFFF"}`,
+                        }}
+                      >
+                        {dj.name}
+                      </span>
+                    </button>
+                  </DialogTrigger>
+                  <DialogContent
+                    className="max-w-lg bg-[#02040A] text-white"
+                    data-testid={`team-dialog-${dj.name}`}
+                    style={{
+                      border: `1px solid ${dj.accent_color || "#00BFFF"}66`,
+                      boxShadow: `0 0 40px ${dj.accent_color || "#00BFFF"}44`,
+                    }}
+                  >
+                    <DialogHeader>
+                      <div className="flex items-center gap-4">
+                        {dj.avatar_url && (
+                          <img
+                            src={dj.avatar_url}
+                            alt={dj.name}
+                            className="w-20 h-20 rounded-lg object-cover"
+                            style={{
+                              border: `1px solid ${dj.accent_color || "#00BFFF"}77`,
+                              boxShadow: `0 0 24px ${dj.accent_color || "#00BFFF"}66`,
+                            }}
+                          />
+                        )}
+                        <div>
+                          <DialogTitle
+                            className="text-2xl font-display font-black"
+                            style={{ color: dj.accent_color || "#00BFFF", textShadow: `0 0 12px ${dj.accent_color || "#00BFFF"}` }}
+                          >
+                            {dj.name}
+                          </DialogTitle>
+                          <DialogDescription className="text-xs font-mono uppercase tracking-widest text-cyan-500 mt-1">
+                            {dj.llm_provider} · {dj.llm_model}
+                            {dj.night_slot ? ` · ${dj.night_slot === 1 ? "22:00-00:00" : dj.night_slot === 2 ? "00:00-02:00" : "02:00-04:00"}` : " · SPEAKER"}
+                          </DialogDescription>
+                        </div>
+                      </div>
+                    </DialogHeader>
+                    <p className="text-sm font-mono text-zinc-300 leading-relaxed mt-2">
+                      {dj.personality || "Nessuna bio disponibile."}
+                    </p>
+                  </DialogContent>
+                </Dialog>
+              ))}
+          </div>
+          <div className="shrink-0 pl-2 border-l border-cyan-500/15">
+            <NextEventChip />
+          </div>
+        </div>
+      </section>
+
+      {/* ================ R-A.I. TEAM — 3 SPEAKER + 3 DJ CLUB, compatto orizzontale ================ */}
+      {/* ================ SPONSOR CTA — DIVENTA PARTNER (sponsor-grade) ================ */}
+      <section className="max-w-7xl mx-auto px-6 py-1 relative z-10" data-testid="sponsor-cta-section">
+        <Link
+          to="/partner"
+          data-testid="card-diventa-partner"
+          className="relative flex items-center gap-4 rounded-2xl px-5 py-4 group focusable overflow-hidden"
+          style={{
+            border: "1px solid rgba(255,184,77,0.45)",
+            background: "linear-gradient(120deg, rgba(255,107,26,0.10) 0%, rgba(0,0,0,0.55) 55%, rgba(255,184,77,0.10) 100%)",
+            backdropFilter: "blur(16px) saturate(1.25)",
+            WebkitBackdropFilter: "blur(16px) saturate(1.25)",
+            boxShadow: "0 0 0 1px rgba(255,184,77,0.28) inset, 0 18px 44px rgba(0,0,0,0.6), 0 0 44px rgba(255,184,77,0.20)",
+          }}
+        >
+          <CornerAccents />
+          <div
+            className="w-12 h-12 rounded-xl flex items-center justify-center shrink-0"
+            style={{
+              background: "rgba(255,184,77,0.12)",
+              border: "1px solid rgba(255,184,77,0.6)",
+              boxShadow: "0 0 18px rgba(255,184,77,0.55), inset 0 0 12px rgba(255,184,77,0.18)",
+            }}
+          >
+            <Building2 className="w-6 h-6" style={{ color: "#FFD79A", filter: "drop-shadow(0 0 6px rgba(255,184,77,0.9))" }} />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="label-mono" style={{ color: "#FFB84D" }}>◂ SPONSOR PARTNER ▸</div>
+            <h3
+              className="font-display font-black text-lg sm:text-xl leading-tight"
+              data-testid="diventa-partner-title"
+              style={{
+                fontFamily: '"Orbitron","Share Tech Mono",ui-monospace,monospace',
+                letterSpacing: "0.05em",
+                color: "#FFD79A",
+                textShadow: "0 0 10px rgba(255,184,77,0.75), 0 0 22px rgba(255,107,26,0.35)",
+              }}
+            >
+              DIVENTA PARTNER · SPONSORIZZA R-A.I.
+            </h3>
+            <p className="text-[11px] font-mono text-zinc-200 mt-0.5">
+              <span style={{ color: "#FFB84D" }}>▸</span> Spot MP3 o generato dall'AI · scheduling per data + frequenza · approvazione admin.
+            </p>
+          </div>
+          <div
+            className="hidden sm:flex items-center gap-2 px-3 py-2 rounded-md text-[11px] font-mono uppercase tracking-widest shrink-0"
+            style={{
+              border: "1px solid rgba(255,184,77,0.55)",
+              color: "#FFD79A",
+              background: "rgba(0,0,0,0.35)",
+              textShadow: "0 0 6px rgba(255,184,77,0.7)",
+            }}
+          >
+            <Send className="w-3.5 h-3.5" /> Invia richiesta →
+          </div>
+        </Link>
+      </section>
+
+      {/* 4 MODULI CONSOLE — L'esperimento · Disco del giorno · Human vs AI · Chat LED */}
+      <HomeCards
+          djs={djs}
+          questionName={questionName}
+          setQuestionName={setQuestionName}
+          questionText={questionText}
+          setQuestionText={setQuestionText}
+          submitQuestion={submitQuestion}
+          busy={busy}
+        />
+
+      {/* ================ WALL COMMUNITY — brani approvati con play counter ================ */}
+      <CommunityWallPublic />
+
+      <footer className="max-w-7xl mx-auto px-6 py-4 text-[10px] font-mono uppercase tracking-widest text-zinc-600 border-t mt-8 relative z-10"
+              style={{ borderColor: "var(--console-line)" }}>
+        <div className="flex items-center gap-2 flex-wrap">
+          <Antenna className="w-3 h-3" />
+          R-A.I. · Prototipo Beta · Orchestrato da GPT-5.2 · Claude Sonnet 4.5 · Gemini 3 Flash · Nessun umano in cabina.
+        </div>
+      </footer>
+
+      {/* Donate button — corner-anchored on mobile (ticket 239289: a fixed,
+          dead-center bottom pill sat on top of whatever content/status panel
+          happened to be at the bottom of the viewport at any scroll
+          position). Desktop keeps the wide centered pill; mobile shrinks to
+          an icon-first pill tucked in the bottom-right corner, out of the
+          main content column, with safe-area padding for notched devices. */}
+      <button
+        onClick={() => setShowDonate(true)}
+        data-testid="donate-open-button"
+        className="fixed z-50 group flex items-center gap-2 px-3.5 py-2.5 sm:px-5 sm:py-3 rounded-full font-mono font-bold text-xs uppercase tracking-widest text-white shadow-2xl transition-transform hover:scale-105 active:scale-95 focusable right-3 bottom-3 sm:right-1/2 sm:bottom-6 sm:translate-x-1/2"
+        style={{
+          background: "linear-gradient(135deg, #FF6B1A 0%, #FF8A3D 100%)",
+          boxShadow: "0 8px 30px rgba(255,107,26,0.45), 0 0 0 1px rgba(255,255,255,0.1) inset",
+          marginBottom: "env(safe-area-inset-bottom, 0px)",
+        }}
+      >
+        <Heart className="w-4 h-4 shrink-0" fill="currentColor" />
+        <span className="hidden sm:inline">Sostieni il progetto</span>
+      </button>
+
+      {showDonate && (
+        <div
+          className="fixed inset-0 z-[70] flex items-end sm:items-center justify-center bg-black/80 backdrop-blur-sm p-4"
+          onClick={() => setShowDonate(false)}
+          data-testid="donate-modal-backdrop"
+        >
+          <div
+            className="console-panel max-w-md w-full p-6 relative"
+            onClick={(e) => e.stopPropagation()}
+            data-testid="donate-modal"
+          >
+            <CornerAccents />
+            <span className="module-tag" style={{ color: "var(--alert-orange)", borderColor: "rgba(255,107,26,0.5)" }}>
+              <Heart className="w-2.5 h-2.5 inline mr-1" fill="currentColor" /> SUPPORT · MOD
+            </span>
+            <button
+              onClick={() => setShowDonate(false)}
+              className="absolute top-3 right-3 text-zinc-400 hover:text-white transition-colors z-10"
+              data-testid="donate-modal-close"
+              aria-label="Chiudi"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="flex items-center gap-3 mb-3 mt-4">
+              <div
+                className="w-10 h-10 rounded-lg flex items-center justify-center glow-orange"
+                style={{ background: "linear-gradient(135deg, #FF6B1A, #FF8A3D)" }}
+              >
+                <Heart className="w-5 h-5 text-white" fill="currentColor" />
+              </div>
+              <div className="font-display font-bold text-lg text-glow-orange">Grazie di cuore</div>
+            </div>
+
+            <p className="text-sm font-mono text-zinc-300 leading-relaxed mb-6" data-testid="donate-message">
+              Ogni donazione tiene accesa l'intelligenza artificiale di R-A.I. — modelli, TTS,
+              generazione musicale. Grazie di far parte del segnale.
+            </p>
+
+            <div className="flex flex-col-reverse sm:flex-row gap-2 sm:justify-end">
+              <button
+                onClick={() => setShowDonate(false)}
+                className="btn-outline text-sm focusable"
+                data-testid="donate-cancel"
+              >
+                Non ora
+              </button>
+              <a
+                href={DONATE_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={() => setShowDonate(false)}
+                className="btn-alert inline-flex items-center justify-center gap-2 focusable"
+                data-testid="donate-confirm-paypal"
+              >
+                <span>Vai a PayPal</span>
+                <ExternalLink className="w-4 h-4" />
+              </a>
+            </div>
+          </div>
+        </div>
+      )}
+        </>
+      ) : (
+        <>
+      {/* ================ STATO VETRINA ================ */}
       {/* ServicesDock: i suoi pulsanti sono stati spostati nella barra in alto (resta nel codice) */}
       {false && <ServicesDock />}
 
@@ -819,24 +1457,18 @@ export default function PublicRadio() {
       <section className="relative z-10 rai-hero" data-testid="home-hero" style={{ minHeight: "100svh" }}>
         {/* Livello LedWall: in pagina è lo sfondo del hero; in fullscreen copre tutto lo schermo (desktop + mobile) */}
         <div
-          ref={ledFsRef}
-          className={ledFs ? "fixed inset-0 z-[100] bg-black rai-fs-wrap rai-fs-active" : `absolute inset-0 z-0 rai-fs-wrap rai-ledlayer ${audioOn ? "cursor-pointer" : ""}`}
+          className="absolute inset-0 z-0 rai-fs-wrap rai-ledlayer"
           data-testid="home-ledwall-col"
-          data-fullscreen={ledFs ? "true" : "false"}
-          data-clickable={audioOn && !ledFs ? "true" : "false"}
-          onClick={audioOn && !ledFs ? enterLedFs : undefined}
-          role={audioOn && !ledFs ? "button" : undefined}
-          aria-label={audioOn && !ledFs ? "Apri il LedWall a schermo intero" : undefined}
-          title={audioOn && !ledFs ? "Tocca per lo schermo intero" : undefined}
+          data-fullscreen="false"
         >
-          <LedWall
+          {!ledFs && <LedWall
             isPlaying={isPlaying || broadcastMode === "live_external"}
             current={effectiveCurrent}
             trackOverlay={trackOverlay}
             djs={djs}
             fillHeight
             effect={activeLedEffect}
-          />
+          />}
           {/* controlli discreti: effetto + fullscreen */}
           <div className={`absolute ${ctrlTop} left-3 z-[110] flex items-center gap-1.5 rai-hero-ctrl`} data-testid="ledwall-effect-control" onClick={(e) => e.stopPropagation()}>
             <label className="sr-only" htmlFor="ledwall-effect-select">Effetto visivo</label>
@@ -859,23 +1491,16 @@ export default function PublicRadio() {
           </div>
           <button
             type="button"
-            onClick={(e) => { e.stopPropagation(); (ledFs ? exitLedFs : enterLedFs)(); }}
-            data-testid={ledFs ? "ledwall-fullscreen-exit" : "ledwall-fullscreen-open"}
-            aria-label={ledFs ? "Esci dallo schermo intero" : "LedWall a schermo intero"}
-            title={ledFs ? "Esci dallo schermo intero" : "LedWall a schermo intero"}
-            className={`absolute ${ledFs ? "top-3 right-3 px-3 py-2" : `${ctrlTop} right-3 px-2.5 py-1.5`} z-[110] inline-flex items-center gap-1.5 rounded-full text-[11px] font-mono uppercase tracking-widest rai-hero-ctrl focusable transition-[top] duration-500`}
+            onClick={(e) => { e.stopPropagation(); enterLedFs(); }}
+            data-testid="ledwall-fullscreen-open"
+            aria-label="LedWall a schermo intero"
+            title="LedWall a schermo intero"
+            className={`absolute ${ctrlTop} right-3 px-2.5 py-1.5 z-[110] inline-flex items-center gap-1.5 rounded-full text-[11px] font-mono uppercase tracking-widest rai-hero-ctrl focusable`}
             style={{ background: "rgba(0,0,0,0.6)", border: "1px solid rgba(0,229,255,0.4)", color: "#CFF8FF", backdropFilter: "blur(8px)" }}
           >
-            {ledFs ? <><Minimize2 className="w-4 h-4" /> Esci</> : <><Maximize2 className="w-3.5 h-3.5" /><span className="hidden sm:inline">Schermo intero</span></>}
+            <Maximize2 className="w-3.5 h-3.5" /><span className="hidden sm:inline">Schermo intero</span>
           </button>
-          {!ledFs && <div className="absolute -top-2 right-3 z-20 hidden sm:block"><VuMeter /></div>}
-          {ledFs && (
-            <LiveBar
-              inFullscreen playing={barPlaying} onToggle={liveBarToggle} current={displayCurrent} kindCurrent={effectiveCurrent}
-              muted={muted} setMuted={setMuted} volume={volume} setVolume={setVolume}
-              onExitFullscreen={exitLedFs}
-            />
-          )}
+          <div className="absolute -top-2 right-3 z-20 hidden sm:block"><VuMeter /></div>
         </div>
 
         {/* Veli per leggibilità (il LedWall resta dominante) */}
@@ -899,8 +1524,8 @@ export default function PublicRadio() {
           </p>
 
           {/* Player */}
-          <div className="w-full max-w-md mt-8 rai-rise rai-hero-player pointer-events-auto" style={{ animationDelay: "320ms" }} data-testid="home-player-col" onClickCapture={onPlayerClickCapture}>
-            <SyncLivePlayer />
+          <div className="w-full max-w-md mt-8 rai-rise rai-hero-player pointer-events-auto" style={{ animationDelay: "320ms" }} data-testid="home-player-col">
+            <div ref={vetrinaSlotRef} data-testid="vetrina-player-slot" />
             <div className="mt-3 rai-hero-now flex items-center gap-3 text-left rounded-xl px-3 py-2.5" data-testid="now-playing-title">
               {displayCurrent?.image_url ? (
                 <img src={displayCurrent.image_url} alt="" className="w-12 h-12 rounded-lg object-cover shrink-0" style={{ boxShadow: "0 0 18px rgba(0,229,255,0.35)" }} data-testid="now-playing-cover" />
@@ -1118,7 +1743,7 @@ export default function PublicRadio() {
       </footer>
 
       {/* Donate button (nascosto durante il LedWall a schermo intero) */}
-      {!ledFs && (
+      {(
         <button
           onClick={() => setShowDonate(true)}
           data-testid="donate-open-button"
@@ -1157,6 +1782,8 @@ export default function PublicRadio() {
             </div>
           </div>
         </div>
+      )}
+        </>
       )}
     </div>
   );

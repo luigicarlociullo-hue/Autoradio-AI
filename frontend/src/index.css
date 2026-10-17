@@ -1137,3 +1137,7 @@ a.powered-by-signature:hover {
 .rai-fs-active > [data-testid="ledwall"] canvas, .rai-fs-active > [data-testid="ledwall"] video { width: 100% !important; height: 100% !important; object-fit: cover; }
 .rai-livebar.is-fs { background: rgba(3, 6, 14, 0.66); }
 .rai-livebar-dot.is-off { background: #00E5FF; box-shadow: 0 0 10px #00E5FF; animation: none; opacity: .7; }
+
+/* ═══════════════════ v13.68 · Fullscreen: info brano temporanea al centro ═══════════════════ */
+@keyframes rai-fs-track-in { 0% { opacity: 0; transform: translateY(14px) scale(.96); } 12% { opacity: 1; transform: translateY(0) scale(1); } 80% { opacity: 1; } 100% { opacity: 0; transform: translateY(-8px) scale(1.02); } }
+.rai-fs-track { animation: rai-fs-track-in 4.5s ease-in-out forwards; text-shadow: 0 0 18px rgba(0,229,255,.55), 0 2px 24px rgba(0,0,0,.95); background: rgba(2,4,10,.38); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); border-radius: 18px; padding: 18px 28px; max-width: 92vw; }
