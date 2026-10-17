@@ -6010,6 +6010,10 @@ async def admin_ledwall_upload_video(file: UploadFile = File(...), name: Optiona
     ext = fname_orig.rsplit(".", 1)[-1] if "." in fname_orig else "mp4"
     if ext not in ("mp4", "webm", "mov", "m4v"):
         raise HTTPException(415, f"Estensione non supportata: {ext}")
+    # Ticket #247410: converte in H.264 i codec che il browser non riproduce.
+    data, _vprobe, _transcoded = await video_service.ensure_web_playable(data, "." + ext)
+    if _transcoded:
+        ext = "mp4"
     vid_id = uuid.uuid4().hex[:12]
     local_name = f"ledwall_{vid_id}.{ext}"
     mime = {"mp4": "video/mp4", "webm": "video/webm",
@@ -6027,6 +6031,12 @@ async def admin_ledwall_upload_video(file: UploadFile = File(...), name: Optiona
         "url": video_url,
         "size": len(data),
         "mime": mime,
+        "duration_sec": (_vprobe or {}).get("duration_sec"),
+        "width": (_vprobe or {}).get("width"),
+        "height": (_vprobe or {}).get("height"),
+        "video_codec": (_vprobe or {}).get("video_codec"),
+        "audio_codec": (_vprobe or {}).get("audio_codec"),
+        "transcoded": _transcoded,
         "uploaded_at": now_iso(),
     }
     await db.ledwall_videos.insert_one(doc.copy())
@@ -11391,6 +11401,15 @@ async def admin_media_upload(
         return {"ok": True, "type": "audio", "track": doc}
 
     # is_video
+    # Ticket #247410: converte in H.264 i codec che il browser non riproduce
+    # (es. MPEG-4 Part 2): prima il file restava nero sul LedWall/lettore.
+    probe, _transcoded = None, False
+    try:
+        data, probe, _transcoded = await video_service.ensure_web_playable(data, "." + ext)
+    except Exception as e:
+        logger.warning(f"[upload] video check failed: {e}")
+    if _transcoded:
+        ext = "mp4"
     vid_id = uuid.uuid4().hex[:12]
     local_name = f"ledwall_{vid_id}.{ext}"
     mime = {"mp4": "video/mp4", "webm": "video/webm",
@@ -11398,9 +11417,6 @@ async def admin_media_upload(
     stored = await object_storage.put_bytes(f"ledwall/{local_name}", data, mime)
     if not stored:
         raise HTTPException(502, "Upload video fallito")
-    probe = None
-    try: probe = await video_service.probe_video_from_bytes(data, "." + ext)
-    except Exception: pass
     doc = {
         "id": vid_id,
         "filename": local_name,
@@ -11414,6 +11430,7 @@ async def admin_media_upload(
         "video_codec": (probe or {}).get("video_codec"),
         "audio_codec": (probe or {}).get("audio_codec"),
         "is_stinger": _bool(is_stinger),
+        "transcoded": _transcoded,
         "uploaded_at": now_dt.isoformat(),
         "last_played_at": None,
         **common,
@@ -13096,6 +13113,41 @@ async def _startup_fix_durations():
         logger.warning(f"[durations] correzione all'avvio fallita: {e}")
 
 
+async def _startup_fix_unplayable_ledwall_videos():
+    """Ticket #247410: converte UNA volta i video LedWall gia' caricati con un
+    codec non riproducibile dal browser. Il file viene riscritto sullo stesso
+    path dell'Object Storage, quindi URL, override e Timeline restano validi."""
+    await asyncio.sleep(45)
+    if not object_storage.is_enabled():
+        return
+    try:
+        rows = await db.ledwall_videos.find(
+            {"playable_checked_at": {"$exists": False}}, {"_id": 0, "id": 1, "filename": 1}
+        ).to_list(500)
+    except Exception:
+        return
+    for v in rows:
+        fname = v.get("filename") or ""
+        try:
+            data = await object_storage.get_bytes(f"ledwall/{fname}")
+            if not data:
+                continue
+            ext = "." + (fname.rsplit(".", 1)[-1] if "." in fname else "mp4")
+            out, probe, transcoded = await video_service.ensure_web_playable(data, ext)
+            upd = {"playable_checked_at": now_iso()}
+            if transcoded:
+                if not await object_storage.put_bytes(f"ledwall/{fname}", out, "video/mp4"):
+                    continue
+                upd.update({"transcoded": True, "size": len(out), "mime": "video/mp4"})
+                logger.info(f"[ledwall-fix] {fname} convertito in H.264")
+            for k in ("duration_sec", "width", "height", "video_codec", "audio_codec"):
+                if probe and probe.get(k) is not None:
+                    upd[k] = probe.get(k)
+            await db.ledwall_videos.update_one({"id": v.get("id")}, {"$set": upd})
+        except Exception as e:
+            logger.warning(f"[ledwall-fix] {fname}: {e}")
+
+
 @app.on_event("startup")
 async def on_startup():
     global _STARTUP_READY
@@ -13103,6 +13155,7 @@ async def on_startup():
     # definite sopra sono ora fisicamente aggiunte all'app.
     app.include_router(api_router)
     asyncio.create_task(_startup_fix_durations())
+    asyncio.create_task(_startup_fix_unplayable_ledwall_videos())
     # v13.33 · Sanity check ffmpeg/ffprobe — indispensabili per reprobe,
     # normalizzazione, beatmatch, intro-detect. Logga un ERROR grosso se
     # mancano, così le operazioni "senza risultato silenzioso" si vedono

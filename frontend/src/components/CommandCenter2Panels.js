@@ -29,7 +29,7 @@ export function GoLivePanel() {
     setBusy(true);
     try {
       await api.patch("/admin/ledwall/override", { video_source: source, video_url: videoUrl });
-      toast.success(`LedWall ${source === "effects" ? "torna agli Effetti" : "in DIRETTA " + source.toUpperCase()}`);
+      toast.success(`LedWall ${!source || source === "effects" ? "torna agli Effetti" : "in DIRETTA " + source.toUpperCase()}`);
       load();
     } catch (e) { toast.error("Errore override"); }
     finally { setBusy(false); }
