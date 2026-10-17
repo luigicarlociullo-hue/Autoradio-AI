@@ -859,3 +859,9 @@ Vedi turni precedenti in questa sessione:
 - `LiveBar` estratta come componente; in fullscreen è montata DENTRO il layer LedWall (`z-[120]`, il fullscreen nativo mostra solo quel sottoalbero), sempre visibile ancorata al bordo inferiore (safe-area), senza tasti fullscreen/X (c'è "Esci" in alto). Fuori dal fullscreen resta `fixed bottom-0 z-[55]` in modalità diretta.
 - Layer fullscreen `.rai-fs-active`: 100vw × 100dvh (fallback iOS), LedWall/canvas/video forzati a inset 0 100%/100% + object-fit cover → nessuna banda nera né taglio.
 - Verifica screenshot 390×844, 820×1180, 1920×800: wall rect = viewport, barra bottom = viewport height, `barInsideFs: true`; uscita riporta la barra fuori dal layer.
+
+## v13.67 · STATO DIRETTA semplificato (2026-10-17) — sostituisce v13.65 (solo `PublicRadio.js`)
+- VETRINA invariata. Al click "Entra in diretta": nessuna trasformazione/burst/scroll, parte solo l'audio. Cambia solo: il layer LedWall diventa cliccabile (`data-clickable`, cursor-pointer, role=button) → fullscreen; select effetto e tasto fullscreen fanno `stopPropagation`.
+- Barra player SOLO dentro il fullscreen (`LiveBar inFullscreen`): titolo/artista, play/stop, mute+volume, tasto "Esci" dal fullscreen (`live-bar-exit-fullscreen`). Rimossi: liveMode, nav auto-hide/icone, burst, barra fuori dal fullscreen (CSS v13.65 lasciato, inerte).
+- Mobile landscape: `onClickCapture` sul wrapper del player intercetta il click su `sync-live-toggle` nel gesto utente → `enterLedFs()` (fullscreen nativo consentito); inoltre `orientationchange` → landscape mentre suona → fullscreen (fallback CSS). Criterio: `(orientation: landscape)` e (`pointer: coarse` o innerHeight<500).
+- Verifica 1920×800: dopo play hero intatto/scrollY 0/nessuna barra; click sul LedWall → fullscreen nativo con barra e titolo reale; "Esci" dalla barra chiude FS senza fermare l'audio; select non apre FS. 844×390: auto-fullscreen al click su Entra in diretta.

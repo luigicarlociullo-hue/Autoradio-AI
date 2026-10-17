@@ -708,57 +708,43 @@ export default function PublicRadio() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ledFs]);
 
-  // v13.65 · LIVE MODE — al "Entra in diretta" la home si trasforma: LedWall protagonista,
-  // player compatto in barra fissa in basso, nav ridotta a icone + auto-hide dopo 3s.
-  // Il player resta montato (nascosto) nel hero: audio e sync non vengono toccati; la barra
-  // lo pilota solo con gli eventi già esistenti (rai:sync:pause → stop, rai:sync:skip → riaggancio).
-  const [liveMode, setLiveMode] = useState(false);
-  const liveModeRef = useRef(false);
-  const [liveBurst, setLiveBurst] = useState(false);
-  const [navHidden, setNavHidden] = useState(false);
+  // v13.67 · STATO DIRETTA — la pagina NON si trasforma: parte l'audio e il LedWall diventa
+  // cliccabile (→ fullscreen). La barra player vive solo dentro il fullscreen. Su mobile in
+  // orientamento orizzontale il fullscreen parte da solo al click su "Entra in diretta".
+  // Il player non viene toccato: la barra lo pilota con gli eventi esistenti
+  // (rai:sync:pause → stop, rai:sync:skip → riaggancio al clock live).
   const [volume, setVolume] = useState(() => { try { const v = localStorage.getItem("rai:volume"); return v === null ? 1 : Math.min(1, Math.max(0, Number(v))); } catch { return 1; } });
   const [muted, setMuted] = useState(false);
-  const enterLiveMode = () => {
-    if (liveModeRef.current) return;
-    liveModeRef.current = true;
-    setLiveMode(true);
-    setLiveBurst(true);
-    setTimeout(() => setLiveBurst(false), 1900);
-    try { window.scrollTo({ top: 0, behavior: "smooth" }); } catch (e) {}
-    try { navigator.vibrate?.(30); } catch (e) {}
-  };
-  const exitLiveMode = () => {
-    if (syncPlaying) { try { window.dispatchEvent(new CustomEvent("rai:sync:pause")); } catch (e) {} }
-    if (isPlaying) handlePlay();
-    liveModeRef.current = false;
-    setLiveMode(false);
-    setNavHidden(false);
-  };
   const liveBarToggle = () => {
     if (syncPlaying) { try { window.dispatchEvent(new CustomEvent("rai:sync:pause")); } catch (e) {} return; }
     if (isPlaying) { handlePlay(); return; }
     try { window.dispatchEvent(new CustomEvent("rai:sync:skip")); } catch (e) {}  // riaggancio al clock live
   };
+  const isMobileLandscape = () => {
+    try { return window.matchMedia("(orientation: landscape)").matches && (window.matchMedia("(pointer: coarse)").matches || window.innerHeight < 500); }
+    catch (e) { return false; }
+  };
+  // click su "Entra in diretta" (catturato nel gesto utente → fullscreen nativo consentito)
+  const onPlayerClickCapture = (e) => {
+    try {
+      if (e.target?.closest?.('[data-testid="sync-live-toggle"]') && !syncPlaying && isMobileLandscape()) enterLedFs();
+    } catch (err) { /* noop */ }
+  };
   useEffect(() => {
-    const onSync = (ev) => {
-      const p = !!ev?.detail?.playing;
-      setSyncPlaying(p);
-      if (p) enterLiveMode();
-    };
+    const onSync = (ev) => setSyncPlaying(!!ev?.detail?.playing);
     window.addEventListener("rai:sync:play", onSync);
     return () => window.removeEventListener("rai:sync:play", onSync);
+  }, []);
+  const audioOn = syncPlaying || isPlaying;
+  const audioOnRef = useRef(false);
+  audioOnRef.current = audioOn;
+  useEffect(() => {
+    // telefono ruotato in orizzontale mentre suona (supporto auto) → fullscreen (fallback CSS se il nativo richiede un gesto)
+    const onOrient = () => { setTimeout(() => { if (audioOnRef.current && !ledFsRef.current?.matches?.(".rai-fs-active") && isMobileLandscape()) enterLedFs(); }, 150); };
+    window.addEventListener("orientationchange", onOrient);
+    return () => window.removeEventListener("orientationchange", onOrient);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  useEffect(() => { if (isPlaying) enterLiveMode(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [isPlaying]);
-  useEffect(() => {
-    if (!liveMode) { setNavHidden(false); return; }
-    let t = null;
-    const arm = () => { setNavHidden(false); if (t) clearTimeout(t); t = setTimeout(() => setNavHidden(true), 3000); };
-    arm();
-    const evs = ["pointermove", "pointerdown", "touchstart", "keydown", "scroll"];
-    evs.forEach((e) => window.addEventListener(e, arm, { passive: true }));
-    return () => { if (t) clearTimeout(t); evs.forEach((e) => window.removeEventListener(e, arm)); };
-  }, [liveMode]);
   useEffect(() => {
     const apply = () => {
       const a = document.querySelector('[data-testid="sync-live-audio"]');
@@ -769,8 +755,8 @@ export default function PublicRadio() {
     try { localStorage.setItem("rai:volume", String(volume)); } catch (e) {}
     return () => clearTimeout(t);
   }, [volume, muted, syncPlaying]);
-  const barPlaying = syncPlaying || isPlaying;
-  const ctrlTop = ledFs ? "top-3" : liveMode ? (navHidden ? "top-3" : "top-[3.25rem]") : "top-[4.25rem]";
+  const barPlaying = audioOn;
+  const ctrlTop = ledFs ? "top-3" : "top-[4.25rem]";
   // v13.64 · HOME REDESIGN — LedWall in rotazione automatica + fullscreen (desktop/mobile)
   const activeLedEffect = ledEffect === "rotate" ? LED_ROTATION[ledRotIdx % LED_ROTATION.length] : ledEffect;
 
@@ -782,7 +768,7 @@ export default function PublicRadio() {
   const navBtnClass = (extra = "") => `rai-nav-btn focusable ${extra}`.trim();
 
   return (
-    <div className={`relative min-h-screen text-white rai-home ${liveMode ? "rai-live pb-24" : ""}`} data-live={liveMode ? "true" : "false"}>
+    <div className="relative min-h-screen text-white rai-home" data-audio-on={audioOn ? "true" : "false"}>
       {/* ServicesDock: i suoi pulsanti sono stati spostati nella barra in alto (resta nel codice) */}
       {false && <ServicesDock />}
 
@@ -797,11 +783,11 @@ export default function PublicRadio() {
       </div>
 
       {/* ================ 2 · NAVIGAZIONE — barra orizzontale fissa in alto ================ */}
-      <header className={`rai-topnav fixed top-0 inset-x-0 z-40 ${liveMode ? "is-live" : ""} ${liveMode && navHidden ? "is-hidden" : ""}`} data-testid="home-topnav" data-nav-hidden={liveMode && navHidden ? "true" : "false"}>
-        <div className={`max-w-7xl mx-auto px-3 sm:px-4 ${liveMode ? "h-11" : "h-14"} flex items-center gap-2 sm:gap-4 transition-[height] duration-500`}>
+      <header className="rai-topnav fixed top-0 inset-x-0 z-40" data-testid="home-topnav">
+        <div className="max-w-7xl mx-auto px-3 sm:px-4 h-14 flex items-center gap-2 sm:gap-4">
           <Link to="/" className="flex items-center gap-2 shrink-0 focusable" data-testid="rai-logo" aria-label="R-A.I. Radio · Home">
             <span style={{ filter: "drop-shadow(0 0 8px rgba(0,229,255,0.55))" }}><RaiOrbLogo size={34} /></span>
-            <BrandName className={`font-display font-black text-base sm:text-lg text-glow-blue ${liveMode ? "hidden" : "hidden sm:block"}`} />
+            <BrandName className="font-display font-black text-base sm:text-lg text-glow-blue hidden sm:block" />
           </Link>
           <nav className="flex-1 min-w-0 flex items-center gap-1.5 overflow-x-auto no-scrollbar justify-start sm:justify-end py-2" aria-label="Navigazione principale" data-testid="home-nav">
             {navItems.map((it) => (
@@ -830,13 +816,18 @@ export default function PublicRadio() {
       </header>
 
       {/* ================ 1 · HERO a tutto schermo — LedWall come sfondo ================ */}
-      <section className={`relative z-10 rai-hero ${liveMode ? "is-live" : ""}`} data-testid="home-hero" style={{ minHeight: "100svh" }}>
+      <section className="relative z-10 rai-hero" data-testid="home-hero" style={{ minHeight: "100svh" }}>
         {/* Livello LedWall: in pagina è lo sfondo del hero; in fullscreen copre tutto lo schermo (desktop + mobile) */}
         <div
           ref={ledFsRef}
-          className={ledFs ? "fixed inset-0 z-[100] bg-black rai-fs-wrap rai-fs-active" : `absolute inset-0 z-0 rai-fs-wrap rai-ledlayer ${liveMode ? "is-live" : ""}`}
+          className={ledFs ? "fixed inset-0 z-[100] bg-black rai-fs-wrap rai-fs-active" : `absolute inset-0 z-0 rai-fs-wrap rai-ledlayer ${audioOn ? "cursor-pointer" : ""}`}
           data-testid="home-ledwall-col"
           data-fullscreen={ledFs ? "true" : "false"}
+          data-clickable={audioOn && !ledFs ? "true" : "false"}
+          onClick={audioOn && !ledFs ? enterLedFs : undefined}
+          role={audioOn && !ledFs ? "button" : undefined}
+          aria-label={audioOn && !ledFs ? "Apri il LedWall a schermo intero" : undefined}
+          title={audioOn && !ledFs ? "Tocca per lo schermo intero" : undefined}
         >
           <LedWall
             isPlaying={isPlaying || broadcastMode === "live_external"}
@@ -847,7 +838,7 @@ export default function PublicRadio() {
             effect={activeLedEffect}
           />
           {/* controlli discreti: effetto + fullscreen */}
-          <div className={`absolute ${ctrlTop} left-3 z-[110] flex items-center gap-1.5 rai-hero-ctrl transition-[top] duration-500`} data-testid="ledwall-effect-control">
+          <div className={`absolute ${ctrlTop} left-3 z-[110] flex items-center gap-1.5 rai-hero-ctrl`} data-testid="ledwall-effect-control" onClick={(e) => e.stopPropagation()}>
             <label className="sr-only" htmlFor="ledwall-effect-select">Effetto visivo</label>
             <select
               id="ledwall-effect-select"
@@ -868,7 +859,7 @@ export default function PublicRadio() {
           </div>
           <button
             type="button"
-            onClick={ledFs ? exitLedFs : enterLedFs}
+            onClick={(e) => { e.stopPropagation(); (ledFs ? exitLedFs : enterLedFs)(); }}
             data-testid={ledFs ? "ledwall-fullscreen-exit" : "ledwall-fullscreen-open"}
             aria-label={ledFs ? "Esci dallo schermo intero" : "LedWall a schermo intero"}
             title={ledFs ? "Esci dallo schermo intero" : "LedWall a schermo intero"}
@@ -877,21 +868,21 @@ export default function PublicRadio() {
           >
             {ledFs ? <><Minimize2 className="w-4 h-4" /> Esci</> : <><Maximize2 className="w-3.5 h-3.5" /><span className="hidden sm:inline">Schermo intero</span></>}
           </button>
-          {!ledFs && !liveMode && <div className="absolute -top-2 right-3 z-20 hidden sm:block"><VuMeter /></div>}
+          {!ledFs && <div className="absolute -top-2 right-3 z-20 hidden sm:block"><VuMeter /></div>}
           {ledFs && (
             <LiveBar
               inFullscreen playing={barPlaying} onToggle={liveBarToggle} current={displayCurrent} kindCurrent={effectiveCurrent}
               muted={muted} setMuted={setMuted} volume={volume} setVolume={setVolume}
-              onFullscreen={enterLedFs} onExit={exitLiveMode}
+              onExitFullscreen={exitLedFs}
             />
           )}
         </div>
 
         {/* Veli per leggibilità (il LedWall resta dominante) */}
-        <div aria-hidden className={`absolute inset-0 z-[1] pointer-events-none rai-hero-veil ${liveMode ? "is-live" : ""}`} />
+        <div aria-hidden className="absolute inset-0 z-[1] pointer-events-none rai-hero-veil" />
 
         {/* Contenuto hero */}
-        <div className={`relative z-[2] min-h-[100svh] flex flex-col items-center justify-center text-center px-4 pt-24 pb-14 pointer-events-none rai-hero-content ${liveMode ? "is-live" : ""}`} aria-hidden={liveMode}>
+        <div className="relative z-[2] min-h-[100svh] flex flex-col items-center justify-center text-center px-4 pt-24 pb-14 pointer-events-none rai-hero-content">
           <div className="rai-rise relative pointer-events-auto" style={{ animationDelay: "0ms", filter: "drop-shadow(0 0 28px rgba(0,229,255,0.55))" }}>
             <RaiOrbLogo size={132} />
             <a href="https://www.facebook.com/profile.php?id=61592908061493" target="_blank" rel="noopener noreferrer"
@@ -908,7 +899,7 @@ export default function PublicRadio() {
           </p>
 
           {/* Player */}
-          <div className="w-full max-w-md mt-8 rai-rise rai-hero-player pointer-events-auto" style={{ animationDelay: "320ms" }} data-testid="home-player-col">
+          <div className="w-full max-w-md mt-8 rai-rise rai-hero-player pointer-events-auto" style={{ animationDelay: "320ms" }} data-testid="home-player-col" onClickCapture={onPlayerClickCapture}>
             <SyncLivePlayer />
             <div className="mt-3 rai-hero-now flex items-center gap-3 text-left rounded-xl px-3 py-2.5" data-testid="now-playing-title">
               {displayCurrent?.image_url ? (
@@ -951,9 +942,9 @@ export default function PublicRadio() {
           {false && <CueThinking current={effectiveCurrent} />}
         </div>
 
-        {!liveMode && <a href="#home-live" className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[2] text-cyan-300/70 hover:text-cyan-200 rai-bounce focusable" aria-label="Scorri" data-testid="hero-scroll-hint">
+        <a href="#home-live" className="absolute bottom-4 left-1/2 -translate-x-1/2 z-[2] text-cyan-300/70 hover:text-cyan-200 rai-bounce focusable" aria-label="Scorri" data-testid="hero-scroll-hint">
           <ChevronDown className="w-6 h-6" />
-        </a>}
+        </a>
       </section>
 
       {/* LIVE MANUAL banner (arancione = alert) */}
@@ -1126,26 +1117,8 @@ export default function PublicRadio() {
         </div>
       </footer>
 
-      {/* v13.65 · BURST d'ingresso in diretta */}
-      {liveBurst && (
-        <div className="rai-live-burst fixed inset-0 z-[60] pointer-events-none" aria-hidden data-testid="live-burst">
-          <div className="rai-live-ring" />
-          <div className="rai-live-ring rai-live-ring-2" />
-          <div className="rai-live-label font-display font-black">SEI DENTRO · R-A.I. LIVE</div>
-        </div>
-      )}
-
-      {/* v13.66 · BARRA PLAYER compatta, fissa in basso (in diretta; in fullscreen è montata dentro il layer LedWall) */}
-      {liveMode && !ledFs && (
-        <LiveBar
-          playing={barPlaying} onToggle={liveBarToggle} current={displayCurrent} kindCurrent={effectiveCurrent}
-          muted={muted} setMuted={setMuted} volume={volume} setVolume={setVolume}
-          onFullscreen={enterLedFs} onExit={exitLiveMode}
-        />
-      )}
-
       {/* Donate button (nascosto durante il LedWall a schermo intero) */}
-      {!ledFs && !liveMode && (
+      {!ledFs && (
         <button
           onClick={() => setShowDonate(true)}
           data-testid="donate-open-button"
@@ -1215,7 +1188,7 @@ function MiniDisplay({ icon: Icon, label, value }) {
 // ==================== HOME CARDS — 4 moduli cover cinematografici ====================
 // v13.66 · Barra player compatta — overlay fisso al bordo inferiore, sempre visibile senza scroll.
 // In fullscreen viene montata DENTRO il layer LedWall (il fullscreen nativo mostra solo quel sottoalbero).
-function LiveBar({ inFullscreen = false, playing, onToggle, current, kindCurrent, muted, setMuted, volume, setVolume, onFullscreen, onExit }) {
+function LiveBar({ inFullscreen = false, playing, onToggle, current, kindCurrent, muted, setMuted, volume, setVolume, onExitFullscreen }) {
   return (
     <div className={`rai-livebar fixed bottom-0 inset-x-0 ${inFullscreen ? "z-[120] is-fs" : "z-[55]"}`} data-testid="live-bar" data-fullscreen={inFullscreen ? "true" : "false"}
       style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}>
@@ -1254,18 +1227,10 @@ function LiveBar({ inFullscreen = false, playing, onToggle, current, kindCurrent
             data-testid="live-bar-volume-slider" aria-label="Volume"
             className="rai-livebar-range w-16 sm:w-28" />
         </div>
-        {!inFullscreen && (
-          <>
-            <button type="button" onClick={onFullscreen} data-testid="live-bar-fullscreen" aria-label="LedWall a schermo intero" title="LedWall a schermo intero"
-              className="w-9 h-9 rounded-full hidden sm:inline-flex items-center justify-center text-cyan-200 hover:text-white rai-livebar-icon focusable shrink-0">
-              <Maximize2 className="w-4 h-4" />
-            </button>
-            <button type="button" onClick={onExit} data-testid="live-bar-exit" aria-label="Esci dalla diretta" title="Esci dalla diretta · torna alla vetrina"
-              className="w-9 h-9 rounded-full inline-flex items-center justify-center text-zinc-300 hover:text-white rai-livebar-icon focusable shrink-0">
-              <X className="w-4 h-4" />
-            </button>
-          </>
-        )}
+        <button type="button" onClick={onExitFullscreen} data-testid="live-bar-exit-fullscreen" aria-label="Esci dallo schermo intero" title="Esci dallo schermo intero"
+          className="shrink-0 inline-flex items-center gap-1.5 h-9 px-3 rounded-full text-[11px] font-mono uppercase tracking-widest text-cyan-100 hover:text-white rai-livebar-icon focusable">
+          <Minimize2 className="w-4 h-4" /><span className="hidden sm:inline">Esci</span>
+        </button>
       </div>
     </div>
   );
