@@ -854,3 +854,8 @@ Vedi turni precedenti in questa sessione:
 - Barra player fissa in basso (`live-bar`): play/stop (stop → `rai:sync:pause`, play → `rai:sync:skip` = riaggancio al clock; nessuna modifica a SyncLivePlayer), titolo/artista da `displayCurrent`, mute + slider volume (imposta `.volume` sull'`<audio data-testid="sync-live-audio">`, persistito in localStorage `rai:volume`, riapplicato dopo il fade-in del player), fullscreen LedWall, X "Esci dalla diretta" (ferma audio e torna alla vetrina).
 - Nav in diretta: solo icone, h-11, auto-hide dopo 3s di inattività (pointermove/touch/scroll/key la fanno riapparire). Donate flottante nascosto in diretta (c'è "Sostieni" in nav). `onAir` ora include `syncPlaying` (badge ON AIR corretto).
 - Verifica (screenshot 1920/390): bar visibile con titolo reale, nav hidden dopo idle e riapparsa al movimento, stop/play dalla barra (audio paused true/false), volume 0.4 applicato, exit → vetrina + audio fermo. Build ok con soli warning preesistenti.
+
+## v13.66 · FULLSCREEN "stile YouTube" + barra sempre in overlay (2026-10-17) — solo `PublicRadio.js` + CSS
+- `LiveBar` estratta come componente; in fullscreen è montata DENTRO il layer LedWall (`z-[120]`, il fullscreen nativo mostra solo quel sottoalbero), sempre visibile ancorata al bordo inferiore (safe-area), senza tasti fullscreen/X (c'è "Esci" in alto). Fuori dal fullscreen resta `fixed bottom-0 z-[55]` in modalità diretta.
+- Layer fullscreen `.rai-fs-active`: 100vw × 100dvh (fallback iOS), LedWall/canvas/video forzati a inset 0 100%/100% + object-fit cover → nessuna banda nera né taglio.
+- Verifica screenshot 390×844, 820×1180, 1920×800: wall rect = viewport, barra bottom = viewport height, `barInsideFs: true`; uscita riporta la barra fuori dal layer.

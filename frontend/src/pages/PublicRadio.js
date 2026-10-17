@@ -834,7 +834,7 @@ export default function PublicRadio() {
         {/* Livello LedWall: in pagina è lo sfondo del hero; in fullscreen copre tutto lo schermo (desktop + mobile) */}
         <div
           ref={ledFsRef}
-          className={ledFs ? "fixed inset-0 z-[100] bg-black rai-fs-wrap" : `absolute inset-0 z-0 rai-fs-wrap rai-ledlayer ${liveMode ? "is-live" : ""}`}
+          className={ledFs ? "fixed inset-0 z-[100] bg-black rai-fs-wrap rai-fs-active" : `absolute inset-0 z-0 rai-fs-wrap rai-ledlayer ${liveMode ? "is-live" : ""}`}
           data-testid="home-ledwall-col"
           data-fullscreen={ledFs ? "true" : "false"}
         >
@@ -878,6 +878,13 @@ export default function PublicRadio() {
             {ledFs ? <><Minimize2 className="w-4 h-4" /> Esci</> : <><Maximize2 className="w-3.5 h-3.5" /><span className="hidden sm:inline">Schermo intero</span></>}
           </button>
           {!ledFs && !liveMode && <div className="absolute -top-2 right-3 z-20 hidden sm:block"><VuMeter /></div>}
+          {ledFs && (
+            <LiveBar
+              inFullscreen playing={barPlaying} onToggle={liveBarToggle} current={displayCurrent} kindCurrent={effectiveCurrent}
+              muted={muted} setMuted={setMuted} volume={volume} setVolume={setVolume}
+              onFullscreen={enterLedFs} onExit={exitLiveMode}
+            />
+          )}
         </div>
 
         {/* Veli per leggibilità (il LedWall resta dominante) */}
@@ -1128,54 +1135,13 @@ export default function PublicRadio() {
         </div>
       )}
 
-      {/* v13.65 · BARRA PLAYER compatta, fissa in basso (solo in modalità diretta) */}
+      {/* v13.66 · BARRA PLAYER compatta, fissa in basso (in diretta; in fullscreen è montata dentro il layer LedWall) */}
       {liveMode && !ledFs && (
-        <div className="rai-livebar fixed bottom-0 inset-x-0 z-[55]" data-testid="live-bar" style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}>
-          <div className="max-w-7xl mx-auto px-3 sm:px-4 h-16 sm:h-[72px] flex items-center gap-3">
-            <button type="button" onClick={liveBarToggle} data-testid="live-bar-toggle" aria-label={barPlaying ? "Stop" : "Play"}
-              className={`rai-livebar-play shrink-0 w-11 h-11 sm:w-12 sm:h-12 rounded-full inline-flex items-center justify-center focusable ${barPlaying ? "is-on" : ""}`}>
-              {barPlaying ? <Pause className="w-5 h-5" fill="currentColor" /> : <Play className="w-5 h-5 ml-0.5" fill="currentColor" />}
-            </button>
-            <div className="shrink-0 hidden sm:block">
-              {displayCurrent?.image_url ? (
-                <img src={displayCurrent.image_url} alt="" className="w-10 h-10 rounded-md object-cover" />
-              ) : (
-                <BigCue size={40} mode={barPlaying ? ((effectiveCurrent?.kind || "") === "music" ? "happy" : "speaking") : "idle"} />
-              )}
-            </div>
-            <div className="min-w-0 flex-1" data-testid="live-bar-now">
-              <div className="flex items-center gap-2">
-                <span className="rai-livebar-dot" aria-hidden />
-                <span className="text-[9px] font-mono uppercase tracking-[0.3em] text-cyan-300/90">{barPlaying ? "In onda ora" : "In pausa · clock live"}</span>
-                {displayCurrent?.kind && <span className="hidden sm:inline-flex"><KindBadge kind={displayCurrent.kind} /></span>}
-              </div>
-              <div className="font-display font-black text-sm sm:text-base text-white leading-tight truncate" data-testid="live-bar-title">
-                {displayCurrent?.title || "R-A.I. Radio"}
-              </div>
-              <div className="text-[11px] text-zinc-400 truncate" data-testid="live-bar-artist">
-                {displayCurrent?.artist || displayCurrent?.dj_name || "La radio che pensa da sola"}
-              </div>
-            </div>
-            <div className="flex items-center gap-2 shrink-0" data-testid="live-bar-volume">
-              <button type="button" onClick={() => setMuted((m) => !m)} data-testid="live-bar-mute" aria-label={muted ? "Riattiva audio" : "Muto"}
-                className="w-9 h-9 rounded-full inline-flex items-center justify-center text-cyan-200 hover:text-white rai-livebar-icon focusable">
-                {muted || volume === 0 ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
-              </button>
-              <input type="range" min={0} max={1} step={0.02} value={muted ? 0 : volume}
-                onChange={(e) => { setMuted(false); setVolume(Number(e.target.value)); }}
-                data-testid="live-bar-volume-slider" aria-label="Volume"
-                className="rai-livebar-range w-16 sm:w-28" />
-            </div>
-            <button type="button" onClick={enterLedFs} data-testid="live-bar-fullscreen" aria-label="LedWall a schermo intero" title="LedWall a schermo intero"
-              className="w-9 h-9 rounded-full hidden sm:inline-flex items-center justify-center text-cyan-200 hover:text-white rai-livebar-icon focusable shrink-0">
-              <Maximize2 className="w-4 h-4" />
-            </button>
-            <button type="button" onClick={exitLiveMode} data-testid="live-bar-exit" aria-label="Esci dalla diretta" title="Esci dalla diretta · torna alla vetrina"
-              className="w-9 h-9 rounded-full inline-flex items-center justify-center text-zinc-300 hover:text-white rai-livebar-icon focusable shrink-0">
-              <X className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
+        <LiveBar
+          playing={barPlaying} onToggle={liveBarToggle} current={displayCurrent} kindCurrent={effectiveCurrent}
+          muted={muted} setMuted={setMuted} volume={volume} setVolume={setVolume}
+          onFullscreen={enterLedFs} onExit={exitLiveMode}
+        />
       )}
 
       {/* Donate button (nascosto durante il LedWall a schermo intero) */}
@@ -1247,6 +1213,64 @@ function MiniDisplay({ icon: Icon, label, value }) {
 }
 
 // ==================== HOME CARDS — 4 moduli cover cinematografici ====================
+// v13.66 · Barra player compatta — overlay fisso al bordo inferiore, sempre visibile senza scroll.
+// In fullscreen viene montata DENTRO il layer LedWall (il fullscreen nativo mostra solo quel sottoalbero).
+function LiveBar({ inFullscreen = false, playing, onToggle, current, kindCurrent, muted, setMuted, volume, setVolume, onFullscreen, onExit }) {
+  return (
+    <div className={`rai-livebar fixed bottom-0 inset-x-0 ${inFullscreen ? "z-[120] is-fs" : "z-[55]"}`} data-testid="live-bar" data-fullscreen={inFullscreen ? "true" : "false"}
+      style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}>
+      <div className="max-w-7xl mx-auto px-3 sm:px-4 h-16 sm:h-[72px] flex items-center gap-3">
+        <button type="button" onClick={onToggle} data-testid="live-bar-toggle" aria-label={playing ? "Stop" : "Play"}
+          className={`rai-livebar-play shrink-0 w-11 h-11 sm:w-12 sm:h-12 rounded-full inline-flex items-center justify-center focusable ${playing ? "is-on" : ""}`}>
+          {playing ? <Pause className="w-5 h-5" fill="currentColor" /> : <Play className="w-5 h-5 ml-0.5" fill="currentColor" />}
+        </button>
+        <div className="shrink-0 hidden sm:block">
+          {current?.image_url ? (
+            <img src={current.image_url} alt="" className="w-10 h-10 rounded-md object-cover" />
+          ) : (
+            <BigCue size={40} mode={playing ? ((kindCurrent?.kind || "") === "music" ? "happy" : "speaking") : "idle"} />
+          )}
+        </div>
+        <div className="min-w-0 flex-1" data-testid="live-bar-now">
+          <div className="flex items-center gap-2">
+            <span className={`rai-livebar-dot ${playing ? "" : "is-off"}`} aria-hidden />
+            <span className="text-[9px] font-mono uppercase tracking-[0.3em] text-cyan-300/90">{playing ? "In onda ora" : "In pausa · clock live"}</span>
+            {current?.kind && <span className="hidden sm:inline-flex"><KindBadge kind={current.kind} /></span>}
+          </div>
+          <div className="font-display font-black text-sm sm:text-base text-white leading-tight truncate" data-testid="live-bar-title">
+            {current?.title || "R-A.I. Radio"}
+          </div>
+          <div className="text-[11px] text-zinc-400 truncate" data-testid="live-bar-artist">
+            {current?.artist || current?.dj_name || "La radio che pensa da sola"}
+          </div>
+        </div>
+        <div className="flex items-center gap-2 shrink-0" data-testid="live-bar-volume">
+          <button type="button" onClick={() => setMuted((m) => !m)} data-testid="live-bar-mute" aria-label={muted ? "Riattiva audio" : "Muto"}
+            className="w-9 h-9 rounded-full inline-flex items-center justify-center text-cyan-200 hover:text-white rai-livebar-icon focusable">
+            {muted || volume === 0 ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+          </button>
+          <input type="range" min={0} max={1} step={0.02} value={muted ? 0 : volume}
+            onChange={(e) => { setMuted(false); setVolume(Number(e.target.value)); }}
+            data-testid="live-bar-volume-slider" aria-label="Volume"
+            className="rai-livebar-range w-16 sm:w-28" />
+        </div>
+        {!inFullscreen && (
+          <>
+            <button type="button" onClick={onFullscreen} data-testid="live-bar-fullscreen" aria-label="LedWall a schermo intero" title="LedWall a schermo intero"
+              className="w-9 h-9 rounded-full hidden sm:inline-flex items-center justify-center text-cyan-200 hover:text-white rai-livebar-icon focusable shrink-0">
+              <Maximize2 className="w-4 h-4" />
+            </button>
+            <button type="button" onClick={onExit} data-testid="live-bar-exit" aria-label="Esci dalla diretta" title="Esci dalla diretta · torna alla vetrina"
+              className="w-9 h-9 rounded-full inline-flex items-center justify-center text-zinc-300 hover:text-white rai-livebar-icon focusable shrink-0">
+              <X className="w-4 h-4" />
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function HomeCards({ djs, questionName, setQuestionName, questionText, setQuestionText, submitQuestion, busy }) {
   const [daily, setDaily] = React.useState(null);
   const [messages, setMessages] = React.useState([]);

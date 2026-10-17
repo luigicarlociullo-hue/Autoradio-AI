@@ -1128,3 +1128,12 @@ a.powered-by-signature:hover {
 .rai-livebar-range::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%; background: #fff; box-shadow: 0 0 10px rgba(0,229,255,.8); border: 2px solid #00E5FF; }
 .rai-livebar-range::-moz-range-thumb { width: 14px; height: 14px; border-radius: 50%; background: #fff; border: 2px solid #00E5FF; }
 @media (prefers-reduced-motion: reduce) { .rai-ledlayer, .rai-hero-content, .rai-topnav, .rai-livebar { transition: none; animation: none; } .rai-live-burst, .rai-live-ring, .rai-live-label { animation-duration: .01s; } }
+
+/* ═══════════════════ v13.66 · FULLSCREEN "stile YouTube" + barra sempre in overlay ═══════════════════ */
+/* Il layer fullscreen copre l'intero schermo disponibile su ogni dispositivo (fallback iOS: 100dvh) */
+.rai-fs-active { width: 100vw; height: 100vh; height: 100dvh; max-height: 100dvh; overflow: hidden; }
+.rai-fs-active:fullscreen, .rai-fs-active:-webkit-full-screen { width: 100%; height: 100%; }
+.rai-fs-active > [data-testid="ledwall"] { position: absolute !important; inset: 0 !important; width: 100% !important; height: 100% !important; }
+.rai-fs-active > [data-testid="ledwall"] canvas, .rai-fs-active > [data-testid="ledwall"] video { width: 100% !important; height: 100% !important; object-fit: cover; }
+.rai-livebar.is-fs { background: rgba(3, 6, 14, 0.66); }
+.rai-livebar-dot.is-off { background: #00E5FF; box-shadow: 0 0 10px #00E5FF; animation: none; opacity: .7; }
