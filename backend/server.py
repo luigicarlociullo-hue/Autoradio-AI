@@ -12467,6 +12467,14 @@ async def admin_ad_manager_upload(
             v_ext = ((visual_file.filename or "").rsplit(".", 1)[-1] or "").lower()
             if v_ext not in _AD_MEDIA_EXTS_VISUAL:
                 raise HTTPException(415, f"Estensione visual non supportata: {v_ext}")
+            # Ticket #247410: stesso controllo codec dei video LedWall.
+            if v_ext in ("mp4", "webm", "mov"):
+                try:
+                    v_bytes, _vp, _vt = await video_service.ensure_web_playable(v_bytes, "." + v_ext)
+                    if _vt:
+                        v_ext = "mp4"
+                except Exception as e:
+                    logger.warning(f"[ad-manager] visual check failed: {e}")
             visual_ext = v_ext
             visual_sub = f"ad_manager/{kind}/{aid}_visual.{v_ext}"
             v_mime = _AD_VISUAL_MIME.get(v_ext, "application/octet-stream")
