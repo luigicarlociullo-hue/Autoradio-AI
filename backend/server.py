@@ -9419,6 +9419,24 @@ async def _probe_tts_duration(url: Optional[str], pad_sec: float = 0.0) -> Optio
             path = AUDIO_DIR / fname
         else:
             return None
+        if path and not path.exists():
+            # Ticket #247410: il file locale e' solo una cache (cleanup_old tiene
+            # ~200 TTS; un container nuovo dopo il deploy parte vuoto), ma
+            # /api/tts|suno_audio|community_audio servono comunque dall'Object
+            # Storage. Senza questo fallback la Modalita' Demo scartava in
+            # silenzio quasi tutti i vocali ("nessun vocale disponibile").
+            _obj_prefix = {"/api/tts/": "tts", "/api/suno_audio/": "suno", "/api/community_audio/": "community"}
+            _pre = next((k for k in _obj_prefix if url.startswith(k)), None)
+            if _pre and object_storage.is_enabled():
+                data = await object_storage.fetch_mp3(f"{_obj_prefix[_pre]}/{fname}")
+                if data:
+                    try:
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        tmp = path.with_name(path.name + ".part")
+                        tmp.write_bytes(data)
+                        tmp.replace(path)
+                    except Exception as e:
+                        logger.warning(f"[probe] cache write failed for {fname}: {e}")
         if not path or not path.exists():
             return None
         probe = await video_service.probe_video(str(path))
