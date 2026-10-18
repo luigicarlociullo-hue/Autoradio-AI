@@ -2520,6 +2520,7 @@ function CommunityPanel() {
     }
   };
 
+  // eslint-disable-next-line no-unused-vars
   const uploadJingle = async (role, file) => {
     if (!file) return;
     if (!file.name.toLowerCase().endsWith(".mp3")) {
@@ -2640,42 +2641,8 @@ function CommunityPanel() {
               </div>
             </div>
 
-            {/* Upload jingles */}
-            <div className="grid sm:grid-cols-2 gap-3">
-              {["intro", "outro"].map(role => (
-                <div key={role} className="rounded-lg border border-zinc-800 bg-zinc-900/60 p-3">
-                  <div className="text-xs font-mono uppercase tracking-widest text-zinc-400 mb-2">
-                    Jingle {role === "intro" ? "APERTURA" : "CTA FINALE"}
-                  </div>
-                  {cfg[`${role}_jingle_url`] ? (
-                    <div className="mb-2 flex items-center gap-2">
-                      <audio
-                        controls
-                        preload="auto"
-                        src={endpoints.audioUrl(cfg[`${role}_jingle_url`])}
-                        data-testid={`community-jingle-${role}-audio`}
-                        style={{ height: 28, maxWidth: "100%" }}
-                      />
-                    </div>
-                  ) : (
-                    <div className="text-xs text-zinc-500 italic mb-2">
-                      Nessun jingle caricato — il blocco community suonerà senza jingle {role === "intro" ? "iniziale" : "finale"}.
-                    </div>
-                  )}
-                  <input
-                    data-testid={`community-jingle-${role}-input`}
-                    type="file"
-                    accept=".mp3,audio/mpeg"
-                    onChange={(e) => uploadJingle(role, e.target.files?.[0])}
-                    disabled={jingleUploading[role]}
-                    className="w-full text-xs text-zinc-300 file:mr-3 file:py-1 file:px-3 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-pink-500 file:text-black hover:file:bg-pink-400 cursor-pointer disabled:opacity-40"
-                  />
-                  {jingleUploading[role] && (
-                    <div className="text-xs text-pink-400 mt-1">Upload in corso…</div>
-                  )}
-                </div>
-              ))}
-            </div>
+            {/* v13.72 · Upload jingle pre/post (APERTURA / CTA FINALE) rimosso dall'interfaccia: non più usato.
+                Dati (cfg.intro_jingle_url / outro_jingle_url), endpoint communityUploadJingle e la funzione uploadJingle restano intatti. */}
           </div>
 
           {/* ====== Tabella brani community (esistente) ====== */}

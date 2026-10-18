@@ -887,3 +887,7 @@ Vedi turni precedenti in questa sessione:
 - `AdManagerPanel` accetta `children`; Dashboard monta `<AdManagerPanel><ApprovalQueuePanel embedded /></AdManagerPanel>` in WAREHOUSE & ASSETS. `ApprovalQueuePanel({embedded})` → variante annidata (stesso testid `approval-queue-panel`, stessi endpoint). Rimosso dalla banda COMMUNITY.
 - Vocali ascoltatori: unico pannello = `VoiceQueuePanel` (COMMUNITY & PARTNERS, titolo "Vocali ascoltatori · pannello unico"). Il cassetto duplicato "🎙️ Vocali" del Magazzino (lista read-only della stessa `/admin/voice-queue`) è nascosto via filtro tabs (codice/stato conservati). Label Archivio/band aggiornate ("Segmenti vocali DJ" resta: è altra cosa, voci DJ).
 - Verifica: webpack ok (warning preesistente). Zero screenshot.
+
+## v13.72 · A.I. vs Umani — rimosso upload jingle pre/post dall'UI (2026-10-18)
+- `Dashboard.js` CommunityPanel: eliminato solo il blocco JSX "Upload jingles" (APERTURA / CTA FINALE). Frequenza, stato contatore e tabella brani invariati. `cfg.intro/outro_jingle_url`, `uploadJingle`, `endpoints.communityUploadJingle` e backend intatti (nessun dato/endpoint toccato).
+- Verifica: webpack ok (warning preesistente).
