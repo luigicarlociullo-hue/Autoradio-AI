@@ -872,3 +872,8 @@ Vedi turni precedenti in questa sessione:
 - **Fullscreen = layer unico a livello root** (`home-ledwall-fs`, montato solo quando `ledFs`; i LedWall inline non vengono renderizzati mentre è aperto). Controlli (select effetto `ledwall-fs-effect-select`, "Esci") visibili solo al tocco/pointermove e nascosti dopo 3s (`data-controls-visible`). Info brano (`fs-track-info`) al centro ad ogni cambio titolo/artista, sparisce dopo 4.5s. Nessun overlay permanente in diretta; la `LiveBar` resta solo nel FS pre-play (vetrina).
 - Consolle: colonna LedWall cliccabile → fullscreen (select con stopPropagation). Ogni ingresso in diretta → `setLedEffect("logo")`.
 - Verifica 1920×800 e 844×390: flusso vetrina→play→consolle (audio continuo, effetto logo, scrollY 0), click LedWall→FS nativo, controlli nascosti dopo idle e riapparsi al movimento, info brano scomparsa, Esci, stop→vetrina con stesso audio element; mobile landscape auto-FS al play.
+
+## v13.69 · DISCO DEL GIORNO in home (2026-10-18)
+- Backend (approvato dall'utente): `GET /api/power-play/today` pubblico read-only → `{date, track:{id,title,artist,image_url}|null}`; riusa `_power_play_get_today()` (stesso dato della Regia, `power_play_daily`), nessuna generazione lazy, nessuna logica palinsesto toccata.
+- Frontend `PublicRadio.js`: stato `discoDelGiorno` (poll 120s), componente `DiscoDelGiornoBadge` (`disco-del-giorno-badge/-title/-artist`), mostrato in VETRINA sotto il player nel hero e in DIRETTA nella colonna info della consolle sopra "A seguire". Se `track` è null non viene renderizzato nulla. Fix: aggiunto import `api` da `@/lib/api`.
+- Verificato: endpoint 200 con il PP di oggi; badge visibile in entrambi gli stati.

@@ -1153,3 +1153,7 @@ a.powered-by-signature:hover {
   .rai-topnav .standby-badge > span:last-child,
   .rai-topnav .on-air-badge > span:last-child { display: none; }
 }
+
+/* ═══════════════════ v13.69 · Disco del Giorno badge ═══════════════════ */
+.rai-ddg { background: rgba(3, 6, 14, 0.72); border: 1px solid rgba(0, 229, 255, 0.4); box-shadow: 0 0 18px rgba(0, 229, 255, 0.18), inset 0 0 14px rgba(0, 229, 255, 0.06); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
+.rai-ddg-icon { background: rgba(0, 229, 255, 0.10); border: 1px solid rgba(0, 229, 255, 0.45); box-shadow: 0 0 12px rgba(0, 229, 255, 0.35); }

@@ -7,7 +7,7 @@ import {
   Mic, AudioWaveform, Cpu, Signal, Waves, CircuitBoard, Disc3, Antenna,
   Building2, Mail, Headphones, Maximize2, Minimize2, Home, ChevronDown, FileDown, VolumeX
 } from "lucide-react";
-import { endpoints } from "@/lib/api";
+import { api, endpoints } from "@/lib/api";
 import radioEngine from "@/lib/radioEngine";
 import { toast } from "sonner";
 import PulsingBrand from "@/components/PulsingBrand";
@@ -189,6 +189,17 @@ export default function PublicRadio() {
   const [lastDjLine, setLastDjLine] = useState("");     // v13.45 · ultimo parlato DJ visto
   const [isPlaying, setIsPlaying] = useState(false);
   const [syncPlaying, setSyncPlaying] = useState(false);  // v13.65 · stato reale del Sync Live (evento rai:sync:play)
+  const [discoDelGiorno, setDiscoDelGiorno] = useState(null);  // v13.69 · stesso dato della Regia (power_play_daily), lettura pubblica
+  useEffect(() => {
+    let live = true;
+    const load = async () => {
+      try { const r = await api.get("/power-play/today"); if (live) setDiscoDelGiorno(r.data?.track || null); }
+      catch (e) { if (live) setDiscoDelGiorno(null); }
+    };
+    load();
+    const iv = setInterval(load, 120000);
+    return () => { live = false; clearInterval(iv); };
+  }, []);
   const [isPreparing, setIsPreparing] = useState(false);
   const [busy, setBusy] = useState(false);
   const hdMode = false;
@@ -1055,6 +1066,7 @@ export default function PublicRadio() {
 
           {/* ── DX (3/12): INFO ESSENZIALI + chat ── */}
           <div className="order-3 lg:order-3 lg:col-span-3 flex flex-col gap-3 min-w-0" data-testid="home-info-col">
+            {discoDelGiorno && <DiscoDelGiornoBadge track={discoDelGiorno} />}
             <div className="console-panel p-4 flex flex-col gap-4">
               <CornerAccents />
               <div data-testid="home-next-track">
@@ -1560,6 +1572,11 @@ export default function PublicRadio() {
             </div>
           </div>
 
+          {discoDelGiorno && (
+            <div className="mt-4 rai-rise pointer-events-auto" style={{ animationDelay: "360ms" }}>
+              <DiscoDelGiornoBadge track={discoDelGiorno} />
+            </div>
+          )}
           <div className="mt-6 rai-rise pointer-events-auto" style={{ animationDelay: "400ms" }}><MainPartnerSlot /></div>
 
           {/* elementi tecnici nascosti dalla home (restano nel codice) */}
@@ -1813,6 +1830,23 @@ function MiniDisplay({ icon: Icon, label, value }) {
 }
 
 // ==================== HOME CARDS — 4 moduli cover cinematografici ====================
+// v13.69 · Disco del Giorno — badge pubblico (vetrina + diretta). Non renderizzato se oggi non c'è.
+function DiscoDelGiornoBadge({ track }) {
+  if (!track?.title) return null;
+  return (
+    <div className="rai-ddg flex items-center gap-3 rounded-xl px-3 py-2.5 text-left" data-testid="disco-del-giorno-badge">
+      <div className="rai-ddg-icon shrink-0 w-10 h-10 rounded-lg flex items-center justify-center">
+        {track.image_url ? <img src={track.image_url} alt="" className="w-10 h-10 rounded-lg object-cover" /> : <Disc3 className="w-5 h-5 animate-spin" style={{ animationDuration: "6s", color: "#00E5FF" }} />}
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="text-[9px] font-mono uppercase tracking-[0.3em]" style={{ color: "#00E5FF" }}>◂ Disco del Giorno ▸</div>
+        <div className="font-display font-black text-sm sm:text-base text-white leading-tight line-clamp-2 break-words" data-testid="disco-del-giorno-title">{track.title}</div>
+        {track.artist && <div className="text-xs text-zinc-300 line-clamp-1" data-testid="disco-del-giorno-artist">{track.artist}</div>}
+      </div>
+    </div>
+  );
+}
+
 // v13.66 · Barra player compatta — overlay fisso al bordo inferiore, sempre visibile senza scroll.
 // In fullscreen viene montata DENTRO il layer LedWall (il fullscreen nativo mostra solo quel sottoalbero).
 function LiveBar({ inFullscreen = false, playing, onToggle, current, kindCurrent, muted, setMuted, volume, setVolume, onExitFullscreen }) {

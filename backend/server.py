@@ -12829,6 +12829,16 @@ async def _power_play_ticker():
             await asyncio.sleep(60)
 
 
+@api_router.get("/power-play/today")
+async def public_power_play_today():
+    """v13.69 · Lettura pubblica read-only del Disco del Giorno (stesso dato della Regia). Nessuna generazione."""
+    pp = await _power_play_get_today()
+    if not pp or not pp.get("track_id"):
+        return {"date": _rome_today_key(), "track": None}
+    t = await db.tracks.find_one({"id": pp.get("track_id")}, {"_id": 0, "id": 1, "title": 1, "artist": 1, "image_url": 1})
+    return {"date": _rome_today_key(), "track": t}
+
+
 @api_router.get("/admin/power-play/today")
 async def admin_power_play_today():
     """Ritorna il Disco del Giorno + info track. Se manca, prova a generarlo
