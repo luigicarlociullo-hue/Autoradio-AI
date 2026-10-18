@@ -244,7 +244,7 @@ export default function Dashboard() {
 
             {/* 2 · ARCHIVIO BRANI · CONTROLLO TOTALE — v13.49 fusione Magazzino + Archivio Brani */}
             <section data-testid="band-archivio" className="space-y-4">
-              <BandHeader icon="🎚️" title="ARCHIVIO BRANI · CONTROLLO TOTALE" subtitle="ON/OFF · 6 fasce orarie · modifica con approvazione · eliminazione confermata · ZIP · Upload · Cestino · Vocali" color="#00E5FF" />
+              <BandHeader icon="🎚️" title="ARCHIVIO BRANI · CONTROLLO TOTALE" subtitle="ON/OFF · 6 fasce orarie · modifica con approvazione · eliminazione confermata · ZIP · Upload · Cestino · Segmenti vocali DJ" color="#00E5FF" />
               <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
                 <ArchivioControlloTotale TrackModal={TrackModal} />
               </div>
@@ -253,9 +253,10 @@ export default function Dashboard() {
             {/* 3 · WAREHOUSE & ASSETS — Ad Manager · Regia Audio · Cestino
                 (MagazzinoUniversale e TrackManagerPanel restano nel codice, ora fusi nella sezione sopra) */}
             <section data-testid="band-warehouse" className="space-y-4">
-              <BandHeader icon="📚" title="WAREHOUSE & ASSETS" subtitle="Ad Manager · Regia Audio · Cestino" color="#D080FF" />
+              <BandHeader icon="📚" title="WAREHOUSE & ASSETS" subtitle="Ad Manager + Coda di approvazione partner · Regia Audio · Cestino" color="#D080FF" />
               <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-                <AdManagerPanel />
+                {/* v13.71 · Coda di approvazione (richieste partner) dentro la sezione pubblicitaria */}
+                <AdManagerPanel><ApprovalQueuePanel embedded /></AdManagerPanel>
                 <RegiaAudioPanel />
                 <TrashPanel />
               </div>
@@ -283,9 +284,9 @@ export default function Dashboard() {
 
             {/* 5 · COMMUNITY & PARTNERS */}
             <section data-testid="band-community" className="space-y-4">
-              <BandHeader icon="🤝" title="COMMUNITY & PARTNERS" subtitle="Approvazioni · vocali · A.I. vs Umani · sponsor" color="#80FFB4" />
+              <BandHeader icon="🤝" title="COMMUNITY & PARTNERS" subtitle="Vocali ascoltatori (pannello unico) · A.I. vs Umani · sponsor" color="#80FFB4" />
               <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-                <ApprovalQueuePanel />
+                {/* ApprovalQueuePanel spostato dentro Ad Manager (v13.71) */}
                 <VoiceQueuePanel />
                 <CommunityPanel />
                 <CommunityWallPanel />
@@ -3621,7 +3622,7 @@ function NightDJsPanel() {
 
 // ==================== TrashPanel — Cestino con Undo + Auto-clean ====================
 // ==================== ApprovalQueuePanel — richieste partner esterne ====================
-function ApprovalQueuePanel() {
+function ApprovalQueuePanel({ embedded = false }) {  // v13.71 · embedded = dentro Ad Manager
   const [items, setItems] = useState([]);
   const [busy, setBusy] = useState(false);
 
@@ -3651,10 +3652,10 @@ function ApprovalQueuePanel() {
 
   return (
     <section
-      className="lg:col-span-4 card-surface p-6"
+      className={embedded ? "rounded-xl p-4 mt-1 border border-amber-400/25" : "lg:col-span-4 card-surface p-6"}
       data-testid="approval-queue-panel"
       style={{
-        boxShadow: "0 0 0 1px rgba(255,184,77,0.25) inset, 0 12px 40px rgba(0,0,0,0.55), 0 0 32px rgba(255,184,77,0.10)",
+        boxShadow: embedded ? "0 0 0 1px rgba(255,184,77,0.15) inset" : "0 0 0 1px rgba(255,184,77,0.25) inset, 0 12px 40px rgba(0,0,0,0.55), 0 0 32px rgba(255,184,77,0.10)",
         background: "linear-gradient(180deg, rgba(255,184,77,0.03) 0%, rgba(0,0,0,0.4) 100%)",
       }}
     >
@@ -3928,7 +3929,7 @@ function VoiceQueuePanel() {
       <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
         <div>
           <div className="label-mono flex items-center gap-2" style={{ color: "#FF7FB0" }}>
-            🎙️ Voice Live · vocali ascoltatori
+            🎙️ Vocali ascoltatori · pannello unico (Voice Live · approvazione · cancellazione)
           </div>
           <h3 className="font-display font-black text-xl mt-1">
             {items.length === 0 ? "Nessun vocale in coda" : `${items.length} in attesa di OK`}

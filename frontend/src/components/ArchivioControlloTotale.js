@@ -432,7 +432,7 @@ export default function ArchivioControlloTotale({ TrackModal }) {
         </div>
         <div className="flex gap-2 flex-wrap">
           <button type="button" onClick={() => setShowResources((v) => !v)} data-testid="act-toggle-resources" className="btn-outline text-xs font-mono">
-            {showResources ? "▴ Nascondi" : "▾ Upload MP3/MP4 · Cestino · Vocali"}
+            {showResources ? "▴ Nascondi" : "▾ Upload MP3/MP4 · Cestino · Segmenti vocali DJ"}
           </button>
           <button data-testid="add-new-track-btn" onClick={() => setModal({ kind: "new" })} className="btn-primary flex items-center gap-2"><Upload className="w-4 h-4" /> AGGIUNGI NUOVO</button>
         </div>

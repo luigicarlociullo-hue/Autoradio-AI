@@ -26,7 +26,7 @@ const KIND_META = {
   outro:  { label: "Jingle Outro",  color: "#D080FF", icon: Radio },
 };
 
-export default function AdManagerPanel() {
+export default function AdManagerPanel({ children = null }) {  // v13.71 · children = Coda di approvazione (richieste partner) montata dentro il pannello
   const [spots, setSpots] = useState([]);
   const [busy, setBusy] = useState(false);
   const [filterKind, setFilterKind] = useState("all");
@@ -313,6 +313,7 @@ export default function AdManagerPanel() {
           );
         })}
       </div>
+      {children}
     </section>
   );
 }

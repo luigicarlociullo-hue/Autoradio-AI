@@ -355,7 +355,8 @@ export function MagazzinoUniversale({ embedded = false }) {
     { k: "trash", label: `🗑️ Cestino (${trash.length})`, color: "#FF6BAA" },
     { k: "voice", label: `🎙️ Vocali (${voice.length})`, color: "#D080FF" },
     { k: "segments", label: "🗣️ Segmenti vocali DJ", color: "#D080FF" },
-  ].filter((t) => !(embedded && t.k === "audio"));
+  ].filter((t) => !(embedded && t.k === "audio"))
+   .filter((t) => t.k !== "voice");  // v13.71 · i vocali ascoltatori vivono SOLO nel pannello unico (VoiceQueuePanel, Community & Partners)
 
   return (
     <section
