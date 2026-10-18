@@ -877,3 +877,8 @@ Vedi turni precedenti in questa sessione:
 - Backend (approvato dall'utente): `GET /api/power-play/today` pubblico read-only → `{date, track:{id,title,artist,image_url}|null}`; riusa `_power_play_get_today()` (stesso dato della Regia, `power_play_daily`), nessuna generazione lazy, nessuna logica palinsesto toccata.
 - Frontend `PublicRadio.js`: stato `discoDelGiorno` (poll 120s), componente `DiscoDelGiornoBadge` (`disco-del-giorno-badge/-title/-artist`), mostrato in VETRINA sotto il player nel hero e in DIRETTA nella colonna info della consolle sopra "A seguire". Se `track` è null non viene renderizzato nulla. Fix: aggiunto import `api` da `@/lib/api`.
 - Verificato: endpoint 200 con il PP di oggi; badge visibile in entrambi gli stati.
+
+## v13.70 · REGIA: "COMANDI IN ALTO" + Dual Brain in AI Master (2026-10-18) — solo UI
+- `Dashboard.js`: prima sezione rinominata **COMANDI IN ALTO** (testid `band-live-command` invariato). Dopo le griglie Live Command, nuova griglia `band-top-commands` con: `LiveExternalPanel` (Pilota AI / Broadcaster esterno, da NIGHT & LIVE SOURCES), `ManualModePanel` (Trasmissione manuale, da NIGHT), blocco Control Room "Pilota la webradio AI" (toggle stazione + generatori, da SECONDARY), `KillSwitchPanel` (Automazione attiva, da SECONDARY). Sottotitoli NIGHT/SECONDARY aggiornati. Nessun endpoint/testid/logica modificato.
+- Dual-Brain (Leo vs Max): stato + `genDualBrain`/`injectDual` + JSX spostati da `BroadcasterPanel.js` (ora solo HLS + Icecast) a `AIMasterControlPanel.js` (blocco in fondo). Stessi endpoint `dualBrainGenerate/dualBrainInject` e testid `dual-brain-*`.
+- Verifica: webpack compilato (solo warning preesistente), eslint ok. Zero screenshot (regola utente dal 2026-10-18: solo compile/build/curl/in-process).

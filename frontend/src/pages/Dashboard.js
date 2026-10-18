@@ -189,9 +189,10 @@ export default function Dashboard() {
           {/* ═══════════════ COLONNA PRINCIPALE ═══════════════ */}
           <div className="xl:col-span-9 min-w-0 space-y-8 regia-col">
 
-            {/* 1 · LIVE COMMAND — controllo totale della diretta senza scorrere */}
+            {/* 1 · COMANDI IN ALTO — v13.70: Live Command + Pilota AI/Broadcaster esterno + Trasmissione manuale
+                + Pilota la web radio + Automazione attiva (solo raggruppamento grafico, stessi pannelli/endpoint) */}
             <section data-testid="band-live-command" className="space-y-4">
-              <BandHeader icon="🔴" title="LIVE COMMAND" subtitle="Player live · 7 interruttori DJ · Soggetto globale · FLASH AD · Go Live · LedWall · Broadcaster" color="#FF8A3D" />
+              <BandHeader icon="🔴" title="COMANDI IN ALTO" subtitle="Live Command · Pilota AI / Broadcaster esterno · Trasmissione manuale · Pilota la web radio · Automazione attiva" color="#FF8A3D" />
               <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
                 <BroadcastControlBar />
                 <AIMasterControlPanel />
@@ -207,6 +208,37 @@ export default function Dashboard() {
                 {/* v13.50 · LED Wall News — ticker testuale sul LedWall pubblico */}
                 <LedWallNewsPanel />
                 <BroadcasterPanel />
+              </div>
+              {/* Pilota AI / Broadcaster esterno · Trasmissione manuale · Pilota la web radio · Automazione attiva (spostati qui, v13.70) */}
+              <div className="grid grid-cols-1 lg:grid-cols-4 gap-6" data-testid="band-top-commands">
+                <LiveExternalPanel />
+                <ManualModePanel />
+                {/* Control room — generatori manuali (Talk/News/Oroscopo/Meteo…) · affiancato allo StellePanel (12 testi giornalieri): funzioni DIVERSE */}
+                <section className="lg:col-span-2 rounded-xl overflow-hidden relative border border-white/10 min-w-0">
+                  <div className="absolute inset-0 -z-10" style={{ backgroundImage: `linear-gradient(180deg, rgba(5,5,10,0.7) 0%, rgba(5,5,10,0.92) 100%), url(${STUDIO_BG})`, backgroundSize: "cover", backgroundPosition: "center" }} />
+                  <div className="p-6 flex flex-col gap-4">
+                    <div>
+                      <div className="label-mono mb-2">Control Room</div>
+                      <h1 className="font-display font-black text-3xl sm:text-4xl">Pilota la webradio AI</h1>
+                      <p className="text-zinc-400 mt-2 max-w-xl">Accendi o spegni la trasmissione, genera segmenti, dai voce alle domande del pubblico.</p>
+                    </div>
+                    <div className="flex flex-wrap gap-3">
+                      <button data-testid="station-toggle" disabled={busy} onClick={toggleStation} className={station.is_live ? "btn-outline flex items-center gap-2" : "btn-primary flex items-center gap-2"}>
+                        <Power className="w-4 h-4" /> {station.is_live ? "Spegni stazione" : "Accendi stazione"}
+                      </button>
+                      <button data-testid="gen-talk" disabled={busy} onClick={() => generate("talk")} className="btn-outline flex items-center gap-2"><MessageCircle className="w-4 h-4" /> Talk</button>
+                      <button data-testid="gen-music" disabled={busy} onClick={() => generate("music")} className="btn-outline flex items-center gap-2"><Music2 className="w-4 h-4" /> Musica</button>
+                      <button data-testid="gen-news" disabled={busy} onClick={() => generate("news")} className="btn-outline flex items-center gap-2"><Newspaper className="w-4 h-4" /> News</button>
+                      <button data-testid="gen-interview" disabled={busy} onClick={() => generate("interview")} className="btn-outline flex items-center gap-2"><Users className="w-4 h-4" /> Dialogo</button>
+                      <button data-testid="gen-horoscope" disabled={busy} onClick={() => generate("horoscope")} className="btn-outline flex items-center gap-2"><Sparkles className="w-4 h-4" /> Oroscopo</button>
+                      <button data-testid="gen-history" disabled={busy} onClick={() => generate("history")} className="btn-outline flex items-center gap-2"><Sparkles className="w-4 h-4" /> Storia</button>
+                      <button data-testid="gen-weather" disabled={busy} onClick={() => generate("weather")} className="btn-outline flex items-center gap-2"><Sparkles className="w-4 h-4" /> Meteo</button>
+                      <button data-testid="gen-joke" disabled={busy} onClick={() => generate("joke")} className="btn-outline flex items-center gap-2"><Sparkles className="w-4 h-4" /> Battuta</button>
+                      <button data-testid="gen-motivation" disabled={busy} onClick={() => generate("motivation")} className="btn-outline flex items-center gap-2"><Sparkles className="w-4 h-4" /> Motivazione</button>
+                    </div>
+                  </div>
+                </section>
+                <KillSwitchPanel />
               </div>
             </section>
 
@@ -241,12 +273,11 @@ export default function Dashboard() {
 
             {/* 4 · NIGHT & LIVE SOURCES */}
             <section data-testid="band-night" className="space-y-4">
-              <BandHeader icon="🌙" title="NIGHT & LIVE SOURCES" subtitle="AI Speaker · Beatmatch · Jingle Library · Night DJs · Line-In · Live External" color="#C89AFF" />
+              <BandHeader icon="🌙" title="NIGHT & LIVE SOURCES" subtitle="AI Speaker · Beatmatch · Jingle Library · Night DJs" color="#C89AFF" />
               <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
                 <NightControlCenter />
                 <NightDJsPanel />
-                <LiveExternalPanel />
-                <ManualModePanel />
+                {/* LiveExternalPanel e ManualModePanel spostati in "COMANDI IN ALTO" (v13.70) */}
               </div>
             </section>
 
@@ -264,40 +295,13 @@ export default function Dashboard() {
 
             {/* 6 · SECONDARY UTILITIES — fondo pagina: generatori, oroscopo, manutenzione */}
             <section data-testid="band-secondary" className="space-y-4">
-              <BandHeader icon="🧰" title="SECONDARY UTILITIES" subtitle="Generatori manuali · Oroscopo · News · Meteo · Manutenzione tecnica · KPI" color="#8A8F98" />
+              <BandHeader icon="🧰" title="SECONDARY UTILITIES" subtitle="Oroscopo · Manutenzione tecnica · KPI · Campagne" color="#8A8F98" />
               <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-
-        {/* Control room — generatori manuali (Talk/News/Oroscopo/Meteo…) · affiancato allo StellePanel (12 testi giornalieri): funzioni DIVERSE */}
-        <section className="lg:col-span-2 rounded-xl overflow-hidden relative border border-white/10 min-w-0">
-          <div className="absolute inset-0 -z-10" style={{ backgroundImage: `linear-gradient(180deg, rgba(5,5,10,0.7) 0%, rgba(5,5,10,0.92) 100%), url(${STUDIO_BG})`, backgroundSize: "cover", backgroundPosition: "center" }} />
-          <div className="p-6 flex flex-col gap-4">
-            <div>
-              <div className="label-mono mb-2">Control Room</div>
-              <h1 className="font-display font-black text-3xl sm:text-4xl">Pilota la webradio AI</h1>
-              <p className="text-zinc-400 mt-2 max-w-xl">Accendi o spegni la trasmissione, genera segmenti, dai voce alle domande del pubblico.</p>
-            </div>
-            <div className="flex flex-wrap gap-3">
-              <button data-testid="station-toggle" disabled={busy} onClick={toggleStation} className={station.is_live ? "btn-outline flex items-center gap-2" : "btn-primary flex items-center gap-2"}>
-                <Power className="w-4 h-4" /> {station.is_live ? "Spegni stazione" : "Accendi stazione"}
-              </button>
-              <button data-testid="gen-talk" disabled={busy} onClick={() => generate("talk")} className="btn-outline flex items-center gap-2"><MessageCircle className="w-4 h-4" /> Talk</button>
-              <button data-testid="gen-music" disabled={busy} onClick={() => generate("music")} className="btn-outline flex items-center gap-2"><Music2 className="w-4 h-4" /> Musica</button>
-              <button data-testid="gen-news" disabled={busy} onClick={() => generate("news")} className="btn-outline flex items-center gap-2"><Newspaper className="w-4 h-4" /> News</button>
-              <button data-testid="gen-interview" disabled={busy} onClick={() => generate("interview")} className="btn-outline flex items-center gap-2"><Users className="w-4 h-4" /> Dialogo</button>
-              <button data-testid="gen-horoscope" disabled={busy} onClick={() => generate("horoscope")} className="btn-outline flex items-center gap-2"><Sparkles className="w-4 h-4" /> Oroscopo</button>
-              <button data-testid="gen-history" disabled={busy} onClick={() => generate("history")} className="btn-outline flex items-center gap-2"><Sparkles className="w-4 h-4" /> Storia</button>
-              <button data-testid="gen-weather" disabled={busy} onClick={() => generate("weather")} className="btn-outline flex items-center gap-2"><Sparkles className="w-4 h-4" /> Meteo</button>
-              <button data-testid="gen-joke" disabled={busy} onClick={() => generate("joke")} className="btn-outline flex items-center gap-2"><Sparkles className="w-4 h-4" /> Battuta</button>
-              <button data-testid="gen-motivation" disabled={busy} onClick={() => generate("motivation")} className="btn-outline flex items-center gap-2"><Sparkles className="w-4 h-4" /> Motivazione</button>
-            </div>
-          </div>
-        </section>
 
         {/* Oroscopo / Stelle — 12 testi giornalieri */}
         <div className="lg:col-span-2 flex min-w-0 regia-flat"><StellePanel /></div>
 
-        {/* Manutenzione tecnica */}
-        <KillSwitchPanel />
+        {/* Manutenzione tecnica (KillSwitchPanel spostato in "COMANDI IN ALTO") */}
         <DbSyncPanel />
 
         {/* KPI */}
