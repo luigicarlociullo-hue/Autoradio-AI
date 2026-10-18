@@ -5,13 +5,43 @@ import VoiceSegmentsPanel from "./VoiceSegmentsPanel";
 import { Radio, Upload, Trash2, RotateCcw, Music, Film, Video } from "lucide-react";
 
 /* ══════════════════════════════════════════════════════════════════════════
-   GO LIVE PANEL — pulsante rosso pulsante per override LedWall immediato
+   GO LIVE PANEL — v13.73 · InOverride LedWall
+   • upload video + immagini (jpg/png/gif/webp) → stessa libreria `/admin/ledwall/videos`
+   • lista con thumbnail, ordinata per data di upload (recenti in cima)
+   • selezione → PREVIEW nel monitor; va in onda solo con "MANDA IN DIRETTA"
+   • override permanente (loop video) finché non viene rimosso o sostituito da un evento
+   • "RIMUOVI OVERRIDE" separato, con conferma · indicatore di stato (file · tipo · da quanto)
    ══════════════════════════════════════════════════════════════════════════ */
+const isImageUrl = (u) => /\.(jpe?g|png|gif|webp)(\?|$)/i.test(String(u || ""));
+const mediaKind = (v) => (v?.mime?.startsWith("image/") || isImageUrl(v?.url || v)) ? "foto" : "video";
+const fmtElapsed = (iso) => {
+  if (!iso) return "";
+  const s = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m} min ${s % 60}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${m % 60}min`;
+};
+
+function MediaThumb({ item, className = "" }) {
+  const url = item?.url || item;
+  if (!url) return <div className={`bg-black/60 ${className}`} />;
+  return mediaKind(item) === "foto"
+    ? <img src={url} alt="" className={`object-cover bg-black ${className}`} loading="lazy" />
+    : <video src={url} muted playsInline preload="metadata" className={`object-cover bg-black ${className}`} />;
+}
+
 export function GoLivePanel() {
   const [state, setState] = useState({ video_source: "effects", video_url: null, from_override: false });
   const [busy, setBusy] = useState(false);
   const [url, setUrl] = useState("");
   const [videos, setVideos] = useState([]);
+  const [preview, setPreview] = useState(null);        // {url, name, kind} scelto ma NON ancora in onda
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [, setTick] = useState(0);                      // refresh "da quanto tempo"
+  const fileRef = useRef(null);
 
   const load = async () => {
     try {
@@ -20,23 +50,48 @@ export function GoLivePanel() {
     } catch {}
     try {
       const v = await api.get("/admin/ledwall/videos");
-      setVideos(v.data.videos || []);
+      const list = (v.data.videos || []).slice().sort((a, b) => String(b.uploaded_at || "").localeCompare(String(a.uploaded_at || "")));
+      setVideos(list);
     } catch {}
   };
   useEffect(() => { load(); const iv = setInterval(load, 5000); return () => clearInterval(iv); }, []);
+  useEffect(() => { const iv = setInterval(() => setTick((t) => t + 1), 1000); return () => clearInterval(iv); }, []);
 
   const goLive = async (source, videoUrl) => {
     setBusy(true);
     try {
       await api.patch("/admin/ledwall/override", { video_source: source, video_url: videoUrl });
-      toast.success(`LedWall ${!source || source === "effects" ? "torna agli Effetti" : "in DIRETTA " + source.toUpperCase()}`);
+      toast.success(`LedWall ${!source || source === "effects" ? "torna agli Effetti" : "in DIRETTA · " + (source === "cam" ? "STREAM" : (videoUrl && isImageUrl(videoUrl) ? "FOTO" : "VIDEO"))}`);
       load();
     } catch (e) { toast.error("Errore override"); }
     finally { setBusy(false); }
   };
 
-  const clearOverride = () => goLive(null, null);
+  const sendPreviewLive = () => { if (preview?.url) goLive("video", preview.url); };
+  const removeOverride = async () => { setConfirmRemove(false); await goLive(null, null); };
+
+  const uploadMedia = async (file) => {
+    if (!file) return;
+    setUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("name", file.name);
+      const r = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/admin/ledwall/upload-video`, { method: "POST", body: fd, credentials: "include" });
+      if (!r.ok) throw new Error((await r.text()).slice(0, 160));
+      const d = await r.json();
+      toast.success(`${mediaKind(d.video) === "foto" ? "Immagine" : "Video"} caricato · ora in anteprima`);
+      if (d.video?.url) setPreview({ url: d.video.url, name: d.video.display_name || d.video.filename, kind: mediaKind(d.video) });
+      load();
+    } catch (e) { toast.error("Upload fallito: " + String(e.message || e)); }
+    finally { setUploading(false); if (fileRef.current) fileRef.current.value = ""; }
+  };
+
   const isLive = state.from_override && state.video_source !== "effects";
+  const liveItem = videos.find((v) => v.url === state.video_url);
+  const liveName = liveItem?.display_name || liveItem?.filename || (state.video_url ? state.video_url.split("/").pop() : null);
+  const liveKind = state.video_source === "cam" ? "stream" : (state.video_url ? mediaKind(liveItem || state.video_url) : null);
+  const previewIsLive = preview && isLive && state.video_url === preview.url;
 
   return (
     <section
@@ -69,66 +124,143 @@ export function GoLivePanel() {
         )}
       </div>
 
-      <div className="text-[11px] font-mono text-zinc-400 mb-3">
-        Sorgente attuale: <span className="text-white">{state.video_source}</span>
-        {state.video_url && <> · <span className="text-cyan-300 truncate">{state.video_url}</span></>}
-        {!state.from_override && <span className="text-zinc-500"> (dal palinsesto)</span>}
+      {/* 7 · INDICATORE DI STATO — sempre visibile */}
+      <div className="rounded-lg p-2.5 mb-3 flex items-center gap-3" data-testid="go-live-status"
+        style={{ background: "rgba(0,0,0,0.45)", border: `1px solid ${isLive ? "rgba(255,20,60,0.45)" : "rgba(0,229,255,0.25)"}` }}>
+        <div className="w-16 h-10 rounded overflow-hidden shrink-0 border border-white/10">
+          {isLive && state.video_source !== "cam" && state.video_url
+            ? <MediaThumb item={liveItem || state.video_url} className="w-full h-full" />
+            : <div className="w-full h-full flex items-center justify-center text-[9px] font-mono text-cyan-300/70">{state.video_source === "cam" ? "📹" : "🌀 FX"}</div>}
+        </div>
+        <div className="min-w-0 flex-1 text-[11px] font-mono">
+          <div className="text-zinc-400 uppercase tracking-widest text-[9px]">In onda sul LedWall adesso</div>
+          {isLive ? (
+            <>
+              <div className="text-white truncate" data-testid="go-live-status-name">{liveName || state.video_url}</div>
+              <div className="text-zinc-400">
+                <span className="uppercase" style={{ color: "#FF6B8C" }} data-testid="go-live-status-kind">{liveKind}</span>
+                {state.set_at && <> · da <span className="text-white" data-testid="go-live-status-elapsed">{fmtElapsed(state.set_at)}</span></>}
+                {liveKind === "video" && <span className="text-zinc-500"> · loop</span>}
+              </div>
+            </>
+          ) : (
+            <div className="text-white">
+              {state.from_event ? `Evento: ${state.event_title || "timeline"}` : "Effetti audio-reattivi"}
+              <span className="text-zinc-500"> {state.from_event ? "(automatico)" : "(dal palinsesto · nessun override)"}</span>
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-3">
-        {/* Video file da libreria */}
-        <div className="rounded p-2 border border-white/8 bg-black/40">
-          <div className="text-[10px] font-mono uppercase text-cyan-300 mb-1">🎬 VIDEO DA LIBRERIA</div>
-          <select
-            className="w-full bg-black border border-white/10 rounded px-2 py-1.5 text-xs text-white mb-2"
-            value=""
-            onChange={(e) => e.target.value && goLive("video", e.target.value)}
-            data-testid="go-live-video-select"
-            title="Scegli un mp4 caricato per andare in onda subito"
-          >
-            <option value="">-- Scegli un video --</option>
-            {videos.map((v) => (
-              <option key={v.id} value={v.url}>{v.display_name || v.filename}</option>
-            ))}
-          </select>
-        </div>
-        {/* URL manuale */}
-        <div className="rounded p-2 border border-white/8 bg-black/40">
-          <div className="text-[10px] font-mono uppercase text-cyan-300 mb-1">📹 URL CAM/STREAM</div>
-          <div className="flex gap-1">
-            <input
-              type="url"
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-              placeholder="https://.../live.m3u8"
-              className="flex-1 bg-black border border-white/10 rounded px-2 py-1.5 text-xs text-white font-mono"
-              data-testid="go-live-url"
-            />
-            <button
-              onClick={() => url && goLive("cam", url)}
-              disabled={busy || !url}
-              data-testid="go-live-cam-btn"
-              className="px-2 py-1.5 rounded text-[10px] font-bold text-black"
-              style={{ background: "#FF3060", opacity: (busy || !url) ? 0.5 : 1 }}
-              title="Passa in diretta con questo stream"
-            >GO</button>
+        {/* 1+2+8 · Libreria: upload video/immagini + lista con thumbnail, recenti in cima */}
+        <div className="rounded p-2 border border-white/8 bg-black/40 flex flex-col min-w-0">
+          <div className="flex items-center justify-between gap-2 mb-1.5">
+            <div className="text-[10px] font-mono uppercase text-cyan-300">🎬 LIBRERIA · VIDEO & FOTO</div>
+            <label className="text-[10px] font-mono px-2 py-1 rounded cursor-pointer" data-testid="go-live-upload-label"
+              style={{ background: "rgba(0,229,255,0.15)", border: "1px solid rgba(0,229,255,0.4)", color: "#CFF8FF", opacity: uploading ? 0.5 : 1 }}>
+              {uploading ? "Carico…" : "⬆ Carica video/foto"}
+              <input ref={fileRef} type="file" className="hidden" disabled={uploading}
+                accept=".mp4,.webm,.mov,.m4v,.jpg,.jpeg,.png,.gif,.webp,video/*,image/*"
+                onChange={(e) => uploadMedia(e.target.files?.[0])} data-testid="go-live-upload-input" />
+            </label>
           </div>
+          <div className="space-y-1 overflow-y-auto pr-1" style={{ maxHeight: 180 }} data-testid="go-live-media-list">
+            {videos.length === 0 && <div className="text-[11px] text-zinc-500 py-3 text-center">Nessun file caricato</div>}
+            {videos.map((v) => {
+              const kind = mediaKind(v);
+              const selected = preview?.url === v.url;
+              const onAir = isLive && state.video_url === v.url;
+              return (
+                <button key={v.id} type="button" onClick={() => setPreview({ url: v.url, name: v.display_name || v.filename, kind })}
+                  data-testid={`go-live-media-${v.id}`} title={`${kind} · anteprima`}
+                  className="w-full flex items-center gap-2 p-1 rounded text-left"
+                  style={{ background: selected ? "rgba(0,229,255,0.14)" : "rgba(255,255,255,0.03)", border: `1px solid ${selected ? "rgba(0,229,255,0.6)" : onAir ? "rgba(255,20,60,0.5)" : "rgba(255,255,255,0.06)"}` }}>
+                  <MediaThumb item={v} className="w-14 h-9 rounded shrink-0" />
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[11px] text-white truncate">{v.display_name || v.filename}</div>
+                    <div className="text-[9px] font-mono text-zinc-500 uppercase">
+                      {kind}{v.duration_sec ? ` · ${Math.round(v.duration_sec)}s` : ""}{v.uploaded_at ? ` · ${new Date(v.uploaded_at).toLocaleDateString("it-IT")}` : ""}
+                      {onAir && <span style={{ color: "#FF6B8C" }}> · ON AIR</span>}
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* 3 · MONITOR PREVIEW + MANDA IN DIRETTA */}
+        <div className="rounded p-2 border border-white/8 bg-black/40 flex flex-col min-w-0">
+          <div className="text-[10px] font-mono uppercase text-cyan-300 mb-1.5">🖥️ PREVIEW INOVERRIDE {preview && <span className="text-zinc-500 normal-case">· {preview.kind}</span>}</div>
+          <div className="relative w-full rounded overflow-hidden bg-black" style={{ aspectRatio: "16 / 7", border: "1px solid rgba(0,229,255,0.25)" }} data-testid="go-live-preview">
+            {preview ? (
+              preview.kind === "foto"
+                ? <img key={preview.url} src={preview.url} alt="" className="absolute inset-0 w-full h-full object-cover" data-testid="go-live-preview-img" />
+                : <video key={preview.url} src={preview.url} autoPlay muted loop playsInline className="absolute inset-0 w-full h-full object-cover" data-testid="go-live-preview-video" />
+            ) : (
+              <div className="absolute inset-0 flex items-center justify-center text-[11px] font-mono text-cyan-300/60 text-center px-3">Scegli un file dalla libreria: appare qui prima di andare in onda</div>
+            )}
+            {previewIsLive && <span className="absolute top-1 left-1 px-1.5 py-0.5 rounded text-[9px] font-bold text-white" style={{ background: "#FF1F44" }}>● IN ONDA</span>}
+          </div>
+          <div className="text-[10px] font-mono text-zinc-400 truncate mt-1" data-testid="go-live-preview-name">{preview?.name || "—"}</div>
+          <button type="button" onClick={sendPreviewLive} disabled={busy || !preview || previewIsLive} data-testid="go-live-send"
+            className="mt-1.5 w-full px-3 py-2 rounded text-xs font-mono font-bold text-white"
+            style={{ background: (!preview || previewIsLive) ? "rgba(255,255,255,0.08)" : "linear-gradient(90deg, #FF1F44, #FF6B8C)", color: (!preview || previewIsLive) ? "#777" : "#fff", border: "1px solid rgba(255,20,60,0.4)" }}>
+            {previewIsLive ? "● GIÀ IN ONDA" : "▶ MANDA IN DIRETTA"}
+          </button>
+          <div className="text-[9px] font-mono text-zinc-500 mt-1">Resta in onda senza limite (video in loop) finché non lo rimuovi o un evento lo sostituisce.</div>
         </div>
       </div>
 
-      <div className="flex gap-2">
-        <button
-          onClick={clearOverride}
-          disabled={busy || !state.from_override}
-          data-testid="go-live-clear"
-          className="flex-1 px-3 py-2 rounded text-xs font-mono font-bold"
-          style={{
-            background: state.from_override ? "linear-gradient(90deg, #00E5FF, #0080FF)" : "rgba(255,255,255,0.06)",
-            color: state.from_override ? "#000" : "#666",
-            border: "1px solid rgba(0,229,255,0.3)",
-          }}
-          title="Torna agli effetti audio-reattivi del palinsesto"
-        >⏹ FINE DIRETTA · TORNA AGLI EFFETTI</button>
+      {/* URL manuale (cam/stream) — invariato */}
+      <div className="rounded p-2 border border-white/8 bg-black/40 mb-3">
+        <div className="text-[10px] font-mono uppercase text-cyan-300 mb-1">📹 URL CAM/STREAM</div>
+        <div className="flex gap-1">
+          <input
+            type="url"
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            placeholder="https://.../live.m3u8"
+            className="flex-1 bg-black border border-white/10 rounded px-2 py-1.5 text-xs text-white font-mono"
+            data-testid="go-live-url"
+          />
+          <button
+            onClick={() => url && goLive("cam", url)}
+            disabled={busy || !url}
+            data-testid="go-live-cam-btn"
+            className="px-2 py-1.5 rounded text-[10px] font-bold text-black"
+            style={{ background: "#FF3060", opacity: (busy || !url) ? 0.5 : 1 }}
+            title="Passa in diretta con questo stream"
+          >GO</button>
+        </div>
+      </div>
+
+      {/* 6 · RIMUOVI OVERRIDE — separato, con conferma */}
+      <div className="pt-3 border-t border-white/10">
+        {!confirmRemove ? (
+          <button
+            onClick={() => setConfirmRemove(true)}
+            disabled={busy || !state.from_override}
+            data-testid="go-live-clear"
+            className="w-full px-3 py-2.5 rounded text-xs font-mono font-bold"
+            style={{
+              background: state.from_override ? "linear-gradient(90deg, #00E5FF, #0080FF)" : "rgba(255,255,255,0.06)",
+              color: state.from_override ? "#000" : "#666",
+              border: "1px solid rgba(0,229,255,0.3)",
+            }}
+            title="Rimuove l'override: il LedWall torna al palinsesto/effetti"
+          >⏹ RIMUOVI OVERRIDE · TORNA AL PALINSESTO</button>
+        ) : (
+          <div className="rounded p-2.5 flex flex-col sm:flex-row sm:items-center gap-2" data-testid="go-live-clear-confirm"
+            style={{ background: "rgba(255,20,60,0.10)", border: "1px solid rgba(255,20,60,0.5)" }}>
+            <div className="text-[11px] font-mono text-white flex-1">Rimuovere l'override? Il LedWall torna agli effetti/palinsesto.</div>
+            <div className="flex gap-2">
+              <button onClick={removeOverride} disabled={busy} data-testid="go-live-clear-yes" className="px-3 py-1.5 rounded text-xs font-bold text-white" style={{ background: "#FF1F44" }}>Sì, rimuovi</button>
+              <button onClick={() => setConfirmRemove(false)} data-testid="go-live-clear-no" className="px-3 py-1.5 rounded text-xs font-mono text-zinc-200" style={{ border: "1px solid rgba(255,255,255,0.2)" }}>Annulla</button>
+            </div>
+          </div>
+        )}
       </div>
     </section>
   );
@@ -177,7 +309,9 @@ export function LedWallMiniPreview() {
         className="relative w-full rounded overflow-hidden bg-black"
         style={{ aspectRatio: "16 / 6.75", border: "1px solid rgba(0,229,255,0.2)" }}
       >
-        {isVideo ? (
+        {isVideo && isImageUrl(state.video_url) ? (
+          <img key={state.video_url} src={state.video_url} alt="" className="absolute inset-0 w-full h-full object-cover" data-testid="ledwall-mini-photo" />
+        ) : isVideo ? (
           <video
             key={state.video_url}
             src={state.video_url}

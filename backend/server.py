@@ -5952,7 +5952,8 @@ async def get_ledwall_state():
             src = "effects"
         return {"hour": hour, "video_source": src,
                 "video_url": override.get("video_url"),
-                "from_override": True, "from_event": False}
+                "from_override": True, "from_event": False,
+                "set_at": override.get("set_at")}
 
     # 3) Slot palinsesto orario
     if slot.get("video_source") and slot.get("video_source") in _VIDEO_SOURCES:
@@ -6008,16 +6009,22 @@ async def admin_ledwall_upload_video(file: UploadFile = File(...), name: Optiona
         raise HTTPException(413, "File troppo grande (max 200MB)")
     fname_orig = (file.filename or "video.mp4").lower()
     ext = fname_orig.rsplit(".", 1)[-1] if "." in fname_orig else "mp4"
-    if ext not in ("mp4", "webm", "mov", "m4v"):
+    _IMAGE_EXTS = ("jpg", "jpeg", "png", "gif", "webp")  # v13.73 · anche immagini fisse per l'override LedWall
+    if ext not in ("mp4", "webm", "mov", "m4v", *_IMAGE_EXTS):
         raise HTTPException(415, f"Estensione non supportata: {ext}")
-    # Ticket #247410: converte in H.264 i codec che il browser non riproduce.
-    data, _vprobe, _transcoded = await video_service.ensure_web_playable(data, "." + ext)
-    if _transcoded:
-        ext = "mp4"
+    is_image = ext in _IMAGE_EXTS
+    _vprobe, _transcoded = None, False
+    if not is_image:
+        # Ticket #247410: converte in H.264 i codec che il browser non riproduce.
+        data, _vprobe, _transcoded = await video_service.ensure_web_playable(data, "." + ext)
+        if _transcoded:
+            ext = "mp4"
     vid_id = uuid.uuid4().hex[:12]
     local_name = f"ledwall_{vid_id}.{ext}"
     mime = {"mp4": "video/mp4", "webm": "video/webm",
-            "mov": "video/quicktime", "m4v": "video/x-m4v"}.get(ext, "video/mp4")
+            "mov": "video/quicktime", "m4v": "video/x-m4v",
+            "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+            "gif": "image/gif", "webp": "image/webp"}.get(ext, "video/mp4")
     if not object_storage.is_enabled():
         raise HTTPException(503, "Object Storage disabilitato")
     stored = await object_storage.put_bytes(f"ledwall/{local_name}", data, mime)
@@ -6233,7 +6240,9 @@ async def get_ledwall_video(filename: str, request: Request):
         raise HTTPException(400, "Invalid filename")
     ext = filename.rsplit(".", 1)[-1].lower()
     mime = {"mp4": "video/mp4", "webm": "video/webm",
-            "mov": "video/quicktime", "m4v": "video/x-m4v"}.get(ext, "video/mp4")
+            "mov": "video/quicktime", "m4v": "video/x-m4v",
+            "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+            "gif": "image/gif", "webp": "image/webp"}.get(ext, "video/mp4")
     if not object_storage.is_enabled():
         raise HTTPException(503, "Object Storage disabilitato")
     streamed = await object_storage.stream_mp3(

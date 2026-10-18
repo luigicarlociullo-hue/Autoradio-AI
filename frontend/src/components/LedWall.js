@@ -300,6 +300,9 @@ function _drawEffectBody(ctx, W, H, dpr, mode, p, cx, cy, hueBase, accent) {
 }
 
 
+// v13.73 · override LedWall con immagine fissa (jpg/png/gif/webp) → resa come foto a schermo pieno
+const isImageUrl = (u) => /\.(jpe?g|png|gif|webp)(\?|$)/i.test(String(u || ""));
+
 function detectMode(current, isPlaying) {
   const kind = (current?.kind || "").toLowerCase();
   if (kind === "music") return "music";
@@ -934,7 +937,7 @@ export default function LedWall({
       {/* v13.8 · VIDEO OVERLAY REALE — quando Master Clock imposta video/cam
           v13.10 · Fade automatico: 600ms transition-opacity in entrata/uscita,
           onEnded triggera un poll immediato dello state per fallback effetti */}
-      {(ledState.video_source === "video" || ledState.video_source === "cam") && ledState.video_url && (
+      {(ledState.video_source === "video" || ledState.video_source === "cam") && ledState.video_url && !isImageUrl(ledState.video_url) && (
         <video
           key={ledState.video_url}
           src={ledState.video_url}
@@ -949,7 +952,7 @@ export default function LedWall({
         />
       )}
       {/* v13.31 · KEN BURNS PHOTO — Virtual Club notturno, foto con pan+zoom */}
-      {ledState.video_source === "photo" && ledState.video_url && (
+      {((ledState.video_source === "photo") || (ledState.video_source === "video" && isImageUrl(ledState.video_url))) && ledState.video_url && (
         <div
           key={ledState.video_url}
           data-testid="ledwall-photo-kenburns"
