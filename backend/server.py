@@ -8274,6 +8274,39 @@ async def _appointment_should_wait(ev: dict, now: datetime) -> bool:
         return False
 
 
+async def _timeline_clone_next_occurrence(doc: dict) -> None:
+    """Ricorrenza semplice (hourly/daily/weekly): crea l'occorrenza successiva di `doc`.
+    Ticket #247410: chiamata sia dal pick diretto sia dall'aggancio "Concatena dopo" —
+    prima un appuntamento ricorrente andato in onda concatenato al segnale orario non
+    generava la replica successiva e spariva dal palinsesto."""
+    try:
+        recurrence = (doc.get("recurrence") or ("daily" if doc.get("repeat_daily") else "none")).strip().lower()
+        if recurrence in ("hourly", "daily", "weekly"):
+            try:
+                orig_dt = datetime.fromisoformat((doc.get("scheduled_at") or "").replace("Z", "+00:00"))
+                if recurrence == "hourly":
+                    next_dt = orig_dt + timedelta(hours=1)
+                elif recurrence == "weekly":
+                    next_dt = orig_dt + timedelta(days=7)
+                else:  # daily
+                    next_dt = orig_dt + timedelta(days=1)
+                clone = {k: v for k, v in doc.items() if k != "_id"}
+                for _k in ("consumed_at", "chained_after_event", "skip_reason", "note"):
+                    clone.pop(_k, None)
+                clone["id"] = f"tl-{uuid.uuid4().hex[:12]}"
+                clone["scheduled_at"] = next_dt.isoformat()
+                clone["status"] = "pending"
+                clone["parent_id"] = doc.get("id")
+                clone["recurrence"] = recurrence
+                clone["created_at"] = datetime.now(timezone.utc).isoformat()
+                await db.timeline_events.insert_one(clone)
+                logger.info(f"[timeline] ricorrente {recurrence}: {doc.get('id')} → {clone['id']} @ {clone['scheduled_at']}")
+            except Exception as e:
+                logger.warning(f"[timeline] recurrence clone failed: {e}")
+    except Exception:
+        pass
+
+
 async def _attach_chained_appointments(doc: dict, entry: dict, now: datetime) -> dict:
     """Dopo la promozione di `doc`, accoda gli appuntamenti pending con 'Concatena dopo'
     compatibile il cui orario è ≤ orario evento e ≥ orario evento − 15 min (ordine: minuto, priorità)."""
@@ -8297,6 +8330,7 @@ async def _attach_chained_appointments(doc: dict, entry: dict, now: datetime) ->
                 return_document=True, projection={"_id": 0})
             if not claimed:
                 continue
+            await _timeline_clone_next_occurrence(claimed)
             res = await _appointment_resolve(claimed)
             if not res:
                 await db.timeline_events.update_one({"id": c["id"]}, {"$set": {"status": "skipped_no_audio", "note": "Appuntamento concatenato: nessun brano risolvibile"}})
@@ -8349,31 +8383,7 @@ async def _timeline_pick_due() -> Optional[dict]:
     # v13.22 → v13.23 · Ricorrenza (hourly / daily). Clone PRIMA di ritornare
     # l'evento, così l'occorrenza successiva finisce subito in coda.
     # Backward compat: `repeat_daily=true` è ancora accettato (mappato a daily).
-    try:
-        recurrence = (doc.get("recurrence") or ("daily" if doc.get("repeat_daily") else "none")).strip().lower()
-        if recurrence in ("hourly", "daily", "weekly"):
-            try:
-                orig_dt = datetime.fromisoformat((doc.get("scheduled_at") or "").replace("Z", "+00:00"))
-                if recurrence == "hourly":
-                    next_dt = orig_dt + timedelta(hours=1)
-                elif recurrence == "weekly":
-                    next_dt = orig_dt + timedelta(days=7)
-                else:  # daily
-                    next_dt = orig_dt + timedelta(days=1)
-                clone = {k: v for k, v in doc.items() if k != "_id"}
-                clone["id"] = f"tl-{uuid.uuid4().hex[:12]}"
-                clone["scheduled_at"] = next_dt.isoformat()
-                clone["status"] = "pending"
-                clone["parent_id"] = doc.get("id")
-                clone["recurrence"] = recurrence
-                clone["created_at"] = datetime.now(timezone.utc).isoformat()
-                clone.pop("consumed_at", None)
-                await db.timeline_events.insert_one(clone)
-                logger.info(f"[timeline] ricorrente {recurrence}: {doc.get('id')} → {clone['id']} @ {clone['scheduled_at']}")
-            except Exception as e:
-                logger.warning(f"[timeline] recurrence clone failed: {e}")
-    except Exception:
-        pass
+    await _timeline_clone_next_occurrence(doc)
     # Ticket #247410: il segnale orario partiva "due o tre volte uno dopo l'altro". Piu' percorsi
     # possono rendere maturo un evento orario nello stesso momento (Ora Esatta con ricorrenza
     # oraria clonata, template rrule, eventi creati a mano in Regia) e il backfill rrule dopo un
