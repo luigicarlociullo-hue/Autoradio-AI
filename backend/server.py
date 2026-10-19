@@ -322,6 +322,8 @@ class Track(BaseModel):
     original_audio_url: Optional[str] = None  # Suno CDN URL (expires ~7 days) for reference
     downloaded_at: Optional[str] = None
     image_url: Optional[str] = None       # optional cover art URL (Suno)
+    cover_url: Optional[str] = None       # v13.75 · copertina LedWall personalizzata (immagine)
+    video_url: Optional[str] = None       # v13.75 · video LedWall personalizzato (loop muto)
     source: Literal["suno", "stable_audio", "procedural", "admin_upload"] = "procedural"
     is_anthem: bool = False               # official R-A.I. anthem — played periodically as jingle
     is_daily: bool = False                # "Disco del giorno" — rotazione mattutina
@@ -1562,6 +1564,11 @@ async def admin_track_meta(track_id: str, payload: dict):
         upd.update(_broadcast_slots_set(payload.get("broadcast_slots")))
     if "broadcast_custom" in payload:
         upd["broadcast_custom"] = _broadcast_custom_parse(payload.get("broadcast_custom"))
+    # v13.75 · copertina / video LedWall del brano (stringa URL o null per rimuovere)
+    for _mk in ("cover_url", "video_url"):
+        if _mk in payload:
+            _mv = payload.get(_mk)
+            upd[_mk] = (str(_mv).strip()[:500] or None) if _mv else None
     if not upd:
         raise HTTPException(400, "nessun campo da aggiornare")
     upd["updated_at"] = now_iso()
@@ -1587,7 +1594,7 @@ async def admin_tracks_searchable():
          "spot_start_date": 1, "spot_end_date": 1, "spot_frequency_per_hour": 1,
          "duration_sec": 1, "on_air": 1, "genre_category": 1, "bpm": 1, "bpm_source": 1,
          "daypart_day": 1, "daypart_night": 1, "is_night_jingle": 1, "broadcast_slot": 1, "broadcast_slots": 1, "broadcast_custom": 1, "is_billboard": 1, "is_appointment_jingle": 1,
-         "audio_url": 1, "created_at": 1},
+         "audio_url": 1, "created_at": 1, "cover_url": 1, "video_url": 1},
     ).sort("created_at", -1)
     docs = await cursor.to_list(length=2000)
     for t in docs:
@@ -1620,6 +1627,7 @@ async def admin_tracks_searchable():
             "broadcast_slot": t.get("broadcast_slot") or "always",
             "broadcast_slots": t.get("broadcast_slots") or [t.get("broadcast_slot") or "always"],
             "broadcast_custom": t.get("broadcast_custom"),
+            "cover_url": t.get("cover_url"), "video_url": t.get("video_url"),  # v13.75
             "is_billboard": bool(t.get("is_billboard")),
             "is_appointment_jingle": bool(t.get("is_appointment_jingle")),
             "daypart_night": t.get("daypart_night") if t.get("daypart_night") is not None else True,
@@ -1646,6 +1654,8 @@ async def admin_tracks_upload(
     # Partner submission (marks pending_approval)
     submitted_by: Optional[str] = Form(None),
     pending_approval: Optional[str] = Form(None),  # "1"/"true" → is_pending_approval
+    cover_url: Optional[str] = Form(None),         # v13.75 · copertina LedWall (URL libreria)
+    video_url: Optional[str] = Form(None),         # v13.75 · video LedWall (URL libreria)
 ):
     """Upload di un MP3 caricato dall'admin o inviato da un partner.
     - kind ∈ {song, jingle, anthem, loop, spot}
@@ -1781,6 +1791,8 @@ async def admin_tracks_upload(
                     "real_duration_sec": round(probed_duration_sec_raw, 3)}
                    if probed_duration_sec > 0 else {}),
                 **({"bpm": detected_bpm, "bpm_source": "server"} if detected_bpm else {}),
+                **({"cover_url": cover_url.strip()[:500]} if (cover_url or "").strip() else {}),
+                **({"video_url": video_url.strip()[:500]} if (video_url or "").strip() else {}),
             }},
         )
         # Update the title on any segment currently in the playback queue that
@@ -1837,6 +1849,8 @@ async def admin_tracks_upload(
             status="ready",
             bpm=detected_bpm,
             bpm_source=("server" if detected_bpm else None),
+            cover_url=((cover_url or "").strip()[:500] or None),
+            video_url=((video_url or "").strip()[:500] or None),
         )
         doc = track.model_dump()
         # Extra rotation-friendly fields (not in Track model but harmless):
@@ -5955,6 +5969,19 @@ async def get_ledwall_state():
                 "from_override": True, "from_event": False,
                 "set_at": override.get("set_at")}
 
+    # 2b) v13.75 · Contenuto del BRANO in onda (video_url → loop muto · cover_url → copertina).
+    # Lookup read-only del brano corrente: nessuna modifica a clock/coda/palinsesto.
+    if cur.get("id") and not cur.get("is_timeline"):
+        _tr = await db.tracks.find_one({"id": cur.get("id")}, {"_id": 0, "cover_url": 1, "video_url": 1, "title": 1})
+        if _tr and (_tr.get("video_url") or _tr.get("cover_url")):
+            if _tr.get("video_url"):
+                return {"hour": hour, "video_source": "video", "video_url": _tr["video_url"],
+                        "from_override": False, "from_event": False, "from_track": True,
+                        "track_id": cur.get("id"), "track_title": _tr.get("title"), "track_media": "video"}
+            return {"hour": hour, "video_source": "photo", "video_url": _tr["cover_url"],
+                    "from_override": False, "from_event": False, "from_track": True,
+                    "track_id": cur.get("id"), "track_title": _tr.get("title"), "track_media": "cover"}
+
     # 3) Slot palinsesto orario
     if slot.get("video_source") and slot.get("video_source") in _VIDEO_SOURCES:
         return {"hour": hour, "video_source": slot["video_source"],
@@ -6010,6 +6037,8 @@ async def admin_ledwall_upload_video(file: UploadFile = File(...), name: Optiona
     fname_orig = (file.filename or "video.mp4").lower()
     ext = fname_orig.rsplit(".", 1)[-1] if "." in fname_orig else "mp4"
     _IMAGE_EXTS = ("jpg", "jpeg", "png", "gif", "webp")  # v13.73 · anche immagini fisse per l'override LedWall
+    if ext in _IMAGE_EXTS and len(data) > 10 * 1024 * 1024:
+        raise HTTPException(413, "Immagine troppo grande (max 10MB)")  # v13.75
     if ext not in ("mp4", "webm", "mov", "m4v", *_IMAGE_EXTS):
         raise HTTPException(415, f"Estensione non supportata: {ext}")
     is_image = ext in _IMAGE_EXTS

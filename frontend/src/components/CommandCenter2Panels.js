@@ -302,7 +302,7 @@ export function LedWallMiniPreview() {
     return () => { alive = false; clearInterval(iv); };
   }, []);
 
-  const isVideo = (state.video_source === "video" || state.video_source === "cam") && state.video_url;
+  const isVideo = (state.video_source === "video" || state.video_source === "cam" || state.video_source === "photo") && state.video_url;  // v13.75 · photo = copertina brano
 
   return (
     <section
@@ -326,7 +326,7 @@ export function LedWallMiniPreview() {
         className="relative w-full rounded overflow-hidden bg-black"
         style={{ aspectRatio: "16 / 6.75", border: "1px solid rgba(0,229,255,0.2)" }}
       >
-        {isVideo && isImageUrl(state.video_url) ? (
+        {isVideo && (isImageUrl(state.video_url) || state.video_source === "photo") ? (
           <img key={state.video_url} src={state.video_url} alt="" className="absolute inset-0 w-full h-full object-cover" data-testid="ledwall-mini-photo" />
         ) : isVideo ? (
           <video

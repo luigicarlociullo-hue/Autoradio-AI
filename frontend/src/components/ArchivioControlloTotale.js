@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { api, endpoints } from "../lib/api";
 import { toast } from "sonner";
 import { Music2, Upload, Pencil, Trash2, Download, Replace, PlayCircle, PauseCircle, X } from "lucide-react";
+import CoverVideoPicker from "@/components/CoverVideoPicker";
 import { MagazzinoUniversale } from "./CommandCenter2Panels";
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -148,6 +149,7 @@ function EditPanel({ track, onCancel, onSaved }) {
     custom_from: track.broadcast_custom?.from || "", custom_to: track.broadcast_custom?.to || "",
     on_air: track.on_air !== false, daypart_day: track.daypart_day !== false, daypart_night: track.daypart_night !== false,
     is_night_jingle: !!track.is_night_jingle,
+    cover_url: track.cover_url || null, video_url: track.video_url || null,  // v13.75
   });
   const [busy, setBusy] = useState(false);
   const up = (k, v) => setF((s) => ({ ...s, [k]: v }));
@@ -170,6 +172,8 @@ function EditPanel({ track, onCancel, onSaved }) {
     if (f.daypart_day !== (track.daypart_day !== false) || f.daypart_night !== (track.daypart_night !== false))
       ops.push(endpoints.trackDaypart(track.id, f.daypart_day, f.daypart_night));
     if (f.is_night_jingle !== !!track.is_night_jingle) ops.push(endpoints.trackNightJingle(track.id, f.is_night_jingle));
+    if ((f.cover_url || null) !== (track.cover_url || null) || (f.video_url || null) !== (track.video_url || null))
+      ops.push(setMeta(track.id, { cover_url: f.cover_url || null, video_url: f.video_url || null }));  // v13.75
     try {
       if (!ops.length) { toast("Nessuna modifica"); onCancel(); return; }
       await Promise.all(ops);
@@ -235,6 +239,9 @@ function EditPanel({ track, onCancel, onSaved }) {
               </label>
             </>
           )}
+        </div>
+        <div className="mt-4">
+          <CoverVideoPicker coverUrl={f.cover_url} videoUrl={f.video_url} onCoverChange={(v) => up("cover_url", v)} onVideoChange={(v) => up("video_url", v)} testid="act-edit-cv" />
         </div>
         <div className="text-[10px] font-mono text-zinc-500 mt-3">Nessuna modifica viene applicata finché il Direttore non approva.</div>
         <div className="flex gap-3 mt-5">

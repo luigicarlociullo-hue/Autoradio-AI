@@ -16,6 +16,7 @@ import NightControlCenter from "@/components/NightControlCenter";
 import AdManagerPanel from "@/components/AdManagerPanel";
 import { GoLivePanel, LedWallMiniPreview } from "@/components/CommandCenter2Panels";
 import ArchivioControlloTotale from "@/components/ArchivioControlloTotale";
+import CoverVideoPicker from "@/components/CoverVideoPicker";
 import LedWallNewsPanel from "@/components/LedWallNewsPanel";
 import DemoModePanel from "@/components/DemoModePanel";
 import { toast } from "sonner";
@@ -1739,6 +1740,8 @@ function TrackModal({ mode, target, onClose, onDone }) {
   const [spotFreq, setSpotFreq] = useState(2);
   // Loop binding
   const [loopBind, setLoopBind] = useState("");
+  const [coverUrl, setCoverUrl] = useState(null);   // v13.75 · copertina LedWall
+  const [videoUrl, setVideoUrl] = useState(null);   // v13.75 · video LedWall
   const [busy, setBusy] = useState(false);
 
   const isReplace = mode === "replace";
@@ -1764,6 +1767,8 @@ function TrackModal({ mode, target, onClose, onDone }) {
       if (!isReplace && kind === "loop" && loopBind) {
         fd.append("loop_bind_speaker", loopBind);
       }
+      if (coverUrl) fd.append("cover_url", coverUrl);   // v13.75
+      if (videoUrl) fd.append("video_url", videoUrl);
       const backend = process.env.REACT_APP_BACKEND_URL;
       const resp = await fetch(`${backend}/api/admin/tracks/upload`, { method: "POST", body: fd });
       if (!resp.ok) {
@@ -1980,6 +1985,8 @@ function TrackModal({ mode, target, onClose, onDone }) {
               </div>
             </div>
           )}
+          {/* v13.75 · Copertina e video LedWall del brano */}
+          <CoverVideoPicker coverUrl={coverUrl} videoUrl={videoUrl} onCoverChange={setCoverUrl} onVideoChange={setVideoUrl} testid="modal-cv" />
         </div>
 
         <div className="mt-5 flex justify-end gap-2">
