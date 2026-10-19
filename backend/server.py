@@ -12853,6 +12853,65 @@ async def _power_play_ticker():
             await asyncio.sleep(60)
 
 
+@api_router.get("/appointments/disco-del-giorno/today")
+async def public_disco_del_giorno_today():
+    """v13.74 · Lettura pubblica read-only: brano dell'appuntamento Timeline "Disco del Giorno" di oggi.
+    aired → brano trasmesso (appointment_resolution) · scheduled → brano fisso previsto · altrimenti track=None."""
+    from zoneinfo import ZoneInfo
+    rome = ZoneInfo("Europe/Rome")
+    now_local = datetime.now(rome)
+    day_start = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    day_end = day_start + timedelta(days=1)
+    ds_utc, de_utc = day_start.astimezone(timezone.utc), day_end.astimezone(timezone.utc)
+    is_ddg = {"kind": "appointment", "$or": [
+        {"appointment.source": "disco_del_giorno"},
+        {"title": {"$regex": "disco\\s+del\\s+giorno", "$options": "i"}},
+    ]}
+    proj = {"_id": 0, "id": 1, "title": 1, "status": 1, "scheduled_at": 1, "appointment": 1,
+            "appointment_resolution": 1, "consumed_at": 1}
+    # 1) già andato in onda oggi → ultimo trasmesso
+    aired = await db.timeline_events.find(
+        {**is_ddg, "status": {"$ne": "template"}, "appointment_resolution.track.title": {"$exists": True},
+         "scheduled_at": {"$gte": ds_utc.isoformat(), "$lt": de_utc.isoformat()}}, proj
+    ).sort("scheduled_at", -1).to_list(5)
+    if aired:
+        ev = aired[0]
+        tr = (ev.get("appointment_resolution") or {}).get("track") or {}
+        return {"date": day_start.date().isoformat(), "status": "aired", "event_id": ev["id"],
+                "aired_at": (ev.get("appointment_resolution") or {}).get("at"),
+                "track": {"title": tr.get("title"), "artist": tr.get("artist")}}
+
+    async def _fixed_track(cfg: dict) -> Optional[dict]:
+        if (cfg or {}).get("source") != "fixed" or not cfg.get("fixed_track_id"):
+            return None
+        return await db.tracks.find_one({"id": cfg["fixed_track_id"]}, {"_id": 0, "title": 1, "artist": 1, "image_url": 1})
+
+    # 2) occorrenza concreta pending di oggi con brano fisso
+    pending = await db.timeline_events.find(
+        {**is_ddg, "status": "pending",
+         "scheduled_at": {"$gte": ds_utc.isoformat(), "$lt": de_utc.isoformat()}}, proj
+    ).sort("scheduled_at", 1).to_list(5)
+    for ev in pending:
+        t = await _fixed_track(ev.get("appointment") or {})
+        if t:
+            return {"date": day_start.date().isoformat(), "status": "scheduled", "event_id": ev["id"],
+                    "scheduled_at": ev.get("scheduled_at"), "track": t}
+    # 3) template rrule con occorrenza oggi (non ancora materializzato) e brano fisso
+    tpls = await db.timeline_events.find({**is_ddg, "status": "template", "rrule": {"$ne": None}}, proj | {"rrule": 1}).to_list(50)
+    for tpl in tpls:
+        t = await _fixed_track(tpl.get("appointment") or {})
+        if not t:
+            continue
+        try:
+            occ = [o for o in _rrule_expand(tpl.get("rrule") or {}, ds_utc, de_utc) if o.isoformat() not in set(tpl.get("excluded_occurrences") or [])]
+        except Exception:
+            occ = []
+        if occ:
+            return {"date": day_start.date().isoformat(), "status": "scheduled", "event_id": tpl["id"],
+                    "scheduled_at": occ[0].isoformat(), "track": t}
+    return {"date": day_start.date().isoformat(), "status": "none", "track": None}
+
+
 @api_router.get("/power-play/today")
 async def public_power_play_today():
     """v13.69 · Lettura pubblica read-only del Disco del Giorno (stesso dato della Regia). Nessuna generazione."""

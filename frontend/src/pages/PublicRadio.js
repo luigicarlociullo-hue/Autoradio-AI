@@ -189,12 +189,15 @@ export default function PublicRadio() {
   const [lastDjLine, setLastDjLine] = useState("");     // v13.45 · ultimo parlato DJ visto
   const [isPlaying, setIsPlaying] = useState(false);
   const [syncPlaying, setSyncPlaying] = useState(false);  // v13.65 · stato reale del Sync Live (evento rai:sync:play)
-  const [discoDelGiorno, setDiscoDelGiorno] = useState(null);  // v13.69 · stesso dato della Regia (power_play_daily), lettura pubblica
+  const [discoDelGiorno, setDiscoDelGiorno] = useState(null);  // v13.74 · brano dell'appuntamento Timeline "Disco del Giorno" di oggi (aired/scheduled), lettura pubblica
   useEffect(() => {
     let live = true;
     const load = async () => {
-      try { const r = await api.get("/power-play/today"); if (live) setDiscoDelGiorno(r.data?.track || null); }
-      catch (e) { if (live) setDiscoDelGiorno(null); }
+      try {
+        const r = await api.get("/appointments/disco-del-giorno/today");
+        const d = r.data || {};
+        if (live) setDiscoDelGiorno(d.track?.title ? { ...d.track, status: d.status, scheduled_at: d.scheduled_at, aired_at: d.aired_at } : null);
+      } catch (e) { if (live) setDiscoDelGiorno(null); }
     };
     load();
     const iv = setInterval(load, 120000);
@@ -1839,7 +1842,11 @@ function DiscoDelGiornoBadge({ track }) {
         {track.image_url ? <img src={track.image_url} alt="" className="w-10 h-10 rounded-lg object-cover" /> : <Disc3 className="w-5 h-5 animate-spin" style={{ animationDuration: "6s", color: "#00E5FF" }} />}
       </div>
       <div className="min-w-0 flex-1">
-        <div className="text-[9px] font-mono uppercase tracking-[0.3em]" style={{ color: "#00E5FF" }}>◂ Disco del Giorno ▸</div>
+        <div className="text-[9px] font-mono uppercase tracking-[0.3em]" style={{ color: "#00E5FF" }}>
+          ◂ Disco del Giorno ▸
+          {track.status === "aired" && <span className="ml-2 text-zinc-400" data-testid="disco-del-giorno-status">trasmesso oggi</span>}
+          {track.status === "scheduled" && track.scheduled_at && <span className="ml-2 text-zinc-400" data-testid="disco-del-giorno-status">alle {new Date(track.scheduled_at).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" })}</span>}
+        </div>
         <div className="font-display font-black text-sm sm:text-base text-white leading-tight line-clamp-2 break-words" data-testid="disco-del-giorno-title">{track.title}</div>
         {track.artist && <div className="text-xs text-zinc-300 line-clamp-1" data-testid="disco-del-giorno-artist">{track.artist}</div>}
       </div>
