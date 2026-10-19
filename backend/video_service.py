@@ -74,6 +74,16 @@ async def probe_video_from_bytes(data: bytes, suffix: str = ".mp4") -> Optional[
 # yuv420p. Un MP4 "mpeg4" (MPEG-4 Part 2), HEVC o 10-bit viene accettato
 # dall'upload ma il LedWall resta nero (Chrome: DEMUXER_ERROR_NO_SUPPORTED_STREAMS).
 WEB_VIDEO_CODECS = {"h264", "vp8", "vp9", "av1"}
+# ffprobe vede JPG/PNG/GIF/WebP come uno stream "video": non vanno mai convertiti in MP4.
+IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".gif", ".webp")
+_IMAGE_FORMATS = ("image2", "png_pipe", "jpeg_pipe", "webp_pipe", "gif", "mjpeg")
+
+
+def is_image(suffix: str = "", probe: Optional[dict] = None) -> bool:
+    if (suffix or "").lower() in IMAGE_SUFFIXES:
+        return True
+    fmt = ((probe or {}).get("format_name") or "").lower()
+    return any(f in fmt.split(",") for f in _IMAGE_FORMATS)
 
 
 def is_web_playable(probe: Optional[dict]) -> bool:
@@ -103,8 +113,10 @@ async def ensure_web_playable(data: bytes, suffix: str = ".mp4"):
     """Ritorna (bytes, probe, transcoded). Se il video non e' riproducibile dal
     browser lo converte in MP4 H.264/AAC (faststart); altrimenti lo lascia
     intatto. In caso di errore ffmpeg ritorna l'originale."""
+    if is_image(suffix):
+        return data, None, False
     probe = await probe_video_from_bytes(data, suffix)
-    if not probe or not probe.get("has_video") or is_web_playable(probe):
+    if not probe or not probe.get("has_video") or is_image(suffix, probe) or is_web_playable(probe):
         return data, probe, False
     with tempfile.TemporaryDirectory() as td:
         src, dst = str(Path(td) / f"in{suffix}"), str(Path(td) / "out.mp4")
@@ -116,3 +128,29 @@ async def ensure_web_playable(data: bytes, suffix: str = ".mp4"):
         new_probe = await asyncio.to_thread(_probe_sync, dst)
     logger.info(f"[transcode] {probe.get('video_codec')}/{probe.get('pix_fmt')} -> h264 ({len(data)} -> {len(out)} bytes)")
     return out, new_probe or probe, True
+
+
+def _extract_still_sync(src: str, dst: str) -> bool:
+    """Ricava di nuovo l'immagine da un MP4 (immagine convertita per errore in video)."""
+    args = ["ffmpeg", "-y", "-v", "error", "-i", src]
+    if dst.lower().endswith(".gif"):
+        args += ["-vf", "split[a][b];[a]palettegen[p];[b][p]paletteuse", "-loop", "0"]
+    else:
+        args += ["-frames:v", "1"]
+        if dst.lower().endswith((".jpg", ".jpeg")):
+            args += ["-q:v", "2"]
+    r = subprocess.run(args + [dst], capture_output=True, text=True, timeout=300)
+    if r.returncode != 0:
+        logger.warning(f"[still] ffmpeg failed: {r.stderr[-300:]}")
+    return r.returncode == 0 and Path(dst).exists() and Path(dst).stat().st_size > 0
+
+
+async def restore_image_from_mp4(data: bytes, image_suffix: str) -> Optional[bytes]:
+    if not data or data[4:8] != b"ftyp":
+        return None
+    with tempfile.TemporaryDirectory() as td:
+        src, dst = str(Path(td) / "in.mp4"), str(Path(td) / f"out{image_suffix}")
+        Path(src).write_bytes(data)
+        if not await asyncio.to_thread(_extract_still_sync, src, dst):
+            return None
+        return Path(dst).read_bytes()

@@ -68,6 +68,17 @@ export function GoLivePanel() {
   };
 
   const sendPreviewLive = () => { if (preview?.url) goLive("video", preview.url); };
+  // Ticket #247410: eliminazione dalla libreria (record + file), con conferma
+  const deleteMedia = async (v) => {
+    const onAirNow = isLive && state.video_url === v.url;
+    if (!window.confirm(`Eliminare "${v.display_name || v.filename}" dalla libreria?${onAirNow ? "\nÈ in onda: il LedWall tornerà agli effetti." : ""}`)) return;
+    try {
+      await api.delete(`/admin/ledwall/videos/${v.id}`);
+      if (preview?.url === v.url) setPreview(null);
+      toast.success("File eliminato");
+      load();
+    } catch { toast.error("Eliminazione non riuscita"); }
+  };
   const removeOverride = async () => { setConfirmRemove(false); await goLive(null, null); };
 
   const uploadMedia = async (file) => {
@@ -172,9 +183,10 @@ export function GoLivePanel() {
               const selected = preview?.url === v.url;
               const onAir = isLive && state.video_url === v.url;
               return (
-                <button key={v.id} type="button" onClick={() => setPreview({ url: v.url, name: v.display_name || v.filename, kind })}
+                <div key={v.id} className="flex items-stretch gap-1">
+                <button type="button" onClick={() => setPreview({ url: v.url, name: v.display_name || v.filename, kind })}
                   data-testid={`go-live-media-${v.id}`} title={`${kind} · anteprima`}
-                  className="w-full flex items-center gap-2 p-1 rounded text-left"
+                  className="flex-1 min-w-0 flex items-center gap-2 p-1 rounded text-left"
                   style={{ background: selected ? "rgba(0,229,255,0.14)" : "rgba(255,255,255,0.03)", border: `1px solid ${selected ? "rgba(0,229,255,0.6)" : onAir ? "rgba(255,20,60,0.5)" : "rgba(255,255,255,0.06)"}` }}>
                   <MediaThumb item={v} className="w-14 h-9 rounded shrink-0" />
                   <div className="min-w-0 flex-1">
@@ -185,6 +197,11 @@ export function GoLivePanel() {
                     </div>
                   </div>
                 </button>
+                <button type="button" onClick={() => deleteMedia(v)} data-testid={`go-live-media-delete-${v.id}`} title="Elimina dalla libreria"
+                  className="shrink-0 px-2 rounded text-zinc-400 hover:text-red-400" style={{ border: "1px solid rgba(255,255,255,0.08)" }}>
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+                </div>
               );
             })}
           </div>

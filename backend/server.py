@@ -6073,6 +6073,11 @@ async def admin_ledwall_delete_video(video_id: str):
         {"$unset": {"ledwall_default_video_url": ""}},
     )
     if filename:
+        # Ticket #247410: se il file eliminato era in onda come override, il LedWall torna agli effetti
+        await db.station.update_one(
+            {"_id": "state", "ledwall_override.video_url": {"$regex": f"/{filename}$"}},
+            {"$unset": {"ledwall_override": ""}},
+        )
         # Best-effort: cancella l'oggetto dallo storage (idempotente)
         try:
             await object_storage.delete_object(f"ledwall/{filename}")
@@ -13166,10 +13171,14 @@ async def _startup_fix_unplayable_ledwall_videos():
     for v in rows:
         fname = v.get("filename") or ""
         try:
+            ext = "." + (fname.rsplit(".", 1)[-1] if "." in fname else "mp4")
+            if video_service.is_image(ext):
+                # Ticket #247410: le immagini non si convertono (prima finivano trasformate in MP4).
+                await db.ledwall_videos.update_one({"id": v.get("id")}, {"$set": {"playable_checked_at": now_iso()}})
+                continue
             data = await object_storage.get_bytes(f"ledwall/{fname}")
             if not data:
                 continue
-            ext = "." + (fname.rsplit(".", 1)[-1] if "." in fname else "mp4")
             out, probe, transcoded = await video_service.ensure_web_playable(data, ext)
             upd = {"playable_checked_at": now_iso()}
             if transcoded:
@@ -13185,6 +13194,38 @@ async def _startup_fix_unplayable_ledwall_videos():
             logger.warning(f"[ledwall-fix] {fname}: {e}")
 
 
+async def _startup_restore_ledwall_images():
+    """Ticket #247410: il controllo codec di avvio convertiva per errore anche le immagini
+    dell'override LedWall in MP4 (stesso nome .jpg/.png). Qui, una volta, ne ricaviamo di
+    nuovo l'immagine dal fotogramma e la riscriviamo sullo stesso path."""
+    await asyncio.sleep(30)
+    if not object_storage.is_enabled():
+        return
+    try:
+        rows = await db.ledwall_videos.find({"image_restored_at": {"$exists": False}}, {"_id": 0, "id": 1, "filename": 1}).to_list(500)
+    except Exception:
+        return
+    _mime = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".gif": "image/gif", ".webp": "image/webp"}
+    for v in rows:
+        fname = v.get("filename") or ""
+        ext = "." + (fname.rsplit(".", 1)[-1].lower() if "." in fname else "")
+        if not video_service.is_image(ext):
+            continue
+        try:
+            data = await object_storage.get_bytes(f"ledwall/{fname}")
+            upd = {"image_restored_at": now_iso(), "mime": _mime.get(ext, "image/jpeg"), "transcoded": False,
+                   "duration_sec": None, "video_codec": None, "audio_codec": None}
+            if data and data[4:8] == b"ftyp":
+                img = await video_service.restore_image_from_mp4(data, ext)
+                if not img or not await object_storage.put_bytes(f"ledwall/{fname}", img, _mime.get(ext, "image/jpeg")):
+                    continue
+                upd["size"] = len(img)
+                logger.info(f"[ledwall-fix] {fname}: immagine ripristinata dal video")
+            await db.ledwall_videos.update_one({"id": v.get("id")}, {"$set": upd})
+        except Exception as e:
+            logger.warning(f"[ledwall-fix] restore {fname}: {e}")
+
+
 @app.on_event("startup")
 async def on_startup():
     global _STARTUP_READY
@@ -13192,6 +13233,7 @@ async def on_startup():
     # definite sopra sono ora fisicamente aggiunte all'app.
     app.include_router(api_router)
     asyncio.create_task(_startup_fix_durations())
+    asyncio.create_task(_startup_restore_ledwall_images())
     asyncio.create_task(_startup_fix_unplayable_ledwall_videos())
     # v13.33 · Sanity check ffmpeg/ffprobe — indispensabili per reprobe,
     # normalizzazione, beatmatch, intro-detect. Logga un ERROR grosso se
