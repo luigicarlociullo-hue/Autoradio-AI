@@ -398,6 +398,9 @@ function LedWallNewsTicker({ wallW, wallH, fullWidth = false }) {
   );
 }
 
+// v13.80 · copertine LedWall: secondi di copertina intera a inizio e fine brano
+const COVER_HOLD_SEC = 6, COVER_OUT_SEC = 5;
+
 export default function LedWall({
   isPlaying = false,
   current = null,
@@ -535,23 +538,25 @@ export default function LedWall({
   // (b) fasi del brano: elapsed/remaining dal clock (offset_sec + tempo trascorso dal poll)
   const nowRef = useRef({ info: null, at: 0 });
   useEffect(() => { nowRef.current = { info: nowInfo, at: performance.now() }; }, [nowInfo]);
-  const [phase, setPhase] = useState({ title: false, fx: false, outro: false });
-  // v13.77 · copertina: parte al 72%, zoom rapido (1.5s) a piena dimensione, Ken Burns lento, outro 3.5s
-  const [coverZoomed, setCoverZoomed] = useState(false);
-  useEffect(() => { setCoverZoomed(false); const t = setTimeout(() => setCoverZoomed(true), 60); return () => clearTimeout(t); }, [mediaUrl]);
+  const [phase, setPhase] = useState({ title: false, fx: false, intro: false, outro: false });
+  // v13.80 · copertina: intera e leggibile all'inizio (6s), poi si apre a tutto schermo con il Ken Burns
+  //           di prima, interludio FX a metà, torna zoomata, e negli ultimi 5s si richiude a copertina intera.
+  const [coverHold, setCoverHold] = useState(true);   // copertina intera per 6s a ogni nuova immagine
+  useEffect(() => { setCoverHold(true); const t = setTimeout(() => setCoverHold(false), COVER_HOLD_SEC * 1000); return () => clearTimeout(t); }, [mediaUrl]);
   useEffect(() => {
     const TITLE_SEC = 6.5, FX_SEC = 26;
     const tick = () => {
       const { info, at } = nowRef.current;
-      if (!info || !info.title || info.is_timeline || !(info.duration_sec > 30)) { setPhase((p) => (p.title || p.fx || p.outro) ? { title: false, fx: false, outro: false } : p); return; }
+      if (!info || !info.title || info.is_timeline || !(info.duration_sec > 30)) { setPhase((p) => (p.title || p.fx || p.intro || p.outro) ? { title: false, fx: false, intro: false, outro: false } : p); return; }
       const elapsed = (Number(info.offset_sec) || 0) + (performance.now() - at) / 1000;
       const dur = Number(info.duration_sec) || 0;
       const remaining = dur - elapsed;
       const title = elapsed < TITLE_SEC || (remaining < TITLE_SEC && remaining > 0.5);
       const mid = dur / 2;
       const fx = dur >= 90 && elapsed >= mid - FX_SEC / 2 && elapsed < mid + FX_SEC / 2;
-      const outro = remaining < 3.5 && remaining > -1;   // v13.77 · ultimi secondi: copertina torna piccola
-      setPhase((p) => (p.title === title && p.fx === fx && p.outro === outro) ? p : { title, fx, outro });
+      const intro = elapsed < COVER_HOLD_SEC;                       // v13.80 · inizio brano: copertina intera
+      const outro = remaining < COVER_OUT_SEC && remaining > -1;   // v13.80 · finale: si richiude a copertina intera
+      setPhase((p) => (p.title === title && p.fx === fx && p.intro === intro && p.outro === outro) ? p : { title, fx, intro, outro });
     };
     tick();
     const iv = setInterval(tick, 500);
@@ -567,6 +572,7 @@ export default function LedWall({
   }, [phase.title, titleInfo?.title, titleInfo?.artist]);
   // interludio FX a metà brano: il media del brano sfuma e lascia vedere l'effetto, poi rientra
   const mediaDimmed = phase.fx && !!ledState.from_track;
+  const coverFull = coverHold || phase.intro || phase.outro;   // v13.80 · true = copertina intera, false = zoomata a tutto schermo
 
   // (c) cambio effetto: dissolvenza (velo scuro in/out) invece del cambio secco
   const [fxVeil, setFxVeil] = useState(false);
@@ -1016,16 +1022,26 @@ export default function LedWall({
             <>
               <img src={l.url} alt="" aria-hidden className="absolute inset-0 w-full h-full object-cover"
                 style={{ filter: "blur(28px) brightness(0.45) saturate(1.2)", transform: "scale(1.15)" }} />
-              <div className="absolute inset-0" data-testid="ledwall-cover-zoom" data-zoomed={coverZoomed && !phase.outro ? "true" : "false"}
-                style={{ transform: `scale(${coverZoomed && !phase.outro ? 1 : 0.72})`, transformOrigin: "center center",
-                         transition: phase.outro ? "transform 3.5s ease-in-out, opacity 3.5s ease-in-out" : "transform 1.5s cubic-bezier(.2,.7,.2,1)",
-                         opacity: phase.outro ? 0.55 : 1 }}>
+              {/* v13.80 · zoomata: riempie tutto lo schermo con il Ken Burns di prima */}
+              <div className="absolute inset-0" data-testid="ledwall-cover-zoom" data-zoomed={coverFull ? "false" : "true"}
+                style={{ opacity: coverFull ? 0 : 1, transform: `scale(${coverFull ? 0.9 : 1})`, transformOrigin: "center center",
+                         transition: "opacity 1.6s ease-in-out, transform 2s cubic-bezier(.2,.7,.2,1)" }}>
+                <img
+                  src={l.url}
+                  alt=""
+                  className="absolute inset-0 w-full h-full object-cover"
+                  style={{ animation: "kenburnsFull 22s ease-in-out infinite alternate", transformOrigin: "center center" }}
+                />
+              </div>
+              {/* v13.80 · copertina intera: tutta visibile, titoli leggibili (inizio e fine brano) */}
+              <div className="absolute inset-0" data-testid="ledwall-cover-full" data-on={coverFull ? "true" : "false"}
+                style={{ opacity: coverFull ? 1 : 0, transform: `scale(${coverFull ? 1 : 1.12})`, transformOrigin: "center center",
+                         transition: "opacity 1.6s ease-in-out, transform 2s cubic-bezier(.2,.7,.2,1)" }}>
                 <img
                   src={l.url}
                   alt=""
                   className="absolute inset-0 w-full h-full object-contain"
-                  style={{ animation: "kenburnsSoft 48s ease-in-out infinite alternate", transformOrigin: "center center",
-                           filter: "drop-shadow(0 18px 40px rgba(0,0,0,0.7))" }}
+                  style={{ filter: "drop-shadow(0 18px 40px rgba(0,0,0,0.7))" }}
                 />
               </div>
             </>
@@ -1043,10 +1059,10 @@ export default function LedWall({
         </div>
       ))}
       <style>{`
-        @keyframes kenburnsSoft {
-          0%   { transform: scale(1.00) translate(-1%, -0.5%); }
-          50%  { transform: scale(1.06) translate(1%, 0.5%); }
-          100% { transform: scale(1.03) translate(-0.5%, 1%); }
+        @keyframes kenburnsFull {
+          0%   { transform: scale(1.05) translate(-2%, -1%); filter: brightness(0.92); }
+          50%  { transform: scale(1.15) translate(2%, 1%);   filter: brightness(1.05); }
+          100% { transform: scale(1.08) translate(-1%, 2%);  filter: brightness(0.98); }
         }
         @keyframes raiTitleIn { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: translateY(0); } }
       `}</style>
