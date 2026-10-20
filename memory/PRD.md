@@ -918,3 +918,7 @@ Vedi turni precedenti in questa sessione:
 
 ## v13.77 · Copertine LedWall: scala/zoom (2026-10-20)
 - Wrapper `ledwall-cover-zoom`: scala 0.72 al mount → 1.0 in 1.5s (`coverZoomed`), Ken Burns lento a piena dimensione (`kenburnsSoft` 1.00↔1.06, 48s), `phase.outro` (ultimi 3.5s dal clock) → torna a 0.72 con opacità 0.55 in 3.5s. Il resto di v13.76 invariato.
+
+## v13.78 · DOCUMENTAZIONE in Regia (2026-10-20) — zero backend
+- Nuovi file statici `frontend/public/docs/`: `manuale-tecnico-regia.html/.pdf` (7 pagine: regole d'oro, ogni banda/pannello con Cosa fa / Come si usa / Non toccare, precedenze LedWall, costi, procedure rapide) e `presentazione-progetto.html/.pdf` (5 pagine: cos'è, unicità, funzionalità, sponsor, collaboratori, visione). PDF generati con `/root/bin/chromium --headless --print-to-pdf` dagli HTML (rigenerare con lo stesso comando dopo modifiche agli HTML).
+- `Dashboard.js`: banda "DOCUMENTAZIONE" (`band-docs`, prima di SECONDARY UTILITIES) con `DocsPanel`: due card → "Visualizza" (HTML nuova scheda, con toolbar Scarica PDF/Stampa) e "Scarica PDF". Verifica: curl 200 su HTML e PDF, build ok.

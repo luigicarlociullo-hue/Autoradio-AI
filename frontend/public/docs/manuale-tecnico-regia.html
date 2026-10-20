@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<title>R-A.I. Radio · Manuale Tecnico Regia</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --cyan:#007A8A; --ink:#0B1320; --muted:#5B6B7F; --warn:#B45309; --danger:#B91C1C; --line:#E2E8F0; --bg:#FFFFFF; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: Georgia, "Times New Roman", serif; color:var(--ink); background:var(--bg); line-height:1.55; }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 48px 40px 80px; }
+  header.doc { border-bottom: 3px solid var(--cyan); padding-bottom: 18px; margin-bottom: 28px; }
+  .kicker { font-family: "Courier New", monospace; letter-spacing: .25em; text-transform: uppercase; color: var(--cyan); font-size: 12px; }
+  h1 { font-size: 34px; margin: 6px 0 4px; line-height: 1.1; }
+  h2 { font-size: 22px; margin: 42px 0 10px; padding-top: 10px; border-top: 1px solid var(--line); color: var(--cyan); page-break-after: avoid; }
+  h3 { font-size: 16px; margin: 22px 0 6px; page-break-after: avoid; }
+  p, li { font-size: 14.5px; }
+  .meta { color: var(--muted); font-size: 13px; }
+  .box { border: 1px solid var(--line); border-left: 4px solid var(--cyan); border-radius: 6px; padding: 10px 14px; margin: 10px 0; background: #F8FAFC; page-break-inside: avoid; }
+  .box.warn { border-left-color: var(--warn); background: #FFFBEB; }
+  .box.danger { border-left-color: var(--danger); background: #FEF2F2; }
+  .box b.lbl { font-family: "Courier New", monospace; font-size: 11px; letter-spacing: .15em; text-transform: uppercase; display:block; margin-bottom: 4px; }
+  .box.warn b.lbl { color: var(--warn); } .box.danger b.lbl { color: var(--danger); } .box b.lbl { color: var(--cyan); }
+  table { width: 100%; border-collapse: collapse; margin: 10px 0 16px; font-size: 13.5px; page-break-inside: avoid; }
+  th, td { border: 1px solid var(--line); padding: 7px 9px; vertical-align: top; text-align: left; }
+  th { background: #F1F5F9; font-family: "Courier New", monospace; font-size: 11.5px; letter-spacing: .08em; text-transform: uppercase; }
+  code { font-family: "Courier New", monospace; font-size: 12.5px; background: #F1F5F9; padding: 1px 5px; border-radius: 4px; }
+  .toc { columns: 2; column-gap: 32px; font-size: 13.5px; }
+  .toc li { break-inside: avoid; margin: 2px 0; }
+  .toolbar { position: sticky; top: 0; background: #0B1320; color: #fff; padding: 10px 16px; display: flex; gap: 12px; align-items: center; font-family: "Courier New", monospace; font-size: 12px; }
+  .toolbar a { color: #7DF9FF; text-decoration: none; border: 1px solid #7DF9FF55; padding: 4px 10px; border-radius: 999px; }
+  footer { margin-top: 48px; padding-top: 14px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+  @media print { .toolbar { display: none; } .wrap { padding: 0; max-width: none; } body { font-size: 12px; } h2 { page-break-before: auto; } }
+</style>
+</head>
+<body>
+<div class="toolbar">R-A.I. RADIO · MANUALE TECNICO REGIA <a href="manuale-tecnico-regia.pdf" download>⬇ Scarica PDF</a> <a href="javascript:window.print()">🖨 Stampa</a> <a href="presentazione-progetto.html">→ Presentazione progetto</a></div>
+<div class="wrap">
+<header class="doc">
+  <div class="kicker">Documentazione interna · Direttore di Rete</div>
+  <h1>Manuale Tecnico della Regia</h1>
+  <p class="meta">R-A.I. Radio — la prima radio italiana diretta da un'intelligenza artificiale. Riferimento operativo pannello per pannello. Versione piattaforma 13.7x · ottobre 2026.</p>
+</header>
+
+<div class="box"><b class="lbl">Come leggere questo manuale</b>
+Ogni pannello è descritto con tre voci fisse: <b>Cosa fa</b>, <b>Come si usa</b>, <b>Non toccare</b> (con il perché). Le regole in rosso proteggono la diretta: l'HLS live, il clock centrale e le API a pagamento (LLM, voci, Suno). Nel dubbio, non si cambia nulla mentre la stazione è ON AIR.</div>
+
+<h2>Indice</h2>
+<ol class="toc">
+  <li>Principi generali e regole d'oro</li>
+  <li>Accesso e struttura della Regia</li>
+  <li>COMANDI IN ALTO</li>
+  <li>ARCHIVIO BRANI · Controllo Totale</li>
+  <li>SCHEDULING (Timeline, ricorrenze, Power Play)</li>
+  <li>WAREHOUSE & ASSETS</li>
+  <li>NIGHT & LIVE SOURCES</li>
+  <li>COMMUNITY & PARTNERS</li>
+  <li>SECONDARY UTILITIES</li>
+  <li>LedWall: regole di precedenza</li>
+  <li>Costi, crediti e sicurezza</li>
+  <li>Procedure rapide</li>
+</ol>
+
+<h2>1. Principi generali e regole d'oro</h2>
+<p>La Regia pilota una radio <b>automatizzata</b>: un clock centrale sul server decide cosa va in onda (brani, jingle, spot, voci DJ, segnali orari, appuntamenti) e lo trasmette a tutti gli ascoltatori in sincrono via HLS. La Regia non "suona" nulla in locale: ogni comando modifica lo stato sul server e il flusso live lo riflette entro pochi secondi.</p>
+<div class="box danger"><b class="lbl">Regole d'oro</b>
+<ul>
+<li><b>Mai interrompere il clock live</b> se non con i comandi previsti (Kill Switch, Modalità Manuale, Trasmissione esterna). Il player degli ascoltatori segue il clock: ogni intervento improvvisato produce silenzi o salti.</li>
+<li><b>Ogni generazione AI costa crediti</b> (testi DJ, voci ElevenLabs/OpenAI TTS, brani Suno). I generatori manuali e i toggle AI vanno usati con intenzione, non per "provare".</li>
+<li><b>Le modifiche ai brani richiedono approvazione</b> ("APPROVA E SALVA"): finché non approvi, nulla cambia in onda.</li>
+<li><b>Eliminazioni</b>: sempre con conferma; passano dal Cestino quando previsto. Il Cestino svuotato è definitivo (anche sullo storage).</li>
+</ul></div>
+
+<h2>2. Accesso e struttura della Regia</h2>
+<p>La Regia è su <code>/dashboard</code> e richiede login (protezione anti-forza-bruta: 5 tentativi in 15 minuti bloccano l'IP). La pagina è divisa in <b>bande</b> ordinate per priorità operativa, dall'alto verso il basso: COMANDI IN ALTO → ARCHIVIO BRANI → SCHEDULING → WAREHOUSE → NIGHT & LIVE → COMMUNITY → SECONDARY UTILITIES → PALINSESTO. A destra, una colonna fissa mostra lo specchietto Timeline e la coda elastica dei prossimi brani.</p>
+
+<h2>3. COMANDI IN ALTO</h2>
+<p>Tutto ciò che serve per governare la diretta senza scorrere la pagina.</p>
+
+<h3>3.1 Live Command · Broadcast Control Bar</h3>
+<p><b>Cosa fa.</b> Interruttori immediati su ciò che la stazione può fare da sola: Talk DJ (OpenAI), Cervello Claude, Suno, Voce in onda, Speaker AI, frequenza "parla ogni N brani", soggetto globale del giorno.<br>
+<b>Come si usa.</b> Ogni interruttore agisce subito e viene salvato nello stato stazione. Un controllo assente è ON per default; un <code>false</code> esplicito resta OFF.<br>
+<b>Non toccare.</b> <code>ai_openai_talk</code>, <code>ai_speaker_enabled</code> e <code>dj_talk_every_n_songs</code> sono i rubinetti dei costi: spegnerli ferma le voci DJ; accenderli senza controllo moltiplica le generazioni.</p>
+
+<h3>3.2 AI Master Control</h3>
+<p><b>Cosa fa.</b> Vista centralizzata dei provider AI e del loro stato, con <b>Dual Brain (Leo vs Max)</b>: genera due letture dello stesso soggetto e permette di iniettarle nella Priority Queue.<br>
+<b>Come si usa.</b> Inserisci il soggetto, "Genera", ascolta/leggi, poi "Inietta". Ogni generazione consuma crediti LLM e voce.<br>
+<b>Non toccare.</b> Non spegnere provider mentre un intervento vocale è in produzione: l'errore è "fail-loud" (si vede in Regia), non c'è fallback silenzioso a un'altra voce.</p>
+
+<h3>3.3 Modalità Demo</h3>
+<p><b>Cosa fa.</b> Inserisce nel flusso <b>vocali già esistenti</b> ogni 2–3 brani (configurabile) senza chiamare alcuna API: ideale per dimostrazioni a costo zero.<br>
+<b>Come si usa.</b> Toggle ON/OFF e frequenza. OFF è completamente inerte.<br>
+<b>Non toccare.</b> Non lasciarla ON in produzione normale: ripete interventi registrati e disallinea titolo/artista citati.</p>
+
+<h3>3.4 Live Quick Bar · FM Mode · Go Live (InOverride LedWall)</h3>
+<p><b>Live Quick Bar</b>: FLASH AD e azioni immediate sulla coda. <b>FM Mode</b>: profilo "radio FM" (con FM OFF il TTS passa a OpenAI e la Voice ID ElevenLabs non opera).<br>
+<b>Go Live · Override LedWall</b> — <b>Cosa fa.</b> Forza sul LedWall pubblico un video, una foto o uno stream cam. <b>Come si usa.</b> Carica video/foto nella libreria (video convertiti in H.264; immagini max 10 MB, video 200 MB), seleziona un file: appare nel monitor di <b>Preview</b>, va in onda solo con <b>▶ MANDA IN DIRETTA</b>. Resta in onda senza limite (video in loop) finché non premi <b>⏹ RIMUOVI OVERRIDE</b> (con conferma). L'indicatore di stato mostra sempre cosa c'è in onda e da quanto. <b>Non toccare.</b> L'URL cam/stream va cambiato solo con una sorgente verificata: uno stream non raggiungibile lascia il LedWall nero.</p>
+
+<h3>3.5 LedWall Mini Preview · LedWall News</h3>
+<p><b>Mini Preview</b> replica ciò che vede il pubblico. <b>LedWall News</b> gestisce il ticker in basso: aggiunta testo (con conferma), riordino, attiva/disattiva, eliminazione con conferma, velocità e colore; se la coda è vuota il ticker sparisce. L'endpoint esterno (URL + token) è predisposto per fonti automatiche: <b>non rigenerare il token</b> se un sistema esterno lo sta già usando.</p>
+
+<h3>3.6 Broadcaster (HLS / Icecast)</h3>
+<p>Parametri del flusso in uscita. <b>Non toccare</b> senza un motivo tecnico: ogni modifica può interrompere l'ascolto per tutti.</p>
+
+<h3>3.7 Pilota AI · Broadcaster esterno (Live Manuale · Webcast esterno)</h3>
+<p><b>Cosa fa.</b> Sostituisce l'automazione con una <b>voce umana in diretta</b> da uno stream esterno. <b>Come si usa.</b> Imposta l'URL dello stream, attiva "LIVE MANUALE": la home mostra il banner arancione e il player esterno. <b>Non toccare</b> l'URL mentre è attivo: gli ascoltatori perdono l'audio.</p>
+
+<h3>3.8 Trasmissione manuale (Modalità Manuale & Line-In)</h3>
+<p>Sospende le scelte automatiche del clock per lavorare "a mano" (line-in, scelta diretta dei brani). Da usare solo con un operatore presente: in manuale la radio non si auto-riempie.</p>
+
+<h3>3.9 Pilota la web radio (Control Room)</h3>
+<p><b>Cosa fa.</b> Accende/spegne la stazione e offre i <b>generatori manuali</b> (Talk, Musica, News, Dialogo, Oroscopo, Storia, Meteo, Battuta, Motivazione). <b>Come si usa.</b> Ogni generatore crea un segmento e lo mette in coda. <b>Non toccare.</b> Ogni pulsante = crediti LLM + TTS. "Spegni stazione" ferma il clock per tutti.</p>
+
+<h3>3.10 Automazione attiva (Kill Switch)</h3>
+<p>Interruttore d'emergenza: AUTOMAZIONE ATTIVA ↔ MANUALE. In MANUALE il server smette di decidere; usalo solo per intervenire su un problema grave e <b>riattiva appena possibile</b>.</p>
+
+<h2>4. ARCHIVIO BRANI · Controllo Totale</h2>
+<p><b>Cosa fa.</b> Gestione unificata di tutte le risorse audio: musica, jingle, spot, vocali, basi/loop, FX, billboard, sigle appuntamenti.</p>
+<table>
+<tr><th>Controllo</th><th>Effetto</th><th>Attenzione</th></tr>
+<tr><td>Toggle ON/OFF</td><td>OFF esclude il brano dalla diretta (persistente)</td><td>Non spegnere tutta una categoria: la rotazione resta senza materiale</td></tr>
+<tr><td>Fasce orarie (mattino 06–11, pomeriggio 11–19, giorno, sera 19–22, notte 22–04, sempre) + orario personalizzato</td><td>Più fasce attive contemporaneamente; il range custom è additivo (anche a cavallo della mezzanotte)</td><td>Un brano senza alcuna fascia attiva non va mai in onda</td></tr>
+<tr><td>Matita · APPROVA E SALVA / ANNULLA</td><td>Titolo, artista, categoria, loop legato a speaker, fasce, <b>Copertina e video</b> (LedWall)</td><td>Niente cambia finché non approvi</td></tr>
+<tr><td>Copertina e video</td><td>JPG/PNG/WebP ≤10 MB · MP4 ≤200 MB; carica nuovo o scegli dalla vetrina dei file già caricati; Rimuovi</td><td>Il video del brano va in onda sul LedWall solo se non c'è override Regia né evento con video proprio</td></tr>
+<tr><td>Elimina</td><td>Popup di conferma, poi Cestino</td><td>Dal Cestino lo svuotamento è definitivo</td></tr>
+<tr><td>ZIP</td><td>Scarica una selezione; link one-shot (il secondo download dà 404)</td><td>Il file temporaneo sparisce al riavvio</td></tr>
+<tr><td>Segmenti vocali DJ</td><td>Elenco vocali generati: ascolto, modifica testo, sostituzione audio, doppioni, "Copia nei Jingle", eliminazione</td><td>Riguarda le voci dei DJ, non i vocali degli ascoltatori</td></tr>
+</table>
+<div class="box warn"><b class="lbl">Sigle Appuntamenti</b> Categoria distinta: non entrano mai nella rotazione casuale, non richiedono date contratto, si scelgono come jingle pre/post nella Timeline.</div>
+
+<h2>5. SCHEDULING</h2>
+<h3>5.1 Smart Flow Timeline</h3>
+<p><b>Cosa fa.</b> Programma eventi puntuali e ricorrenti: segnale orario, jingle, spot, appuntamenti liberi. <b>Come si usa.</b> Scegli il tipo, orario/ricorrenza (giorni, ora inizio/fine, minuto d'ancoraggio, frequenza, date), durata, jingle prima/dopo, LedWall durante l'evento (nessuno / FX / video), sorgente musicale (Disco del Giorno, Umani vs Algoritmo, brano fisso), presentazione DJ, "Concatena dopo" (nessuno / segnale orario / qualsiasi evento) e priorità 1–9. I modelli salvano configurazioni ricorrenti.<br>
+<b>Non toccare.</b> Non creare appuntamenti sovrapposti allo stesso minuto con la stessa priorità: l'ordine diventa casuale. Non impostare "Concatena dopo" su eventi che non esistono in quel giorno: scatta il fallback dopo 15 minuti.</p>
+<h3>5.2 Segnale orario (ora + minuti)</h3>
+<p>Le 84 clip (24 ore + 60 minuti) si generano dai pulsanti nella sezione segnale orario (<code>0/84</code> indica lo stato). Finché mancano clip, va in onda il segnale orario permanente. <b>Pre-segnale orario</b>: un file del Magazzino che parte immediatamente prima del segnale, senza pause; "Rimuovi" lo disattiva. <b>Non toccare</b> la logica ricorrente dell'ora esatta: è l'appuntamento più ascoltato.</p>
+<h3>5.3 Power Play · Regole di rotazione</h3>
+<p>Power Play sceglie il brano in evidenza del giorno (automatico, con rigenerazione manuale). Le regole di rotazione (anti-duplicati, giorno/notte, fasce) proteggono la varietà: cambiarle senza test produce ripetizioni.</p>
+
+<h2>6. WAREHOUSE & ASSETS</h2>
+<p><b>Ad Manager</b>: spot (intro/mid/outro), scheduling per data e frequenza, campagne. Al suo interno la <b>Coda di approvazione</b> delle richieste partner (ascolto, approva, rifiuta). <b>Regia Audio</b>: bed/loop attivo, <b>Sottofondo casuale</b> (ruota i loop del Magazzino senza ripetizioni; il loop legato a uno speaker ha la precedenza), mix voce+sottofondo lato server (ffmpeg, mai sull'originale). <b>Cestino</b>: ripristino o eliminazione definitiva.</p>
+<div class="box danger"><b class="lbl">Non toccare</b> I volumi di ducking del bed-mix e i parametri HLS: sono calibrati sulla voce. Il Cestino svuotato elimina anche dallo storage.</div>
+
+<h2>7. NIGHT & LIVE SOURCES</h2>
+<p><b>Night Control Center</b>: Club Night 22:00–04:00 (Techno/House), AI Speaker notturno, Beatmatch, Jingle Library, libreria notturna (foto/video per il Virtual Club: ogni asset entra nella rotazione pesata). <b>Night DJs</b>: i tre DJ che si alternano ogni due ore (slot 1/2/3), con bio, colore e modello. <b>Non toccare</b> gli slot notturni mentre sono in corso: il passaggio di consegne è automatico allo scoccare dell'ora.</p>
+
+<h2>8. COMMUNITY & PARTNERS</h2>
+<p><b>Vocali ascoltatori (pannello unico)</b>: ascolto, approvazione, cancellazione dei messaggi vocali inviati dal pubblico (Voice Live). <b>A.I. vs Umani</b>: frequenza di inserimento dei brani inviati dagli ascoltatori nella rotazione con l'AI e tabella brani (approva/rifiuta/ON-OFF). <b>Partners</b>: anagrafica sponsor. <b>Wall community</b>: moderazione dei messaggi pubblici. Tutti i contenuti del pubblico passano dal disclaimer obbligatorio in home: ciò che arriva qui è già stato dichiarato lecito dall'utente, ma la verifica finale è del Direttore.</p>
+
+<h2>9. SECONDARY UTILITIES</h2>
+<p><b>Oroscopo / Stelle</b> (12 testi giornalieri), <b>DbSync</b> (allineamento archivio ↔ storage: lancialo solo a stazione tranquilla), <b>KPI</b>, <b>Campagne</b>. Il <b>Palinsesto</b> full-screen mostra i prossimi eventi: è solo lettura.</p>
+
+<h2>10. LedWall: regole di precedenza</h2>
+<table>
+<tr><th>Priorità</th><th>Sorgente</th><th>Da dove si controlla</th></tr>
+<tr><td>1</td><td>Evento/appuntamento Timeline con video proprio (temporaneo, dura quanto l'evento)</td><td>Smart Flow Timeline → LedWall durante l'evento</td></tr>
+<tr><td>2</td><td>Override manuale della Regia (permanente finché rimosso)</td><td>Go Live · InOverride</td></tr>
+<tr><td>3</td><td>Video o copertina del brano in onda (video in loop muto; copertina con Ken Burns, titolo in ingresso/uscita, interludio FX a metà brano)</td><td>Archivio → Modifica → Copertina e video</td></tr>
+<tr><td>4</td><td>Slot orario del palinsesto video</td><td>Palinsesto LedWall</td></tr>
+<tr><td>5</td><td>Default / effetti audio-reattivi (logo, onde, gradiente, anelli, EQ, starfield, olografico; in home anche "rotazione automatica")</td><td>Selettore effetto</td></tr>
+</table>
+<p>Ogni passaggio avviene in dissolvenza. Il ticker News resta sempre in basso se ci sono notizie attive.</p>
+
+<h2>11. Costi, crediti e sicurezza</h2>
+<ul>
+<li><b>LLM</b> (OpenAI/Claude via chiave universale): testi DJ, Dual Brain, generatori. <b>Voci</b>: ElevenLabs (FM ON) o OpenAI TTS (FM OFF). <b>Suno</b>: brani del Disco del Giorno. Tutti gated dai toggle in Live Command.</li>
+<li>Una Voice ID ElevenLabs non "fine-tuned" viene <b>rifiutata</b> con errore visibile: non reinserirla.</li>
+<li>Credenziali, chiavi e URL del database non vanno mai cambiati dalla Regia né condivisi in chat/screenshot.</li>
+<li>Prima di un deploy: salva i modelli Timeline, verifica che non ci siano override LedWall dimenticati, controlla i toggle costi.</li>
+</ul>
+
+<h2>12. Procedure rapide</h2>
+<div class="box"><b class="lbl">Silenzio in onda</b> 1) Kill Switch → verifica AUTOMAZIONE ATTIVA · 2) Pilota la web radio → stazione ON · 3) Coda elastica: se vuota, controlla che almeno una categoria musicale sia ON e con fasce valide · 4) Broadcaster: non toccare, aspetta 30 s.</div>
+<div class="box"><b class="lbl">Mettere un video sul LedWall adesso</b> Go Live → carica/seleziona → Preview → ▶ MANDA IN DIRETTA. Per togliere: ⏹ RIMUOVI OVERRIDE → conferma.</div>
+<div class="box"><b class="lbl">Programmare un appuntamento settimanale</b> Timeline → Appuntamento libero → giorni + ora + anchor minute → sorgente musicale → jingle pre/post (Sigle Appuntamenti) → LedWall durante → Salva come modello.</div>
+<div class="box"><b class="lbl">Dimostrazione senza costi</b> Modalità Demo ON (2–3 brani) → Live Command: Talk/Suno OFF → a fine demo riporta tutto com'era.</div>
+
+<footer>R-A.I. Radio · Manuale Tecnico Regia · uso interno. Nessun umano in cabina, un Direttore in Regia.</footer>
+</div>
+</body>
+</html>

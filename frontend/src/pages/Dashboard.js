@@ -295,6 +295,12 @@ export default function Dashboard() {
               </div>
             </section>
 
+            {/* v13.78 · DOCUMENTAZIONE — manuale tecnico Regia + presentazione progetto (HTML + PDF statici in /docs) */}
+            <section data-testid="band-docs" className="space-y-4">
+              <BandHeader icon="📘" title="DOCUMENTAZIONE" subtitle="Manuale Tecnico Regia · Presentazione del progetto · consultabili e scaricabili in PDF" color="#7DF9FF" />
+              <DocsPanel />
+            </section>
+
             {/* 6 · SECONDARY UTILITIES — fondo pagina: generatori, oroscopo, manutenzione */}
             <section data-testid="band-secondary" className="space-y-4">
               <BandHeader icon="🧰" title="SECONDARY UTILITIES" subtitle="Oroscopo · Manutenzione tecnica · KPI · Campagne" color="#8A8F98" />
@@ -3279,6 +3285,41 @@ function PartnersPanel() {
 
 
 // ==================== KillSwitchPanel — Automation ON/OFF ====================
+// v13.78 · Documentazione — due manuali statici (frontend/public/docs): apri in nuova scheda o scarica PDF.
+const REGIA_DOCS = [
+  { key: "tecnico", title: "Manuale Tecnico Regia", desc: "Ogni pannello e controllo spiegato uno per uno: cosa fa, come si usa, cosa non toccare e perché. Per il Direttore.", html: "/docs/manuale-tecnico-regia.html", pdf: "/docs/manuale-tecnico-regia.pdf", color: "#00E5FF", icon: "🛠️" },
+  { key: "progetto", title: "Presentazione del progetto", desc: "R-A.I. Radio raccontata a sponsor e collaboratori: cos'è, cosa la rende unica, le funzionalità principali, la visione.", html: "/docs/presentazione-progetto.html", pdf: "/docs/presentazione-progetto.pdf", color: "#FF6B8C", icon: "📣" },
+];
+function DocsPanel() {
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-4" data-testid="docs-panel">
+      {REGIA_DOCS.map((d) => (
+        <section key={d.key} className="card-surface p-5 flex flex-col gap-3" data-testid={`doc-card-${d.key}`}
+          style={{ boxShadow: `0 0 0 1px ${d.color}33 inset, 0 12px 40px rgba(0,0,0,0.5)` }}>
+          <div className="flex items-center gap-3">
+            <div className="w-11 h-11 rounded-lg flex items-center justify-center text-xl" style={{ background: `${d.color}22`, border: `1px solid ${d.color}66` }}>{d.icon}</div>
+            <div className="min-w-0">
+              <div className="label-mono" style={{ color: d.color }}>◂ PDF · HTML ▸</div>
+              <h3 className="font-display font-black text-lg leading-tight text-white">{d.title}</h3>
+            </div>
+          </div>
+          <p className="text-sm text-zinc-300 leading-relaxed">{d.desc}</p>
+          <div className="flex flex-wrap gap-2 mt-auto">
+            <a href={d.html} target="_blank" rel="noopener noreferrer" data-testid={`doc-open-${d.key}`}
+              className="px-3 py-2 rounded text-xs font-mono font-bold" style={{ background: `${d.color}22`, border: `1px solid ${d.color}88`, color: "#fff" }}>
+              👁 Visualizza
+            </a>
+            <a href={d.pdf} download data-testid={`doc-pdf-${d.key}`}
+              className="px-3 py-2 rounded text-xs font-mono font-bold text-black" style={{ background: d.color }}>
+              ⬇ Scarica PDF
+            </a>
+          </div>
+        </section>
+      ))}
+    </div>
+  );
+}
+
 function KillSwitchPanel() {
   const [mode, setMode] = useState("auto");
   const [busy, setBusy] = useState(false);

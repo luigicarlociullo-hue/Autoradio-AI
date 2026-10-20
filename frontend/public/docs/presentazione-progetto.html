@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<title>R-A.I. Radio · Presentazione del progetto</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --cyan:#00B8D4; --deep:#02040A; --ink:#0B1320; --muted:#5B6B7F; --pink:#D5177A; --orange:#E8641B; --line:#E2E8F0; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: Georgia, "Times New Roman", serif; color: var(--ink); background: #fff; line-height: 1.6; }
+  .toolbar { position: sticky; top: 0; background: var(--deep); color: #fff; padding: 10px 16px; display: flex; gap: 12px; align-items: center; font-family: "Courier New", monospace; font-size: 12px; }
+  .toolbar a { color: #7DF9FF; text-decoration: none; border: 1px solid #7DF9FF55; padding: 4px 10px; border-radius: 999px; }
+  .cover { background: var(--deep); color: #fff; padding: 72px 48px 64px; }
+  .cover .kicker { font-family: "Courier New", monospace; letter-spacing: .3em; text-transform: uppercase; color: var(--cyan); font-size: 12px; }
+  .cover h1 { font-size: 48px; line-height: 1.02; margin: 14px 0 10px; letter-spacing: -0.01em; }
+  .cover p.claim { font-size: 20px; color: #CFF8FF; max-width: 720px; margin: 0; }
+  .cover .sub { margin-top: 28px; color: #8FA3B8; font-size: 13px; font-family: "Courier New", monospace; }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 40px 40px 80px; }
+  h2 { font-size: 26px; margin: 44px 0 10px; color: var(--ink); page-break-after: avoid; }
+  h2 small { display:block; font-family: "Courier New", monospace; font-size: 11px; letter-spacing: .25em; text-transform: uppercase; color: var(--cyan); margin-bottom: 4px; }
+  h3 { font-size: 17px; margin: 22px 0 6px; page-break-after: avoid; }
+  p, li { font-size: 15px; }
+  .lead { font-size: 18px; color: #1F2937; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 14px 0; }
+  .card { border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; page-break-inside: avoid; }
+  .card b.t { display:block; font-size: 15px; margin-bottom: 4px; }
+  .card .k { font-family: "Courier New", monospace; font-size: 10.5px; letter-spacing: .2em; text-transform: uppercase; color: var(--cyan); }
+  .quote { border-left: 4px solid var(--pink); padding: 8px 18px; margin: 18px 0; font-size: 18px; font-style: italic; color: #374151; page-break-inside: avoid; }
+  .num { display:flex; gap: 16px; margin: 16px 0; }
+  .num div { flex:1; border-top: 3px solid var(--cyan); padding-top: 8px; }
+  .num b { display:block; font-size: 26px; }
+  .num span { font-size: 12.5px; color: var(--muted); font-family: "Courier New", monospace; }
+  .cta { background: #F0FDFF; border: 1px solid #A5F3FC; border-radius: 12px; padding: 18px 20px; margin-top: 30px; page-break-inside: avoid; }
+  footer { margin-top: 48px; padding-top: 14px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+  @media print { .toolbar { display: none; } .cover { -webkit-print-color-adjust: exact; print-color-adjust: exact; } .wrap { padding: 24px 0; max-width: none; } }
+</style>
+</head>
+<body>
+<div class="toolbar">R-A.I. RADIO · PRESENTAZIONE DEL PROGETTO <a href="presentazione-progetto.pdf" download>⬇ Scarica PDF</a> <a href="javascript:window.print()">🖨 Stampa</a> <a href="manuale-tecnico-regia.html">→ Manuale tecnico Regia</a></div>
+
+<section class="cover">
+  <div class="kicker">Dossier per sponsor e collaboratori</div>
+  <h1>R-A.I. Radio<br>La prima radio italiana diretta da un'intelligenza artificiale.</h1>
+  <p class="claim">Vera musica, vera direzione artistica. Nessun umano in cabina: un'AI sceglie i brani, scrive e dice i copioni, risponde agli ascoltatori, accende il LedWall. Ventiquattro ore su ventiquattro.</p>
+  <div class="sub">Progetto L&amp;C Project · Prototipo Beta · ottobre 2026</div>
+</section>
+
+<div class="wrap">
+<h2><small>01 · Che cos'è</small>Una radio che pensa da sola</h2>
+<p class="lead">R-A.I. Radio è una web radio completa — musica, speaker, palinsesto, pubblicità, visual — orchestrata da un sistema di intelligenze artificiali che lavora in autonomia, sotto la supervisione di un Direttore umano in Regia.</p>
+<p>Non è un podcast generato a tavolino, né una playlist con una voce sintetica sopra: è una <b>diretta vera</b>, sincronizzata per tutti gli ascoltatori allo stesso secondo, con un clock centrale che decide in tempo reale cosa va in onda. Ogni glitch è la prova che siamo in territorio nuovo.</p>
+<div class="quote">"Autonomia totale. L'AI sceglie la musica, scrive i copioni, risponde live. Il Direttore decide le regole, la radio le vive."</div>
+
+<h2><small>02 · Perché è unica</small>Cosa non esiste altrove</h2>
+<div class="grid">
+  <div class="card"><span class="k">Direzione artistica algoritmica</span><b class="t">Palinsesto che si scrive da solo</b>Fasce orarie, rotazioni anti-ripetizione, segnale orario con ora e minuti, appuntamenti ricorrenti concatenati per priorità: una vera struttura di rete, gestita dal software.</div>
+  <div class="card"><span class="k">17 voci, 3 cervelli</span><b class="t">Un team di DJ sintetici</b>Speaker con personalità, modello linguistico e colore propri; tre LLM (GPT, Claude, Gemini) e voci neurali che presentano i brani citando titolo e artista.</div>
+  <div class="card"><span class="k">Visual live</span><b class="t">Il LedWall</b>Uno schermo audio-reattivo che accompagna ogni secondo di trasmissione: effetti, copertine, video dei brani, ticker news, modalità a schermo intero pensata anche per l'auto.</div>
+  <div class="card"><span class="k">Pubblico protagonista</span><b class="t">Umani vs Algoritmo</b>Chiunque può inviare un brano: va in onda in rotazione con quelli generati dall'AI e il pubblico decide chi vince.</div>
+</div>
+
+<h2><small>03 · Le funzionalità principali</small>Il cuore del progetto</h2>
+
+<h3>LedWall</h3>
+<p>Il volto visivo della radio. Reagisce all'audio con effetti (logo rotante, onde, gradienti, anelli, equalizzatore, starfield, sfera olografica) e cambia scena da solo: quando parte un brano con copertina o video personalizzato lo mostra con dissolvenze da regia televisiva, titolo e artista in ingresso e in uscita, un interludio di effetti a metà brano. La Regia può forzare in qualsiasi momento un video, una foto o uno stream (InOverride), e un ticker di notizie scorre in basso. A schermo intero diventa un'installazione: in auto, su un tablet, su un maxischermo in un locale.</p>
+
+<h3>Palinsesto AI (Smart Flow Timeline)</h3>
+<p>Segnale orario ogni ora con ora e minuti pronunciati, jingle, spot programmati per data e frequenza, appuntamenti liberi singoli o ricorrenti con sorgente musicale (Disco del Giorno, brano della community, brano fisso), jingle di apertura e chiusura, LedWall dedicato, presentazione del DJ. Gli appuntamenti si concatenano l'uno all'altro con priorità, come in una vera scaletta di rete.</p>
+
+<h3>Vocali DJ</h3>
+<p>I DJ parlano in italiano, 18–28 parole, sempre con titolo e artista del brano. Le voci sono generate e poi mixate lato server su una base musicale (sottofondo casuale o loop legato allo speaker), con ducking e dissolvenze. Tutto l'archivio vocale è consultabile, ascoltabile, correggibile dalla Regia.</p>
+
+<h3>Modalità Demo</h3>
+<p>Per presentazioni e prove a costo zero: la radio riusa gli interventi vocali già registrati, inserendoli ogni due o tre brani, senza chiamare alcun servizio esterno. Lo spettacolo c'è, la spesa no.</p>
+
+<h3>Club Night (22:00 – 04:00)</h3>
+<p>Sei ore di Techno &amp; House in cui tre DJ sintetici si passano il microfono ogni due ore, con beatmatch, jingle dedicati e un Virtual Club visivo sul LedWall. La notte è il laboratorio dove l'AI osa di più.</p>
+
+<h3>Disco del Giorno</h3>
+<p>Ogni giorno un brano esclusivo generato dall'AI (Suno) viene incoronato e messo in onda negli appuntamenti dedicati, in evidenza anche sulla home. È il modo con cui la radio dimostra, ogni giorno, che può produrre musica nuova.</p>
+
+<h3>Umani vs Algoritmo</h3>
+<p>Il pubblico invia i propri brani (con dichiarazione di responsabilità e diritti). Approvati dalla Regia, entrano in rotazione fianco a fianco con quelli dell'AI. Gli ascolti decidono. È la sfida che dà senso a tutto il progetto: non sostituire gli umani, ma metterli alla prova e dar loro un palco.</p>
+
+<h3>Interazione dal vivo</h3>
+<p>Chat con l'AI, richieste e saluti, messaggi vocali (Voice Live) moderati dalla Regia, Wall della community. Ogni contributo del pubblico passa da un disclaimer obbligatorio che tutela radio, ascoltatori e artisti.</p>
+
+<div class="num">
+  <div><b>24/7</b><span>diretta continua, sincronizzata</span></div>
+  <div><b>17</b><span>DJ sintetici con personalità</span></div>
+  <div><b>3</b><span>modelli linguistici orchestrati</span></div>
+  <div><b>1</b><span>Direttore umano in Regia</span></div>
+</div>
+
+<h2><small>04 · Per gli sponsor</small>Uno spazio nuovo per i brand</h2>
+<p>La pubblicità su R-A.I. Radio è nativa e misurabile: spot MP3 o generati dall'AI, programmati per data e frequenza, con approvazione della Regia; la possibilità di legare video e immagini al LedWall; sponsorizzazioni di appuntamenti (segnale orario, Club Night, Disco del Giorno); il banner "Main Partner" in home. Essere partner di R-A.I. significa associare il proprio nome a un esperimento culturale che fa parlare di sé, con un pubblico curioso, tecnologico, affezionato.</p>
+<div class="grid">
+  <div class="card"><span class="k">Formati</span><b class="t">Audio + visual</b>Spot in rotazione, sigle di appuntamento, video e copertine sul LedWall, ticker news.</div>
+  <div class="card"><span class="k">Controllo</span><b class="t">Trasparenza</b>Richieste tracciate, approvazione, scheduling preciso, KPI in Regia.</div>
+</div>
+
+<h2><small>05 · Per i collaboratori</small>Chi cerchiamo</h2>
+<ul>
+  <li><b>Musicisti e produttori</b> per Umani vs Algoritmo e per le notti del Club.</li>
+  <li><b>Autori e voci</b> per nuove personalità DJ e per il Dual Brain (due cervelli, un soggetto).</li>
+  <li><b>Visual artist</b> per effetti LedWall, copertine, video.</li>
+  <li><b>Partner tecnologici</b> su modelli vocali, generazione musicale, distribuzione.</li>
+</ul>
+
+<h2><small>06 · La visione</small>Dove stiamo andando</h2>
+<p>R-A.I. Radio è un prototipo che funziona. La prossima fase: regia predittiva che adatta il palinsesto all'ascolto reale, notiziari generati da fonti verificate sul ticker e in voce, appuntamenti sponsorizzati con LedWall dedicato, archivio Re-Play dei migliori momenti, e una rete di "LedWall pubblici" in locali e spazi partner che trasmettono la radio come installazione permanente.</p>
+<div class="quote">"Non vogliamo dimostrare che una macchina può fare radio. Vogliamo scoprire che radio può fare una macchina — insieme a chi la ascolta."</div>
+
+<div class="cta"><b>Vuoi salire a bordo?</b> Dalla home di R-A.I. Radio: "Diventa Partner" per le proposte commerciali, "Contatti" per collaborazioni, "Inviaci il brano" per sfidare l'algoritmo. Powered by L&amp;C Project.</div>
+
+<footer>R-A.I. Radio · Presentazione del progetto · Prototipo Beta · Orchestrato da GPT, Claude e Gemini · Nessun umano in cabina.</footer>
+</div>
+</body>
+</html>
