@@ -535,19 +535,23 @@ export default function LedWall({
   // (b) fasi del brano: elapsed/remaining dal clock (offset_sec + tempo trascorso dal poll)
   const nowRef = useRef({ info: null, at: 0 });
   useEffect(() => { nowRef.current = { info: nowInfo, at: performance.now() }; }, [nowInfo]);
-  const [phase, setPhase] = useState({ title: false, fx: false });
+  const [phase, setPhase] = useState({ title: false, fx: false, outro: false });
+  // v13.77 · copertina: parte al 72%, zoom rapido (1.5s) a piena dimensione, Ken Burns lento, outro 3.5s
+  const [coverZoomed, setCoverZoomed] = useState(false);
+  useEffect(() => { setCoverZoomed(false); const t = setTimeout(() => setCoverZoomed(true), 60); return () => clearTimeout(t); }, [mediaUrl]);
   useEffect(() => {
     const TITLE_SEC = 6.5, FX_SEC = 26;
     const tick = () => {
       const { info, at } = nowRef.current;
-      if (!info || !info.title || info.is_timeline || !(info.duration_sec > 30)) { setPhase((p) => (p.title || p.fx) ? { title: false, fx: false } : p); return; }
+      if (!info || !info.title || info.is_timeline || !(info.duration_sec > 30)) { setPhase((p) => (p.title || p.fx || p.outro) ? { title: false, fx: false, outro: false } : p); return; }
       const elapsed = (Number(info.offset_sec) || 0) + (performance.now() - at) / 1000;
       const dur = Number(info.duration_sec) || 0;
       const remaining = dur - elapsed;
       const title = elapsed < TITLE_SEC || (remaining < TITLE_SEC && remaining > 0.5);
       const mid = dur / 2;
       const fx = dur >= 90 && elapsed >= mid - FX_SEC / 2 && elapsed < mid + FX_SEC / 2;
-      setPhase((p) => (p.title === title && p.fx === fx) ? p : { title, fx });
+      const outro = remaining < 3.5 && remaining > -1;   // v13.77 · ultimi secondi: copertina torna piccola
+      setPhase((p) => (p.title === title && p.fx === fx && p.outro === outro) ? p : { title, fx, outro });
     };
     tick();
     const iv = setInterval(tick, 500);
@@ -1012,13 +1016,18 @@ export default function LedWall({
             <>
               <img src={l.url} alt="" aria-hidden className="absolute inset-0 w-full h-full object-cover"
                 style={{ filter: "blur(28px) brightness(0.45) saturate(1.2)", transform: "scale(1.15)" }} />
-              <img
-                src={l.url}
-                alt=""
-                className="absolute inset-0 w-full h-full object-contain"
-                style={{ animation: "kenburnsSoft 48s ease-in-out infinite alternate", transformOrigin: "center center",
-                         filter: "drop-shadow(0 18px 40px rgba(0,0,0,0.7))" }}
-              />
+              <div className="absolute inset-0" data-testid="ledwall-cover-zoom" data-zoomed={coverZoomed && !phase.outro ? "true" : "false"}
+                style={{ transform: `scale(${coverZoomed && !phase.outro ? 1 : 0.72})`, transformOrigin: "center center",
+                         transition: phase.outro ? "transform 3.5s ease-in-out, opacity 3.5s ease-in-out" : "transform 1.5s cubic-bezier(.2,.7,.2,1)",
+                         opacity: phase.outro ? 0.55 : 1 }}>
+                <img
+                  src={l.url}
+                  alt=""
+                  className="absolute inset-0 w-full h-full object-contain"
+                  style={{ animation: "kenburnsSoft 48s ease-in-out infinite alternate", transformOrigin: "center center",
+                           filter: "drop-shadow(0 18px 40px rgba(0,0,0,0.7))" }}
+                />
+              </div>
             </>
           ) : (
             <video
@@ -1035,9 +1044,9 @@ export default function LedWall({
       ))}
       <style>{`
         @keyframes kenburnsSoft {
-          0%   { transform: scale(0.72) translate(-1.5%, -1%); }
-          50%  { transform: scale(0.80) translate(1.5%, 1%); }
-          100% { transform: scale(0.88) translate(-1%, 1.5%); }
+          0%   { transform: scale(1.00) translate(-1%, -0.5%); }
+          50%  { transform: scale(1.06) translate(1%, 0.5%); }
+          100% { transform: scale(1.03) translate(-0.5%, 1%); }
         }
         @keyframes raiTitleIn { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: translateY(0); } }
       `}</style>

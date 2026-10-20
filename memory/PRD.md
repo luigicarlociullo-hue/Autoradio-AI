@@ -915,3 +915,6 @@ Vedi turni precedenti in questa sessione:
 - (3) Titolo+artista = overlay DOM `ledwall-track-title` (z-35, sopra i media) visibile nei primi 6.5s e negli ultimi 6.5s del brano, fade 0.9s; fasi calcolate da `nowInfo` (`offset_sec` + tempo dal poll, `duration_sec`). Il titolo canvas resta solo come fallback quando `nowInfo` è assente (Dashboard mini). Solo brani non timeline con durata >30s.
 - (4) Interludio FX: se il brano ha media proprio (`from_track`) e dura ≥90s, a metà brano il layer media sfuma (1.2s) per 26s mostrando l'FX attivo, poi rientra.
 - `PublicRadio.js`: `nowInfo={timelineNow}` sui 3 LedWall (vetrina, consolle, fullscreen). Backend/player/coda/palinsesto non toccati. Verifica: webpack + eslint ok (zero screenshot).
+
+## v13.77 · Copertine LedWall: scala/zoom (2026-10-20)
+- Wrapper `ledwall-cover-zoom`: scala 0.72 al mount → 1.0 in 1.5s (`coverZoomed`), Ken Burns lento a piena dimensione (`kenburnsSoft` 1.00↔1.06, 48s), `phase.outro` (ultimi 3.5s dal clock) → torna a 0.72 con opacità 0.55 in 3.5s. Il resto di v13.76 invariato.
