@@ -405,6 +405,7 @@ export default function LedWall({
   djs = [],
   fillHeight = false,   // v13.6 · quando true, occupa altezza 100% del parent (no aspect-ratio)
   effect = "auto",      // v13.41 · auto | gradient | rings | eq | starfield | holo | logo
+  nowInfo = null,       // v13.76 · {id,title,artist,duration_sec,offset_sec,is_timeline} da /api/stream/now (fasi titolo / interludio FX)
 }) {
   const canvasRef = useRef(null);
   const orbWrapRef = useRef(null);
@@ -502,7 +503,8 @@ export default function LedWall({
             setLedState({ video_source: "photo", video_url: a.url, night_asset: a });
           }
         } else {
-          setLedState({ video_source: d.video_source || "effects", video_url: d.video_url || null, night_asset: null });
+          setLedState({ video_source: d.video_source || "effects", video_url: d.video_url || null, night_asset: null,
+                        from_track: !!d.from_track, track_media: d.track_media || null });
         }
       } catch {}
     };
@@ -510,6 +512,68 @@ export default function LedWall({
     const iv = setInterval(fetchState, 8000);   // poll ogni 8s (piu' reattivo per night rotation)
     return () => { alive = false; clearInterval(iv); };
   }, []);
+
+  // ═══ v13.76 · FLUIDITÀ "TV" ════════════════════════════════════════════════
+  // (a) layer media (video/foto) con crossfade: il layer uscente resta montato
+  //     ~1s a opacità 0 mentre quello entrante sfuma in ingresso.
+  const [mediaLayers, setMediaLayers] = useState([]);   // [{key,url,type,visible}]
+  const mediaUrl = ledState.video_url && ledState.video_source !== "effects" && ledState.video_source !== "cam"
+    ? ledState.video_url : (ledState.video_source === "cam" ? ledState.video_url : null);
+  const mediaType = !mediaUrl ? null : (ledState.video_source === "photo" || isImageUrl(mediaUrl)) ? "photo" : "video";
+  useEffect(() => {
+    setMediaLayers((prev) => {
+      const cur = prev.find((l) => l.visible);
+      if (cur && cur.url === mediaUrl) return prev;
+      const next = prev.map((l) => ({ ...l, visible: false }));
+      if (mediaUrl) next.push({ key: `${mediaUrl}#${Date.now()}`, url: mediaUrl, type: mediaType, visible: true });
+      return next;
+    });
+    const t = setTimeout(() => setMediaLayers((prev) => prev.filter((l) => l.visible)), 1300);
+    return () => clearTimeout(t);
+  }, [mediaUrl, mediaType]);
+
+  // (b) fasi del brano: elapsed/remaining dal clock (offset_sec + tempo trascorso dal poll)
+  const nowRef = useRef({ info: null, at: 0 });
+  useEffect(() => { nowRef.current = { info: nowInfo, at: performance.now() }; }, [nowInfo]);
+  const [phase, setPhase] = useState({ title: false, fx: false });
+  useEffect(() => {
+    const TITLE_SEC = 6.5, FX_SEC = 26;
+    const tick = () => {
+      const { info, at } = nowRef.current;
+      if (!info || !info.title || info.is_timeline || !(info.duration_sec > 30)) { setPhase((p) => (p.title || p.fx) ? { title: false, fx: false } : p); return; }
+      const elapsed = (Number(info.offset_sec) || 0) + (performance.now() - at) / 1000;
+      const dur = Number(info.duration_sec) || 0;
+      const remaining = dur - elapsed;
+      const title = elapsed < TITLE_SEC || (remaining < TITLE_SEC && remaining > 0.5);
+      const mid = dur / 2;
+      const fx = dur >= 90 && elapsed >= mid - FX_SEC / 2 && elapsed < mid + FX_SEC / 2;
+      setPhase((p) => (p.title === title && p.fx === fx) ? p : { title, fx });
+    };
+    tick();
+    const iv = setInterval(tick, 500);
+    return () => clearInterval(iv);
+  }, []);
+  const titleInfo = nowInfo && !nowInfo.is_timeline ? nowInfo : null;
+  const [titleShown, setTitleShown] = useState(null);   // resta montato durante il fade-out
+  useEffect(() => {
+    if (phase.title && titleInfo?.title) { setTitleShown({ title: titleInfo.title, artist: titleInfo.artist || "", on: true }); return; }
+    setTitleShown((t) => (t ? { ...t, on: false } : t));
+    const tm = setTimeout(() => setTitleShown((t) => (t && !t.on ? null : t)), 1000);
+    return () => clearTimeout(tm);
+  }, [phase.title, titleInfo?.title, titleInfo?.artist]);
+  // interludio FX a metà brano: il media del brano sfuma e lascia vedere l'effetto, poi rientra
+  const mediaDimmed = phase.fx && !!ledState.from_track;
+
+  // (c) cambio effetto: dissolvenza (velo scuro in/out) invece del cambio secco
+  const [fxVeil, setFxVeil] = useState(false);
+  const prevEffectRef = useRef(effect);
+  useEffect(() => {
+    if (prevEffectRef.current === effect) return;
+    prevEffectRef.current = effect;
+    setFxVeil(true);
+    const t = setTimeout(() => setFxVeil(false), 450);
+    return () => clearTimeout(t);
+  }, [effect]);
 
   useEffect(() => {
     const cvs = canvasRef.current;
@@ -889,7 +953,7 @@ export default function LedWall({
       const primary = musicTitle
         ? (musicArtist ? `${musicTitle} · ${musicArtist}` : musicTitle)
         : segTitle;
-      if (primary) {
+      if (primary && !nowRef.current.info) {   // v13.76 · con nowInfo il titolo è un overlay DOM a fasi
         ctx.font = `bold ${18 * dpr}px "Orbitron","Share Tech Mono",monospace`;
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
@@ -934,49 +998,72 @@ export default function LedWall({
         boxShadow: "0 0 0 1px rgba(0,229,255,0.25) inset, 0 0 40px rgba(0,191,255,0.25)",
       }}
     >
-      {/* v13.8 · VIDEO OVERLAY REALE — quando Master Clock imposta video/cam
-          v13.10 · Fade automatico: 600ms transition-opacity in entrata/uscita,
-          onEnded triggera un poll immediato dello state per fallback effetti */}
-      {(ledState.video_source === "video" || ledState.video_source === "cam") && ledState.video_url && !isImageUrl(ledState.video_url) && (
-        <video
-          key={ledState.video_url}
-          src={ledState.video_url}
-          autoPlay muted loop playsInline
-          onEnded={() => {
-            // Fallback: se non è in loop (o loop rimosso in futuro), forza refetch
-            setLedState((s) => ({ ...s, video_source: "effects", video_url: null }));
-          }}
-          data-testid="ledwall-video"
-          className="absolute inset-0 w-full h-full object-cover z-30 transition-opacity duration-500"
-          style={{ backgroundColor: "#000", opacity: 1 }}
-        />
-      )}
-      {/* v13.31 · KEN BURNS PHOTO — Virtual Club notturno, foto con pan+zoom */}
-      {((ledState.video_source === "photo") || (ledState.video_source === "video" && isImageUrl(ledState.video_url))) && ledState.video_url && (
+      {/* v13.76 · LAYER MEDIA (video/cam/foto) con crossfade, Ken Burns "soft" per le copertine
+          (scala ridotta ~28% + backdrop sfocato), interludio FX a metà brano (fade out/in). */}
+      {mediaLayers.map((l) => (
         <div
-          key={ledState.video_url}
-          data-testid="ledwall-photo-kenburns"
-          className="absolute inset-0 z-30 overflow-hidden"
-          style={{ backgroundColor: "#000" }}
+          key={l.key}
+          data-testid={l.type === "photo" ? "ledwall-photo-kenburns" : "ledwall-video-layer"}
+          data-visible={l.visible && !mediaDimmed ? "true" : "false"}
+          className="absolute inset-0 z-30 overflow-hidden rai-led-media"
+          style={{ backgroundColor: "#000", opacity: l.visible && !mediaDimmed ? 1 : 0, transition: "opacity 1.2s ease-in-out" }}
         >
-          <img
-            src={ledState.video_url}
-            alt=""
-            className="absolute inset-0 w-full h-full object-cover"
-            style={{
-              animation: "kenburns 22s ease-in-out infinite alternate",
-              transformOrigin: "center center",
-            }}
-          />
-          <style>{`
-            @keyframes kenburns {
-              0%   { transform: scale(1.05) translate(-2%, -1%); filter: brightness(0.92); }
-              50%  { transform: scale(1.15) translate(2%, 1%);   filter: brightness(1.05); }
-              100% { transform: scale(1.08) translate(-1%, 2%);  filter: brightness(0.98); }
-            }
-          `}</style>
+          {l.type === "photo" ? (
+            <>
+              <img src={l.url} alt="" aria-hidden className="absolute inset-0 w-full h-full object-cover"
+                style={{ filter: "blur(28px) brightness(0.45) saturate(1.2)", transform: "scale(1.15)" }} />
+              <img
+                src={l.url}
+                alt=""
+                className="absolute inset-0 w-full h-full object-contain"
+                style={{ animation: "kenburnsSoft 48s ease-in-out infinite alternate", transformOrigin: "center center",
+                         filter: "drop-shadow(0 18px 40px rgba(0,0,0,0.7))" }}
+              />
+            </>
+          ) : (
+            <video
+              key={l.url}
+              src={l.url}
+              autoPlay muted loop playsInline
+              onEnded={() => { setLedState((s) => ({ ...s, video_source: "effects", video_url: null })); }}
+              data-testid="ledwall-video"
+              className="absolute inset-0 w-full h-full object-cover"
+              style={{ backgroundColor: "#000" }}
+            />
+          )}
+        </div>
+      ))}
+      <style>{`
+        @keyframes kenburnsSoft {
+          0%   { transform: scale(0.72) translate(-1.5%, -1%); }
+          50%  { transform: scale(0.80) translate(1.5%, 1%); }
+          100% { transform: scale(0.88) translate(-1%, 1.5%); }
+        }
+        @keyframes raiTitleIn { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: translateY(0); } }
+      `}</style>
+      {/* v13.76 · TITOLO + ARTISTA a fasi (ingresso/uscita brano, ≥6s), fade in/out — sopra i media */}
+      {titleShown && (
+        <div
+          data-testid="ledwall-track-title"
+          data-on={titleShown.on ? "true" : "false"}
+          className="absolute inset-x-0 bottom-[14%] z-[35] flex flex-col items-center text-center px-6 pointer-events-none"
+          style={{ opacity: titleShown.on ? 1 : 0, transition: "opacity 0.9s ease-in-out", animation: titleShown.on ? "raiTitleIn 0.9s ease-out both" : "none" }}
+        >
+          <div className="font-black text-white leading-tight"
+            style={{ fontFamily: '"Orbitron","Share Tech Mono",monospace', fontSize: "clamp(16px, 3.2vmin, 34px)", letterSpacing: "0.04em",
+                     textShadow: "0 0 18px rgba(0,229,255,0.75), 0 2px 18px rgba(0,0,0,0.95)", background: "rgba(2,4,10,0.45)", padding: "6px 16px", borderRadius: 10, backdropFilter: "blur(6px)" }}>
+            {String(titleShown.title).toUpperCase().slice(0, 70)}
+          </div>
+          {titleShown.artist && (
+            <div className="mt-1.5 font-mono" style={{ color: "#B8ECFF", fontSize: "clamp(11px, 1.9vmin, 18px)", letterSpacing: "0.18em", textShadow: "0 0 10px rgba(0,229,255,0.7), 0 1px 10px rgba(0,0,0,0.95)" }}>
+              ▸ {String(titleShown.artist).toUpperCase().slice(0, 60)}
+            </div>
+          )}
         </div>
       )}
+      {/* v13.76 · velo di dissolvenza al cambio effetto */}
+      <div aria-hidden data-testid="ledwall-fx-veil" className="absolute inset-0 z-[25] pointer-events-none"
+        style={{ background: "#000", opacity: fxVeil ? 1 : 0, transition: fxVeil ? "opacity 0.45s ease-in" : "opacity 0.9s ease-out" }} />
       {/* L-1 · NEBULOSA profondità (CSS gradient, opacità 0.12) — dietro tutto */}
       <div
         aria-hidden

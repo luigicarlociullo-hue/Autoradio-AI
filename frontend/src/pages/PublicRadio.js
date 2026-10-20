@@ -834,6 +834,7 @@ export default function PublicRadio() {
             isPlaying={audioOn || broadcastMode === "live_external"}
             current={effectiveCurrent}
             trackOverlay={trackOverlay}
+            nowInfo={timelineNow}
             djs={djs}
             fillHeight
             effect={ledEffect}
@@ -1061,6 +1062,7 @@ export default function PublicRadio() {
               isPlaying={isPlaying || syncPlaying || broadcastMode === "live_external"}
               current={effectiveCurrent}
               trackOverlay={trackOverlay}
+              nowInfo={timelineNow}
               djs={djs}
               fillHeight
               effect={ledEffect}
@@ -1480,6 +1482,7 @@ export default function PublicRadio() {
             isPlaying={isPlaying || broadcastMode === "live_external"}
             current={effectiveCurrent}
             trackOverlay={trackOverlay}
+            nowInfo={timelineNow}
             djs={djs}
             fillHeight
             effect={activeLedEffect}
