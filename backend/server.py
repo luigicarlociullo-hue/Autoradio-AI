@@ -11833,6 +11833,38 @@ async def admin_ai_speaker_set(payload: dict):
 
 # ---------- BPM reprobe batch (offline) ----------
 
+async def _local_audio_for_analysis(url: str) -> Optional[str]:
+    """Ticket #247410: path locale di un brano per l'analisi offline (BPM/intro).
+    Il disco locale e' solo una cache (vuota dopo ogni deploy): se manca, scarica
+    il file dall'Object Storage e lo mette in cache, invece di saltare il brano."""
+    url = (url or "").strip()
+    for prefix, base, sub in (("/api/suno_audio/", SUNO_AUDIO_DIR, "suno"),
+                              ("/api/community_audio/", COMMUNITY_AUDIO_DIR, "community")):
+        if not url.startswith(prefix):
+            continue
+        fname = url[len(prefix):].split("?")[0]
+        if not fname or "/" in fname or ".." in fname:
+            return None
+        p = base / fname
+        if p.exists() and p.stat().st_size > 0:
+            return str(p)
+        if not object_storage.is_enabled():
+            return None
+        data = await object_storage.fetch_mp3(f"{sub}/{fname}")
+        if not data:
+            return None
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            tmp = p.with_name(p.name + ".part")
+            tmp.write_bytes(data)
+            tmp.replace(p)
+            return str(p)
+        except Exception as e:
+            logger.warning(f"[analysis] cache write failed for {fname}: {e}")
+            return None
+    return None
+
+
 @api_router.post("/admin/audio/reprobe-bpm-all")
 async def admin_reprobe_bpm_all(payload: Optional[dict] = None):
     """Analizza offline il BPM di tutti i brani senza `bpm` (o `force=True`
@@ -11854,14 +11886,8 @@ async def admin_reprobe_bpm_all(payload: Optional[dict] = None):
                 url = (tr.get("audio_url") or "").strip()
                 if not url:
                     continue
-                local_path = None
-                if url.startswith("/api/suno_audio/"):
-                    fname = url.rsplit("/", 1)[-1]
-                    p = SUNO_AUDIO_DIR / fname
-                    if p.exists():
-                        local_path = str(p)
+                local_path = await _local_audio_for_analysis(url)
                 if not local_path:
-                    # skippa remoti non locali: costerebbe rete/tempo
                     continue
                 bpm = await bpm_service.detect_bpm_from_path(local_path)
                 if bpm:
@@ -11880,39 +11906,38 @@ async def admin_reprobe_bpm_all(payload: Optional[dict] = None):
 
 # ---------- Intro detection (silence-based, ffprobe) ----------
 
-async def _detect_intro_sec(local_path: str) -> Optional[float]:
-    """Rileva la durata (secondi) dell'intro strumentale di un brano.
-    Usa ffmpeg silencedetect + threshold energetico. Zero costo ECU.
-    Ritorna None se non affidabile (fallback: 8s standard).
-    Nota: la 'vera' intro (prima del cantato) richiederebbe VAD/librosa
-    HPSS; qui rileviamo il primo picco di energia significativa che di
-    solito coincide con il primo drop → adatto al voice-over."""
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "ffprobe", "-v", "error", "-of", "json",
-            "-show_frames", "-select_streams", "a:0",
-            "-show_entries", "frame=pkt_pts_time,pkt_size",
-            "-read_intervals", "%+30",  # analizza solo i primi 30s
-            local_path,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
-        import json as _json
-        data = _json.loads(stdout.decode(errors="ignore") or "{}")
-        frames = data.get("frames") or []
-        if not frames:
-            return None
-        # Rolling avg su 8 frame di pkt_size, trova primo balzo >2x media iniziale
-        sizes = [int(f.get("pkt_size") or 0) for f in frames]
-        times = [float(f.get("pkt_pts_time") or 0) for f in frames]
-        if len(sizes) < 20:
-            return None
-        base = sum(sizes[:10]) / 10 or 1
-        for i in range(15, len(sizes)):
-            window = sum(sizes[i-8:i]) / 8
-            if window > base * 2.2 and times[i] > 3:
-                return round(times[i], 2)
+def _detect_intro_sec_sync(local_path: str) -> Optional[float]:
+    """Ticket #247410: prima usava la dimensione dei pacchetti MP3 (costante sui file
+    CBR normalizzati) e il campo `pkt_pts_time` (rimosso in ffmpeg 5): tornava sempre
+    None. Ora misura l'energia RMS reale dei primi 45s: primo punto (dopo 3s) in cui
+    l'energia media su ~0.5s supera nettamente quella iniziale."""
+    import librosa
+    import numpy as _np
+    y, sr = librosa.load(local_path, sr=22050, mono=True, duration=45.0)
+    if y is None or len(y) < sr * 8:
         return None
+    hop = 512
+    rms = librosa.feature.rms(y=y, hop_length=hop)[0]
+    if not len(rms) or float(_np.max(rms)) <= 0:
+        return None
+    fps = sr / hop
+    win = max(1, int(0.5 * fps))
+    smooth = _np.convolve(rms, _np.ones(win) / win, mode="same")
+    base = float(_np.median(smooth[: max(win, int(2.0 * fps))])) or 1e-6
+    thr = max(base * 2.2, float(_np.max(smooth)) * 0.6)
+    start = int(3.0 * fps)
+    hits = _np.nonzero(smooth[start:] >= thr)[0]
+    if not len(hits):
+        return None
+    t = (start + int(hits[0])) / fps
+    return round(float(t), 2) if t < 40 else None
+
+
+async def _detect_intro_sec(local_path: str) -> Optional[float]:
+    """Rileva la durata (secondi) dell'intro strumentale di un brano (energia RMS,
+    zero costo ECU). Ritorna None se non affidabile (fallback: 8s standard)."""
+    try:
+        return await asyncio.to_thread(_detect_intro_sec_sync, local_path)
     except Exception as e:
         logger.debug(f"[intro-detect] {local_path}: {e}")
         return None
@@ -11930,12 +11955,7 @@ async def admin_detect_intros():
         updated = 0
         async for tr in cursor:
             url = (tr.get("audio_url") or "").strip()
-            local_path = None
-            if url.startswith("/api/suno_audio/"):
-                fname = url.rsplit("/", 1)[-1]
-                p = SUNO_AUDIO_DIR / fname
-                if p.exists():
-                    local_path = str(p)
+            local_path = await _local_audio_for_analysis(url)
             if not local_path:
                 continue
             intro = await _detect_intro_sec(local_path)
