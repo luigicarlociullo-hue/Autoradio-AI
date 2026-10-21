@@ -33,6 +33,41 @@ const LED_ROTATION_MS = 22000;
 
 // SineWaveVisualizer — 3 onde sinusoidali blu neon, reattive all'audio (AnalyserNode).
 // Piccolo canvas leggero sopra il feed della CHAT NEURALE.
+// v13.81 · Ticket #247410: il pulsante "Sostieni il progetto" (fisso in basso) copriva la banda
+// news scorrevole del LedWall in home. Quando si sovrappongono, il pulsante sale sopra la banda.
+function useLiftAboveNewsBand(btnRef) {
+  const [lift, setLift] = useState(0);
+  const liftRef = useRef(0);
+  useEffect(() => {
+    let raf = 0;
+    const check = () => {
+      raf = 0;
+      const btn = btnRef.current;
+      const band = document.querySelector('[data-testid="ledwall-news-band"]');
+      let next = 0;
+      if (btn && band) {
+        const b = band.getBoundingClientRect();
+        const r = btn.getBoundingClientRect();
+        const top = r.top + liftRef.current, bottom = r.bottom + liftRef.current;   // posizione senza sollevamento
+        if (b.height > 0 && b.left < r.right && b.right > r.left && b.top < bottom && b.bottom > top) next = Math.ceil(bottom - b.top + 10);
+      }
+      if (next !== liftRef.current) { liftRef.current = next; setLift(next); }
+    };
+    const schedule = () => { if (!raf) raf = requestAnimationFrame(check); };
+    schedule();
+    window.addEventListener("scroll", schedule, { passive: true });
+    window.addEventListener("resize", schedule);
+    const iv = setInterval(schedule, 1000);   // la banda compare/sparisce con la coda news
+    return () => {
+      window.removeEventListener("scroll", schedule);
+      window.removeEventListener("resize", schedule);
+      clearInterval(iv);
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [btnRef]);
+  return lift;
+}
+
 function SineWaveVisualizer() {
   const canvasRef = React.useRef(null);
   const rafRef = React.useRef(null);
@@ -215,6 +250,8 @@ export default function PublicRadio() {
   // v13.40 · Effetto visivo LedWall (persistito in localStorage)
   const [ledEffect, setLedEffect] = useState(() => { try { return localStorage.getItem("rai:ledwall:effect") || "rotate"; } catch { return "rotate"; } });  // v13.64 · default: rotazione automatica degli effetti
   const [showDonate, setShowDonate] = useState(false);
+  const donateBtnRef = useRef(null);
+  const donateLift = useLiftAboveNewsBand(donateBtnRef);   // v13.81
   const [broadcastMode, setBroadcastMode] = useState("auto");
   const [manualStreamUrl, setManualStreamUrl] = useState("");
   const lastCommandSeqRef = useRef(0);
@@ -1345,6 +1382,7 @@ export default function PublicRadio() {
           an icon-first pill tucked in the bottom-right corner, out of the
           main content column, with safe-area padding for notched devices. */}
       <button
+        ref={donateBtnRef}
         onClick={() => setShowDonate(true)}
         data-testid="donate-open-button"
         className="fixed z-50 group flex items-center gap-2 px-3.5 py-2.5 sm:px-5 sm:py-3 rounded-full font-mono font-bold text-xs uppercase tracking-widest text-white shadow-2xl transition-transform hover:scale-105 active:scale-95 focusable right-3 bottom-3 sm:right-1/2 sm:bottom-6 sm:translate-x-1/2"
@@ -1352,6 +1390,8 @@ export default function PublicRadio() {
           background: "linear-gradient(135deg, #FF6B1A 0%, #FF8A3D 100%)",
           boxShadow: "0 8px 30px rgba(255,107,26,0.45), 0 0 0 1px rgba(255,255,255,0.1) inset",
           marginBottom: "env(safe-area-inset-bottom, 0px)",
+          translate: donateLift ? `0 -${donateLift}px` : undefined,   // v13.81 · sopra la banda news del LedWall
+          transition: "translate 0.35s ease, transform 0.15s",
         }}
       >
         <Heart className="w-4 h-4 shrink-0" fill="currentColor" />
@@ -1768,10 +1808,12 @@ export default function PublicRadio() {
       {/* Donate button (nascosto durante il LedWall a schermo intero) */}
       {(
         <button
+          ref={donateBtnRef}
           onClick={() => setShowDonate(true)}
           data-testid="donate-open-button"
           className="fixed z-50 group flex items-center gap-2 px-3.5 py-2.5 sm:px-5 sm:py-3 rounded-full font-mono font-bold text-xs uppercase tracking-widest text-white shadow-2xl transition-transform hover:scale-105 active:scale-95 focusable right-3 bottom-3 sm:right-6 sm:bottom-6"
-          style={{ background: "linear-gradient(135deg, #FF6B1A 0%, #FF8A3D 100%)", boxShadow: "0 8px 30px rgba(255,107,26,0.45), 0 0 0 1px rgba(255,255,255,0.1) inset", marginBottom: "env(safe-area-inset-bottom, 0px)" }}
+          style={{ background: "linear-gradient(135deg, #FF6B1A 0%, #FF8A3D 100%)", boxShadow: "0 8px 30px rgba(255,107,26,0.45), 0 0 0 1px rgba(255,255,255,0.1) inset", marginBottom: "env(safe-area-inset-bottom, 0px)",
+                   translate: donateLift ? `0 -${donateLift}px` : undefined, transition: "translate 0.35s ease, transform 0.15s" }}
         >
           <Heart className="w-4 h-4 shrink-0" fill="currentColor" />
           <span className="hidden sm:inline">Sostieni il progetto</span>

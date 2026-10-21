@@ -17,7 +17,7 @@
 // Night mode 22:00–04:00 → palette rosso/viola neon + strobo su bass alto.
 // Cross-fade fluido tra modi (α interpolata).
 // ============================================================================
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import radioEngine from "@/lib/radioEngine";
 import { RaiOrbLogo } from "@/components/RaiOrbLogo";
 
@@ -399,11 +399,17 @@ function LedWallNewsTicker({ wallW, wallH, fullWidth = false }) {
 }
 
 // v13.80 · copertine LedWall: secondi di copertina intera a inizio e fine brano
-const COVER_HOLD_SEC = 6, COVER_OUT_SEC = 5;
+// v13.81 · COVER_ZOOM_SEC: durata dello zoom lento che "entra" nella copertina
+const COVER_HOLD_SEC = 6, COVER_OUT_SEC = 5, COVER_ZOOM_SEC = 14;
+
+// v13.81 · segnale orario: secondi in più di orologio sul LedWall dopo la fine del segnale
+const CLOCK_HOLD_SEC = 12;
+const TIME_SIGNAL_KINDS = ["time_signal", "time", "ora_esatta"];
+const CLOCK_CURRENT = { kind: "time_signal" };
 
 export default function LedWall({
   isPlaying = false,
-  current = null,
+  current: currentProp = null,
   trackOverlay = null,
   djs = [],
   fillHeight = false,   // v13.6 · quando true, occupa altezza 100% del parent (no aspect-ratio)
@@ -469,6 +475,19 @@ export default function LedWall({
   }, []);
   // Override della prop `isPlaying` col segnale del Sync Live
   const effectivePlaying = isPlaying || syncPlaying;
+  // v13.81 · Ticket #247410: segnale orario sul LedWall. Le parti accodate al segnale
+  // (pre-segnale → ora → minuti) arrivano da /api/stream/now senza is_timeline, quindi la
+  // Home non le passava come `current` e l'orologio spariva subito. Le riconosciamo anche
+  // da nowInfo.kind e teniamo l'orologio CLOCK_HOLD_SEC secondi dopo la fine del segnale.
+  const isTimeSignal = (c) => TIME_SIGNAL_KINDS.includes(String(c?.kind || "").toLowerCase());
+  const timeSignalNow = isTimeSignal(currentProp) || isTimeSignal(nowInfo);
+  const [clockHold, setClockHold] = useState(false);
+  useEffect(() => {
+    if (timeSignalNow) { setClockHold(true); return undefined; }
+    const t = setTimeout(() => setClockHold(false), CLOCK_HOLD_SEC * 1000);
+    return () => clearTimeout(t);
+  }, [timeSignalNow]);
+  const current = (timeSignalNow || clockHold) && detectMode(currentProp, true) !== "clock" ? CLOCK_CURRENT : currentProp;
   // Ticket #247410: l'overlay DOM del logo (sotto, z-20) copre il canvas e
   // quindi anche l'orologio atomico disegnato li' dentro durante time_signal
   // /jingle. Stessa detezione del draw loop, va nascosto in questi casi.
@@ -507,7 +526,7 @@ export default function LedWall({
           }
         } else {
           setLedState({ video_source: d.video_source || "effects", video_url: d.video_url || null, night_asset: null,
-                        from_track: !!d.from_track, track_media: d.track_media || null });
+                        from_track: !!d.from_track, track_media: d.track_media || null, from_event: !!d.from_event });
         }
       } catch {}
     };
@@ -539,10 +558,8 @@ export default function LedWall({
   const nowRef = useRef({ info: null, at: 0 });
   useEffect(() => { nowRef.current = { info: nowInfo, at: performance.now() }; }, [nowInfo]);
   const [phase, setPhase] = useState({ title: false, fx: false, intro: false, outro: false });
-  // v13.80 · copertina: intera e leggibile all'inizio (6s), poi si apre a tutto schermo con il Ken Burns
-  //           di prima, interludio FX a metà, torna zoomata, e negli ultimi 5s si richiude a copertina intera.
-  const [coverHold, setCoverHold] = useState(true);   // copertina intera per 6s a ogni nuova immagine
-  useEffect(() => { setCoverHold(true); const t = setTimeout(() => setCoverHold(false), COVER_HOLD_SEC * 1000); return () => clearTimeout(t); }, [mediaUrl]);
+  const coverStartRef = useRef(performance.now());   // v13.81 · istante in cui è arrivata la copertina attuale
+  useEffect(() => { coverStartRef.current = performance.now(); }, [mediaUrl]);
   useEffect(() => {
     const TITLE_SEC = 6.5, FX_SEC = 26;
     const tick = () => {
@@ -571,8 +588,52 @@ export default function LedWall({
     return () => clearTimeout(tm);
   }, [phase.title, titleInfo?.title, titleInfo?.artist]);
   // interludio FX a metà brano: il media del brano sfuma e lascia vedere l'effetto, poi rientra
-  const mediaDimmed = phase.fx && !!ledState.from_track;
-  const coverFull = coverHold || phase.intro || phase.outro;   // v13.80 · true = copertina intera, false = zoomata a tutto schermo
+  // v13.81 · durante il segnale orario i media sfumano e lasciano vedere l'orologio (tranne un video proprio dell'evento)
+  const mediaDimmed = (phase.fx && !!ledState.from_track) || (isClockMode && !ledState.from_event);
+
+  // v13.81 · copertina: zoom lento e continuo. Intera per COVER_HOLD_SEC, poi in COVER_ZOOM_SEC "entra"
+  // nell'immagine fino a riempire lo schermo, con un lento movimento; dopo l'interludio FX torna
+  // pian piano indietro (stesso movimento al contrario) fino alla copertina intera negli ultimi COVER_OUT_SEC.
+  const coverElsRef = useRef(new Set());
+  const coverRef = useCallback((el) => { if (el) coverElsRef.current.add(el); }, []);
+  useEffect(() => {
+    const FX_SEC = 26;
+    const ease = (x) => { const k = Math.min(1, Math.max(0, x)); return 0.5 - 0.5 * Math.cos(k * Math.PI); };
+    let raf = 0;
+    const loop = () => {
+      raf = requestAnimationFrame(loop);
+      const els = coverElsRef.current;
+      if (!els.size) return;
+      const now = performance.now();
+      const { info, at } = nowRef.current;
+      const sinceCover = (now - coverStartRef.current) / 1000;
+      const hasInfo = !!(info && info.title && !info.is_timeline && Number(info.duration_sec) > 30);
+      const elapsed = hasInfo ? (Number(info.offset_sec) || 0) + (now - at) / 1000 : sinceCover;
+      const eIn = Math.min(sinceCover, elapsed);   // una nuova copertina riparte sempre intera
+      const dur = hasInfo ? Number(info.duration_sec) : 0;
+      const fxStart = dur >= 90 ? dur / 2 - FX_SEC / 2 : dur / 2;
+      const fxEnd = dur >= 90 ? dur / 2 + FX_SEC / 2 : dur / 2;
+      const zoomIn = hasInfo ? Math.min(COVER_ZOOM_SEC, Math.max(3, fxStart - COVER_HOLD_SEC)) : COVER_ZOOM_SEC;
+      let z;   // 0 = copertina intera · 1 = zoomata a tutto schermo
+      if (eIn < COVER_HOLD_SEC) z = 0;
+      else if (!hasInfo || elapsed < fxEnd) z = ease((eIn - COVER_HOLD_SEC) / zoomIn);
+      else z = 1 - ease((elapsed - fxEnd) / Math.max(3, dur - COVER_OUT_SEC - fxEnd));
+      const t = now / 1000;
+      els.forEach((el) => {
+        if (!el.isConnected) { els.delete(el); return; }
+        const img = el.firstElementChild;
+        const iw = img?.naturalWidth, ih = img?.naturalHeight, cw = el.clientWidth, ch = el.clientHeight;
+        if (!iw || !ih || !cw || !ch) return;
+        const r = Math.min(cw / iw, ch / ih);
+        const fill = Math.max(cw / (iw * r), ch / (ih * r)) * 1.08;   // scala che riempie lo schermo (+8% di margine per il movimento)
+        const s = 1 + (fill - 1) * z;
+        const tx = z * 2.2 * Math.sin(t / 9), ty = z * 1.6 * Math.cos(t / 11);
+        el.style.transform = `translate(${tx.toFixed(3)}%, ${ty.toFixed(3)}%) scale(${s.toFixed(4)})`;
+      });
+    };
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
+  }, []);
 
   // (c) cambio effetto: dissolvenza (velo scuro in/out) invece del cambio secco
   const [fxVeil, setFxVeil] = useState(false);
@@ -1022,21 +1083,9 @@ export default function LedWall({
             <>
               <img src={l.url} alt="" aria-hidden className="absolute inset-0 w-full h-full object-cover"
                 style={{ filter: "blur(28px) brightness(0.45) saturate(1.2)", transform: "scale(1.15)" }} />
-              {/* v13.80 · zoomata: riempie tutto lo schermo con il Ken Burns di prima */}
-              <div className="absolute inset-0" data-testid="ledwall-cover-zoom" data-zoomed={coverFull ? "false" : "true"}
-                style={{ opacity: coverFull ? 0 : 1, transform: `scale(${coverFull ? 0.9 : 1})`, transformOrigin: "center center",
-                         transition: "opacity 1.6s ease-in-out, transform 2s cubic-bezier(.2,.7,.2,1)" }}>
-                <img
-                  src={l.url}
-                  alt=""
-                  className="absolute inset-0 w-full h-full object-cover"
-                  style={{ animation: "kenburnsFull 22s ease-in-out infinite alternate", transformOrigin: "center center" }}
-                />
-              </div>
-              {/* v13.80 · copertina intera: tutta visibile, titoli leggibili (inizio e fine brano) */}
-              <div className="absolute inset-0" data-testid="ledwall-cover-full" data-on={coverFull ? "true" : "false"}
-                style={{ opacity: coverFull ? 1 : 0, transform: `scale(${coverFull ? 1 : 1.12})`, transformOrigin: "center center",
-                         transition: "opacity 1.6s ease-in-out, transform 2s cubic-bezier(.2,.7,.2,1)" }}>
+              {/* v13.81 · copertina unica: zoom lento continuo guidato dal brano (vedi coverRef) */}
+              <div ref={coverRef} className="absolute inset-0" data-testid="ledwall-cover-zoom"
+                style={{ transformOrigin: "center center", willChange: "transform" }}>
                 <img
                   src={l.url}
                   alt=""
