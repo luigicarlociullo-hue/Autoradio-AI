@@ -33,6 +33,14 @@ export default function MasterClockPanel() {
   const [saving, setSaving] = useState(false);
   const [nowHour, setNowHour] = useState(new Date().getHours());
   const [videoLib, setVideoLib] = useState([]);
+  const [containers, setContainers] = useState([]);   // v13.81 · contenitori notturni (fascia colorata sulle ore coperte)
+
+  const containerAt = (hour) => containers.find((c) => {
+    if (c.active === false) return false;
+    const a = parseInt((c.start || "0").split(":")[0], 10), b = parseInt((c.end || "0").split(":")[0], 10);
+    if (Number.isNaN(a) || Number.isNaN(b) || a === b) return false;
+    return a < b ? (hour >= a && hour < b) : (hour >= a || hour < b);
+  });
 
   const load = async () => {
     try {
@@ -41,6 +49,10 @@ export default function MasterClockPanel() {
     } catch (e) {
       toast.error("Errore caricamento palinsesto");
     }
+    try {
+      const c = await api.get("/admin/containers");
+      setContainers(c.data.containers || []);
+    } catch (e) {}
     // v13.9 · carica libreria video per "Link Partner dinamico" (dropdown)
     try {
       const v = await api.get("/admin/ledwall/videos");
@@ -108,11 +120,22 @@ export default function MasterClockPanel() {
         </div>
       </div>
 
+      {containers.filter((c) => c.active !== false).length > 0 && (
+        <div className="mb-2 flex flex-wrap items-center gap-1.5" data-testid="clock-containers-legend">
+          <span className="text-[9px] font-mono uppercase tracking-widest text-zinc-500">Contenitori notturni:</span>
+          {containers.filter((c) => c.active !== false).map((c) => (
+            <span key={c.id} className="text-[9px] font-mono px-1.5 py-0.5 rounded border" style={{ borderColor: `${c.color}66`, color: c.color, background: `${c.color}12` }}>
+              <b className="font-display tracking-widest">{c.name}</b> {c.start}–{c.end}{c.is_active_now ? " · IN ONDA" : ""}
+            </span>
+          ))}
+        </div>
+      )}
       <div className="grid grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-1.5">
         {slots.map((s) => {
           const isNow = s.hour === nowHour;
           const color = KIND_COLOR[s.kind] || "#666";
           const filled = !!(s.title || s.subject) || s.kind !== "music";
+          const cont = containerAt(s.hour);
           return (
             <button
               key={s.hour}
@@ -124,8 +147,16 @@ export default function MasterClockPanel() {
                 border: `1px solid ${isNow ? color : filled ? `${color}66` : "rgba(255,255,255,0.08)"}`,
                 boxShadow: isNow ? `0 0 12px ${color}88` : "none",
                 minHeight: 54,
+                ...(cont ? { boxShadow: `inset 0 3px 0 ${cont.color}${isNow ? `, 0 0 12px ${color}88` : ""}` } : {}),
               }}
             >
+              {cont && (
+                <div className="absolute top-1 right-1 text-[7.5px] font-display font-black tracking-widest px-1 rounded"
+                     style={{ background: `${cont.color}22`, color: cont.color }} title={`Contenitore ${cont.name} · ${cont.start}–${cont.end}`}
+                     data-testid={`clock-slot-container-${s.hour}`}>
+                  {cont.name}
+                </div>
+              )}
               <div
                 className="text-[11px] font-mono font-bold leading-none"
                 style={{ color: isNow ? "#fff" : "#eee" }}

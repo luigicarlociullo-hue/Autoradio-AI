@@ -179,6 +179,18 @@ function CornerAccents() {
   );
 }
 
+// v13.81 · Contenitore notturno in onda (LUMA / HEX / NYX)
+function ContainerBadge({ c }) {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[9px] font-mono tracking-widest border"
+      style={{ borderColor: `${c.color || "#7DF9FF"}88`, color: c.color || "#7DF9FF", background: `${c.color || "#7DF9FF"}14` }}
+      title={`${c.description || "Contenitore notturno"} · ${c.start}–${c.end}`} data-testid="active-container-badge">
+      <span className="font-display font-black">{c.name}</span><span className="opacity-70">{c.start}–{c.end}</span>
+    </span>
+  );
+}
+
+
 function KindBadge({ kind }) {
   const map = {
     music:      { label: "MUSIC",      color: "#00BFFF", Icon: Music2 },
@@ -225,6 +237,17 @@ export default function PublicRadio() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [syncPlaying, setSyncPlaying] = useState(false);  // v13.65 · stato reale del Sync Live (evento rai:sync:play)
   const [discoDelGiorno, setDiscoDelGiorno] = useState(null);  // v13.74 · brano dell'appuntamento Timeline "Disco del Giorno" di oggi (aired/scheduled), lettura pubblica
+  const [activeContainer, setActiveContainer] = useState(null);  // v13.81 · contenitore notturno in onda (LUMA/HEX/NYX), lettura pubblica
+  useEffect(() => {
+    let live = true;
+    const load = async () => {
+      try { const r = await api.get("/containers/active"); if (live) setActiveContainer(r.data?.container || null); }
+      catch (e) { if (live) setActiveContainer(null); }
+    };
+    load();
+    const iv = setInterval(load, 60000);
+    return () => { live = false; clearInterval(iv); };
+  }, []);
   useEffect(() => {
     let live = true;
     const load = async () => {
@@ -1049,7 +1072,10 @@ export default function PublicRadio() {
                 />
               )}
               <div className="min-w-0 flex-1" data-testid="now-playing-title">
-                <div className="text-[9px] font-mono uppercase tracking-[0.3em] text-cyan-400/80">In onda</div>
+                <div className="flex items-center gap-2">
+                  <div className="text-[9px] font-mono uppercase tracking-[0.3em] text-cyan-400/80">In onda</div>
+                  {activeContainer && <ContainerBadge c={activeContainer} />}
+                </div>
                 <div className="font-display text-base sm:text-lg font-black text-white leading-tight line-clamp-3 break-words" data-testid="current-title">
                   {displayCurrent?.title || "R-A.I. Radio"}
                 </div>
@@ -1606,6 +1632,7 @@ export default function PublicRadio() {
                 <div className="flex items-center gap-2">
                   <span className="text-[9px] font-mono uppercase tracking-[0.3em] text-cyan-400/80">In onda</span>
                   {displayCurrent?.kind && <KindBadge kind={displayCurrent.kind} />}
+                  {activeContainer && <ContainerBadge c={activeContainer} />}
                 </div>
                 <div className="font-display text-sm sm:text-base font-black text-white leading-tight line-clamp-2 break-words" data-testid="current-title">
                   {displayCurrent?.title || "R-A.I. Radio"}

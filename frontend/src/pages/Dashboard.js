@@ -17,6 +17,7 @@ import AdManagerPanel from "@/components/AdManagerPanel";
 import { GoLivePanel, LedWallMiniPreview } from "@/components/CommandCenter2Panels";
 import ArchivioControlloTotale, { useGenres } from "@/components/ArchivioControlloTotale";
 import GenreSlotsPanel from "@/components/GenreSlotsPanel";
+import ContainersPanel from "@/components/ContainersPanel";
 import CoverVideoPicker from "@/components/CoverVideoPicker";
 import LedWallNewsPanel from "@/components/LedWallNewsPanel";
 import DemoModePanel from "@/components/DemoModePanel";
@@ -271,6 +272,8 @@ export default function Dashboard() {
                 <SmartFlowTimelinePanel />
                 {/* v13.80 · Generi gestiti dall'utente + fasce orarie per genere */}
                 <GenreSlotsPanel />
+                {/* v13.81 · Contenitori notturni LUMA / HEX / NYX */}
+                <ContainersPanel />
                 <PowerPlayMonitor />
                 <RotationRulesPanel />
               </div>

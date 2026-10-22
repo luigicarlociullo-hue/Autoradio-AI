@@ -774,7 +774,8 @@ async def _active_genre_names() -> Optional[str]:
         now_local = datetime.now(ZoneInfo("Europe/Rome"))
     except Exception:
         now_local = datetime.now(timezone.utc)
-    slugs = await _active_genre_slugs(now_local)
+    _c = await _active_container(now_local)   # v13.81 · in contenitore vincono i suoi generi
+    slugs = (_c.get("genre_slugs") if _c else None) or await _active_genre_slugs(now_local)
     if not slugs:
         return None
     docs = await db.genres.find({"slug": {"$in": slugs}}, {"_id": 0, "name": 1}).to_list(50)
@@ -866,14 +867,259 @@ async def admin_delete_genre_slot(slot_id: str):
     return {"ok": True}
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# v13.81 · CONTENITORI NOTTURNI (`containers`): blocchi a orario fisso con nome,
+# fascia, generi ammessi, intervallo BPM, jingle propri e DJ propri.
+# In contenitore: _clock_pick_track → solo generi+BPM del contenitore in progressione
+# BPM crescente; _clock_pick_dj_jingle → solo i suoi jingle (nessuno se vuoto);
+# DJ (generate_segment / vocali preregistrati) → solo i suoi DJ (fallback ai DJ
+# di oggi se vuoto). Fuori dai contenitori: tutto identico a prima.
+# ═══════════════════════════════════════════════════════════════════════════
+_CONTAINER_SEED_GENRES = [("deep-house", "Deep House"), ("house", "House"), ("tech-house", "Tech House"),
+                          ("techno", "Techno"), ("progressive", "Progressive")]
+_CONTAINER_SEED = [
+    {"name": "LUMA", "start": "22:00", "end": "00:00", "genre_slugs": ["deep-house", "pop", "relax"],
+     "bpm_min": 100, "bpm_max": 122, "color": "#7DF9FF", "night_slot": 1,
+     "description": "Deep house e brani più leggeri"},
+    {"name": "HEX", "start": "00:00", "end": "02:00", "genre_slugs": ["house", "tech-house", "dance"],
+     "bpm_min": 120, "bpm_max": 128, "color": "#C89AFF", "night_slot": 2,
+     "description": "House, tech-house e derivati"},
+    {"name": "NYX", "start": "02:00", "end": "04:00", "genre_slugs": ["techno", "progressive"],
+     "bpm_min": 126, "bpm_max": 140, "color": "#FF5E8A", "night_slot": 3,
+     "description": "Techno e progressive"},
+]
+_CONTAINER_FIELDS = ("name", "start", "end", "genre_slugs", "bpm_min", "bpm_max", "jingle_ids", "dj_ids",
+                     "active", "color", "description")
+
+
+async def ensure_containers_seeded():
+    if await db.containers.count_documents({}) > 0:
+        return
+    now = now_iso()
+    n = await db.genres.count_documents({})
+    for sl, nm in _CONTAINER_SEED_GENRES:
+        if not await db.genres.find_one({"slug": sl}, {"_id": 0, "id": 1}):
+            await db.genres.insert_one({"id": uuid.uuid4().hex[:12], "slug": sl, "name": nm, "order": n, "created_at": now})
+            n += 1
+    for i, c in enumerate(_CONTAINER_SEED):
+        # DJ omonimo (es. DJ "LUMA" → contenitore LUMA), altrimenti il DJ dello slot notte 1/2/3
+        night_djs = await db.djs.find({"name": {"$regex": f"^{c['name']}$", "$options": "i"}}, {"_id": 0, "id": 1}).to_list(10)
+        if not night_djs:
+            night_djs = await db.djs.find({"night_slot": c["night_slot"]}, {"_id": 0, "id": 1}).to_list(10)
+        doc = {k: v for k, v in c.items() if k != "night_slot"}
+        doc.update({"id": uuid.uuid4().hex[:12], "jingle_ids": [], "dj_ids": [d["id"] for d in night_djs],
+                    "active": True, "order": i, "created_at": now})
+        await db.containers.insert_one(doc)
+    logger.info("[containers] seed iniziale: LUMA/HEX/NYX creati (DJ notturni slot 1/2/3 migrati)")
+
+
+async def _active_container(now_local: datetime) -> Optional[dict]:
+    cur = now_local.hour * 60 + now_local.minute
+    docs = await db.containers.find({"active": {"$ne": False}}, {"_id": 0}).sort("order", 1).to_list(50)
+    for c in docs:
+        a, b = _hhmm_to_min(c.get("start")), _hhmm_to_min(c.get("end"))
+        if a == b:
+            continue
+        inside = (a <= cur < b) if a < b else (cur >= a or cur < b)
+        if inside:
+            return c
+    return None
+
+
+async def _active_container_now() -> Optional[dict]:
+    try:
+        from zoneinfo import ZoneInfo
+        now_local = datetime.now(ZoneInfo("Europe/Rome"))
+    except Exception:
+        now_local = datetime.now(timezone.utc)
+    return await _active_container(now_local)
+
+
+def _container_public(c: dict) -> dict:
+    return {k: c.get(k) for k in ("id", "name", "start", "end", "color", "description", "genre_slugs", "bpm_min", "bpm_max")}
+
+
+def _container_clean(payload: dict, cur: Optional[dict] = None) -> dict:
+    out: dict = {}
+    if "name" in payload:
+        nm = (payload.get("name") or "").strip()[:40]
+        if not nm:
+            raise HTTPException(400, "Nome contenitore richiesto")
+        out["name"] = nm
+    for k in ("start", "end"):
+        if k in payload:
+            out[k] = str(payload.get(k) or "00:00")[:5]
+    st, en = out.get("start", (cur or {}).get("start")), out.get("end", (cur or {}).get("end"))
+    if st is not None and en is not None and _hhmm_to_min(st) == _hhmm_to_min(en):
+        raise HTTPException(400, "Inizio e fine coincidono")
+    for k in ("bpm_min", "bpm_max"):
+        if k in payload:
+            v = payload.get(k)
+            try:
+                out[k] = None if v in (None, "") else max(40, min(220, int(v)))
+            except (TypeError, ValueError):
+                raise HTTPException(400, f"{k} deve essere un intero")
+    bmin, bmax = out.get("bpm_min", (cur or {}).get("bpm_min")), out.get("bpm_max", (cur or {}).get("bpm_max"))
+    if bmin is not None and bmax is not None and bmin > bmax:
+        raise HTTPException(400, "BPM min non può superare BPM max")
+    for k in ("genre_slugs", "jingle_ids", "dj_ids"):
+        if k in payload:
+            out[k] = list(dict.fromkeys(str(x).strip() for x in (payload.get(k) or []) if str(x).strip()))
+    if "active" in payload:
+        out["active"] = payload.get("active") is not False
+    if "color" in payload:
+        col = str(payload.get("color") or "").strip()[:9]
+        out["color"] = col if re.match(r"^#[0-9a-fA-F]{6}$", col) else (cur or {}).get("color") or "#7DF9FF"
+    if "description" in payload:
+        out["description"] = (payload.get("description") or "").strip()[:120]
+    return out
+
+
+async def _container_validate_refs(doc: dict):
+    slugs = doc.get("genre_slugs")
+    if slugs:
+        known = {g["slug"] for g in await db.genres.find({"slug": {"$in": slugs}}, {"_id": 0, "slug": 1}).to_list(200)}
+        if set(slugs) - known:
+            raise HTTPException(404, f"Generi sconosciuti: {sorted(set(slugs) - known)}")
+    jids = doc.get("jingle_ids")
+    if jids:
+        ok = {t["id"] for t in await db.tracks.find({"id": {"$in": jids}, "is_jingle": True, "deleted_at": None}, {"_id": 0, "id": 1}).to_list(500)}
+        if set(jids) - ok:
+            raise HTTPException(404, f"Jingle non trovati nel Magazzino: {sorted(set(jids) - ok)}")
+    dids = doc.get("dj_ids")
+    if dids:
+        ok = {d["id"] for d in await db.djs.find({"id": {"$in": dids}}, {"_id": 0, "id": 1}).to_list(100)}
+        if set(dids) - ok:
+            raise HTTPException(404, f"DJ non trovati: {sorted(set(dids) - ok)}")
+
+
+async def _containers_decorate(docs: list) -> list:
+    act = await _active_container_now()
+    jids = sorted({j for c in docs for j in (c.get("jingle_ids") or [])})
+    dids = sorted({d for c in docs for d in (c.get("dj_ids") or [])})
+    jmap = {t["id"]: t for t in await db.tracks.find({"id": {"$in": jids}}, {"_id": 0, "id": 1, "title": 1, "duration_sec": 1}).to_list(500)} if jids else {}
+    dmap = {d["id"]: d for d in await db.djs.find({"id": {"$in": dids}}, {"_id": 0, "id": 1, "name": 1, "voice_key": 1}).to_list(100)} if dids else {}
+    gmap = {g["slug"]: g["name"] for g in await db.genres.find({}, {"_id": 0, "slug": 1, "name": 1}).to_list(500)}
+    for c in docs:
+        c["is_active_now"] = bool(act and act["id"] == c["id"])
+        c["jingles"] = [jmap[j] for j in (c.get("jingle_ids") or []) if j in jmap]
+        c["djs"] = [dmap[d] for d in (c.get("dj_ids") or []) if d in dmap]
+        c["genre_names"] = [gmap.get(s, s) for s in (c.get("genre_slugs") or [])]
+        q = {"deleted_at": None, "status": "ready", "genre_category": {"$in": c.get("genre_slugs") or []}}
+        c["tracks_genre"] = await db.tracks.count_documents(q) if c.get("genre_slugs") else 0
+        if c.get("bpm_min") is not None or c.get("bpm_max") is not None:
+            q["bpm"] = {k: v for k, v in (("$gte", c.get("bpm_min")), ("$lte", c.get("bpm_max"))) if v is not None}
+        c["tracks_eligible"] = await db.tracks.count_documents(q) if c.get("genre_slugs") else 0
+    return docs
+
+
+@api_router.get("/containers/active")
+async def public_active_container():
+    c = await _active_container_now()
+    return {"container": _container_public(c) if c else None}
+
+
+@api_router.get("/admin/containers")
+async def admin_list_containers():
+    docs = await db.containers.find({}, {"_id": 0}).sort([("order", 1), ("start", 1)]).to_list(50)
+    return {"containers": await _containers_decorate(docs)}
+
+
+@api_router.post("/admin/containers")
+async def admin_create_container(payload: dict):
+    doc = _container_clean({"name": payload.get("name"), "start": payload.get("start") or "22:00", "end": payload.get("end") or "00:00",
+                            **{k: payload.get(k) for k in _CONTAINER_FIELDS if k in payload and k not in ("name", "start", "end")}})
+    await _container_validate_refs(doc)
+    doc.setdefault("genre_slugs", []); doc.setdefault("jingle_ids", []); doc.setdefault("dj_ids", [])
+    doc.setdefault("active", True); doc.setdefault("color", "#7DF9FF"); doc.setdefault("description", "")
+    doc.setdefault("bpm_min", None); doc.setdefault("bpm_max", None)
+    doc.update({"id": uuid.uuid4().hex[:12], "order": await db.containers.count_documents({}), "created_at": now_iso()})
+    await db.containers.insert_one(dict(doc))
+    return {"ok": True, "container": doc}
+
+
+@api_router.patch("/admin/containers/{cid}")
+async def admin_update_container(cid: str, payload: dict):
+    cur = await db.containers.find_one({"id": cid}, {"_id": 0})
+    if not cur:
+        raise HTTPException(404, "Contenitore non trovato")
+    upd = _container_clean({k: payload[k] for k in _CONTAINER_FIELDS if k in payload}, cur)
+    await _container_validate_refs(upd)
+    if upd:
+        upd["updated_at"] = now_iso()
+        await db.containers.update_one({"id": cid}, {"$set": upd})
+    doc = await db.containers.find_one({"id": cid}, {"_id": 0})
+    return {"ok": True, "container": (await _containers_decorate([doc]))[0]}
+
+
+@api_router.delete("/admin/containers/{cid}")
+async def admin_delete_container(cid: str):
+    r = await db.containers.delete_one({"id": cid})
+    if not r.deleted_count:
+        raise HTTPException(404, "Contenitore non trovato")
+    return {"ok": True}
+
+
+async def _container_pick_track(c: dict, base_q: dict, proj: dict) -> Optional[dict]:
+    """Brano del contenitore in progressione BPM crescente. Stato `container_progress`
+    su station.state (ultimo BPM pescato per questo contenitore). Senza candidati
+    genere+BPM → solo genere (meno recenti, casuale). None → rotazione normale."""
+    slugs = c.get("genre_slugs") or []
+    if not slugs:
+        return None
+    gq = {**base_q, "genre_category": {"$in": slugs}}
+    bq = {"$ne": None}
+    if c.get("bpm_min") is not None:
+        bq["$gte"] = int(c["bpm_min"])
+    if c.get("bpm_max") is not None:
+        bq["$lte"] = int(c["bpm_max"])
+    proj_b = {**proj, "bpm": 1, "last_played_at": 1}
+    cands = await db.tracks.find({**gq, "bpm": bq}, proj_b).sort([("bpm", 1), ("last_played_at", 1)]).to_list(500)
+    if cands:
+        st = await db.station.find_one({"_id": "state"}, {"_id": 0, "container_progress": 1}) or {}
+        prog = st.get("container_progress") or {}
+        same_run = prog.get("container_id") == c["id"]
+        last_bpm = prog.get("last_bpm") if same_run else None
+        played = set(prog.get("played_ids") or []) if same_run else set()
+        try:
+            fresh = last_bpm is not None and (datetime.now(timezone.utc) - datetime.fromisoformat(prog.get("updated_at"))).total_seconds() < 6 * 3600
+        except Exception:
+            fresh = False
+        # BPM crescente "o simile": stesso BPM ammesso, ma mai lo stesso brano due volte nello stesso giro
+        nxt = [t for t in cands if fresh and (t.get("bpm") or 0) >= last_bpm and t["id"] not in played]
+        if not nxt:
+            nxt = cands  # fine corsa (o primo giro): riparte dal BPM più basso
+            played = set()
+        lo = nxt[0].get("bpm")
+        same = [t for t in nxt if t.get("bpm") == lo]
+        tr = same[0]  # già ordinati per last_played_at: il meno recente a parità di BPM
+        played.add(tr["id"])
+        await db.station.update_one({"_id": "state"}, {"$set": {"container_progress": {
+            "container_id": c["id"], "last_bpm": tr.get("bpm"), "track_id": tr["id"], "played_ids": sorted(played)[:600],
+            "updated_at": now_iso()}}}, upsert=True)
+        tr.pop("last_played_at", None)
+        tr["container_id"] = c["id"]
+        return tr
+    pool = await db.tracks.find(gq, proj).sort([("last_played_at", 1)]).limit(15).to_list(15)
+    if pool:
+        tr = random.choice(pool)
+        tr["container_id"] = c["id"]
+        return tr
+    return None
+
+
 async def ensure_seeded():
     await ensure_genres_seeded()   # v13.80
+    await ensure_containers_seeded()   # v13.81
     # Il roster diurno ha 3 DJ (Leo/Aria/Max). Purge dei DJ vecchi che non
     # sono più nel roster ufficiale, MA preserva i DJ notturni (night_slot
-    # in [1,2,3]) — quelli sono gestiti separatamente dal seed_night_djs.py.
+    # in [1,2,3]) — quelli sono gestiti separatamente dal seed_night_djs.py —
+    # e i DJ assegnati a un contenitore (v13.81).
     default_names = {d["name"] for d in DEFAULT_DJS}
+    _container_dj_ids = sorted({d for c in await db.containers.find({}, {"_id": 0, "dj_ids": 1}).to_list(50) for d in (c.get("dj_ids") or [])})
     await db.djs.delete_many({
         "name": {"$nin": list(default_names)},
+        "id": {"$nin": _container_dj_ids},
         "$or": [{"night_slot": None}, {"night_slot": {"$exists": False}}],
     })
     # Assicura che i 3 DJ ufficiali esistano (idempotente).
@@ -3075,7 +3321,12 @@ async def generate_segment(kind: Optional[str] = None, topic: Optional[str] = No
         return None  # programmazione diurna
 
     active_slot = _night_slot(hour_local)
-    if active_slot is not None:
+    # v13.81 · CONTENITORE attivo con DJ propri → solo quelli (fallback ai DJ di oggi se vuoto/non trovati)
+    _cont = await _active_container_now()
+    _cont_djs = [d for d in djs if d.get("id") in set((_cont or {}).get("dj_ids") or [])]
+    if _cont_djs:
+        djs = _cont_djs
+    elif active_slot is not None:
         night_djs = [d for d in djs if int(d.get("night_slot") or 0) == active_slot]
         if night_djs:
             djs = night_djs  # se abbiamo un DJ per lo slot, usiamo solo quello
@@ -10099,10 +10350,20 @@ def _demo_voice_query() -> dict:
 
 
 async def _clock_pick_demo_voice(exclude_ids: Optional[set] = None) -> Optional[dict]:
-    """Pesca a caso un vocale DJ esistente con file audio presente su disco."""
+    """Pesca a caso un vocale DJ esistente con file audio presente su disco.
+    v13.81 · in contenitore con DJ propri: solo i vocali di quei DJ (fallback a tutti se nessuno)."""
+    _mq = _demo_voice_query()
+    try:
+        _cont = await _active_container_now()
+        if _cont and _cont.get("dj_ids"):
+            _names = [d["name"] for d in await db.djs.find({"id": {"$in": _cont["dj_ids"]}}, {"_id": 0, "name": 1}).to_list(50)]
+            if _names and await db.segments.count_documents({**_mq, "dj_name": {"$in": _names}}) > 0:
+                _mq = {**_mq, "dj_name": {"$in": _names}}
+    except Exception as e:
+        logger.debug(f"[containers] demo voice filter skip: {e}")
     try:
         cands = await db.segments.aggregate([
-            {"$match": _demo_voice_query()},
+            {"$match": _mq},
             {"$sample": {"size": 8}},
             {"$project": {"_id": 0, "id": 1, "kind": 1, "title": 1, "dj_name": 1, "speech_audio_url": 1}},
         ]).to_list(8)
@@ -10182,6 +10443,23 @@ async def _clock_pick_dj_jingle(exclude_ids: Optional[set] = None) -> Optional[d
     # (canzoni) la applica da v13.49, questa funzione no: un jingle assegnato a
     # "Mattina" continuava a suonare in qualsiasi fascia oraria.
     _slot_q = _broadcast_query(_now_local)
+    # v13.81 · CONTENITORE attivo: solo i suoi jingle; se non ne ha, nessun jingle in contenitore
+    _cont = await _active_container(_now_local)
+    if _cont:
+        _jids = [j for j in (_cont.get("jingle_ids") or []) if j and not (exclude_ids and j in exclude_ids)]
+        if not _jids:
+            return None
+        tr = await db.tracks.find_one(
+            {"id": {"$in": _jids}, "is_jingle": True, "status": "ready", "audio_url": {"$ne": None},
+             "on_air": {"$ne": False}, "deleted_at": None, "duration_sec": {"$gt": 0}},
+            {"_id": 0, "id": 1, "title": 1, "artist": 1, "audio_url": 1, "duration_sec": 1, "real_duration_sec": 1},
+            sort=[("last_played_at", 1)])
+        if not tr:
+            return None
+        tr["duration_sec"] = _pad_short(float(tr.get("duration_sec") or 20))
+        tr["is_dj_jingle"] = True
+        tr["container_id"] = _cont["id"]
+        return tr
     q = {
         "is_jingle": True, "status": "ready", "audio_url": {"$ne": None},
         "on_air": {"$ne": False}, "deleted_at": None,
@@ -10318,6 +10596,14 @@ async def _clock_pick_track(exclude_ids: Optional[set] = None) -> Optional[dict]
     # prevedibile — poi aggiorniamo last_played_at come prima.
     _pool_size = 15
     _proj = {"_id": 0, "id": 1, "title": 1, "artist": 1, "audio_url": 1, "duration_sec": 1, "real_duration_sec": 1, "bpm": 1}
+    # v13.81 · CONTENITORE attivo: solo generi+BPM del contenitore in progressione BPM crescente
+    # (→ solo generi se nessuno rispetta i BPM → rotazione normale se vuoto: mai silenzio)
+    _cont = await _active_container(now_local)
+    if _cont:
+        tr = await _container_pick_track(_cont, q, _proj)
+        if tr:
+            tr["duration_sec"] = float(tr["duration_sec"])
+            return tr
     # v13.80 · GENERI E FASCE ORARIE: se una fascia è attiva, solo brani di quei generi (fallback alla rotazione normale se vuoto)
     _genre_slugs = await _active_genre_slugs(now_local)
     tr_pool = []
