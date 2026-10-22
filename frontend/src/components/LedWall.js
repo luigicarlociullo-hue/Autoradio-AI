@@ -317,6 +317,33 @@ function detectMode(current, isPlaying) {
   return isPlaying ? "music" : "standby";
 }
 
+// Ticket #247410: copertine/foto/video coprono il canvas e quindi anche il marchio R-AI
+// disegnato dagli effetti: la banda news lasciava lo spazio vuoto a destra. Questo
+// overlay ridisegna lo stesso marchio sopra i media (stessa posizione e stile).
+function RaiMarkOverlay() {
+  const ref = useRef(null);
+  useEffect(() => {
+    const cvs = ref.current;
+    if (!cvs) return undefined;
+    const ctx = cvs.getContext("2d");
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    let raf = 0;
+    const t0 = performance.now();
+    const draw = () => {
+      const r = cvs.getBoundingClientRect();
+      const W = Math.floor(r.width * dpr), H = Math.floor(r.height * dpr);
+      if (cvs.width !== W || cvs.height !== H) { cvs.width = W; cvs.height = H; }
+      ctx.clearRect(0, 0, W, H);
+      const t = (performance.now() - t0) / 1000;
+      drawRaiMark(ctx, W, H, dpr, t, 0.5 + 0.5 * Math.sin(t * 2), { alpha: 0.55 });
+      raf = requestAnimationFrame(draw);
+    };
+    raf = requestAnimationFrame(draw);
+    return () => cancelAnimationFrame(raf);
+  }, []);
+  return <canvas ref={ref} aria-hidden data-testid="ledwall-rai-mark-overlay" className="absolute inset-0 w-full h-full z-[36] pointer-events-none" />;
+}
+
 // v13.50 · LED WALL NEWS — banda ticker fissa in basso (stile TG), sopra ogni
 // effetto/video/orologio. Si ferma prima dello spazio riservato al marchio R-AI
 // (stesso calcolo di drawRaiMark); v13.51: con effetto "logo" (marchio grande al
@@ -590,6 +617,7 @@ export default function LedWall({
   // interludio FX a metà brano: il media del brano sfuma e lascia vedere l'effetto, poi rientra
   // v13.81 · durante il segnale orario i media sfumano e lasciano vedere l'orologio (tranne un video proprio dell'evento)
   const mediaDimmed = (phase.fx && !!ledState.from_track) || (isClockMode && !ledState.from_event);
+  const markOverMedia = mediaLayers.some((l) => l.visible) && !mediaDimmed && !isClockMode && !isStandbyMode;
 
   // v13.81 · copertina: zoom lento e continuo. Intera per COVER_HOLD_SEC, poi in COVER_ZOOM_SEC "entra"
   // nell'immagine fino a riempire lo schermo, con un lento movimento; dopo l'interludio FX torna
@@ -1190,7 +1218,8 @@ export default function LedWall({
         }}
       />
       {/* L3 · v13.50 · LED WALL NEWS — sempre sopra tutto, mai sopra il marchio R-AI */}
-      <LedWallNewsTicker wallW={wallSize.w} wallH={wallSize.h} fullWidth={effect === "logo" || isStandbyMode} />
+      {markOverMedia && <RaiMarkOverlay />}
+      <LedWallNewsTicker wallW={wallSize.w} wallH={wallSize.h} fullWidth={!markOverMedia && (effect === "logo" || isStandbyMode)} />
     </div>
   );
 }
