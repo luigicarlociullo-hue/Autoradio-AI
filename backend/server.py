@@ -1967,6 +1967,18 @@ async def admin_track_meta(track_id: str, payload: dict):
         if _mk in payload:
             _mv = payload.get(_mk)
             upd[_mk] = (str(_mv).strip()[:500] or None) if _mv else None
+    # v13.82 · intro/outro strumentali modificabili a mano (secondi, null = da rilevare)
+    for _sk in ("intro_sec", "outro_sec"):
+        if _sk in payload:
+            _sv = payload.get(_sk)
+            if _sv in (None, ""):
+                upd[_sk] = None
+            else:
+                try:
+                    upd[_sk] = round(max(0.0, min(120.0, float(_sv))), 2)
+                except (TypeError, ValueError):
+                    raise HTTPException(400, f"{_sk} deve essere un numero (secondi)")
+            upd[_sk.replace("_sec", "_source")] = "manual" if upd[_sk] is not None else None
     if not upd:
         raise HTTPException(400, "nessun campo da aggiornare")
     upd["updated_at"] = now_iso()
@@ -1991,6 +2003,7 @@ async def admin_tracks_searchable():
          "loop_bind_speaker": 1, "submitted_by": 1,
          "spot_start_date": 1, "spot_end_date": 1, "spot_frequency_per_hour": 1,
          "duration_sec": 1, "on_air": 1, "genre_category": 1, "bpm": 1, "bpm_source": 1,
+         "intro_sec": 1, "outro_sec": 1, "intro_source": 1, "outro_source": 1,
          "daypart_day": 1, "daypart_night": 1, "is_night_jingle": 1, "broadcast_slot": 1, "broadcast_slots": 1, "broadcast_custom": 1, "is_billboard": 1, "is_appointment_jingle": 1,
          "audio_url": 1, "created_at": 1, "cover_url": 1, "video_url": 1},
     ).sort("created_at", -1)
@@ -2014,6 +2027,8 @@ async def admin_tracks_searchable():
             "genre_category": t.get("genre_category"),
             "bpm": t.get("bpm"),
             "bpm_source": t.get("bpm_source"),
+            "intro_sec": t.get("intro_sec"), "outro_sec": t.get("outro_sec"),
+            "intro_source": t.get("intro_source"), "outro_source": t.get("outro_source"),
             "audio_url": t.get("audio_url"),
             "is_pending_approval": bool(t.get("is_pending_approval")),
             "submitted_by": t.get("submitted_by"),
@@ -5699,6 +5714,258 @@ async def _bed_mix_item(item: Optional[dict], dj_name: Optional[str] = None) -> 
     except Exception as e:  # noqa: BLE001
         logger.warning(f"[bedmix] skip: {e}")
         return item
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# v13.82 · TALK-OVER DJ su outro/intro. L'intervento vocale parte sulla coda
+# strumentale (outro_sec) del brano precedente e può proseguire sull'intro
+# strumentale (intro_sec) del successivo, mai sul cantato. Se la voce è più
+# lunga della finestra: outro → sottofondo dal Magazzino → intro del brano
+# successivo sotto la chiusura dell'intervento. Tutto renderizzato con ffmpeg
+# in un unico file (prev tagliato / mix / next che parte dopo l'intro usata).
+# Fail-safe: qualunque problema → None e il chiamante usa il percorso di prima.
+# ═══════════════════════════════════════════════════════════════════════════
+_TALKOVER_VOICE_DELAY = 0.3     # s di musica prima che la voce parta
+_TALKOVER_TAIL_MARGIN = 0.5     # s di musica dopo la fine della voce
+_TALKOVER_BED_VOLUME = 0.22
+_TALKOVER_TIMEOUT = 90.0
+
+
+async def _ffmpeg_run(args: list, out_path: str, timeout: float = _TALKOVER_TIMEOUT) -> bool:
+    tmp = out_path + ".part.mp3"
+    try:
+        proc = await asyncio.create_subprocess_exec("ffmpeg", "-y", "-nostdin", "-v", "error", *args, tmp,
+                                                    stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+        _, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        if proc.returncode != 0 or not os.path.exists(tmp) or os.path.getsize(tmp) < 1000:
+            logger.warning(f"[talkover] ffmpeg fallito: {err.decode(errors='ignore')[:300]}")
+            try: os.remove(tmp)
+            except OSError: pass
+            return False
+        os.replace(tmp, out_path)
+        return True
+    except asyncio.TimeoutError:
+        logger.warning("[talkover] ffmpeg timeout")
+        try: proc.kill()
+        except Exception: pass
+        return False
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[talkover] ffmpeg errore: {e}")
+        return False
+
+
+async def _talkover_probe(path) -> float:
+    probe = await video_service.probe_video(str(path))
+    return float((probe or {}).get("duration_sec") or 0)
+
+
+async def _talkover_store(out: Path) -> str:
+    if object_storage.is_enabled():
+        try:
+            await object_storage.put_mp3(f"bedmix/{out.name}", out.read_bytes())
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[talkover] upload storage: {e}")
+    return f"/api/bedmix/{out.name}"
+
+
+def _talkover_is_music(entry: Optional[dict]) -> bool:
+    if not entry or not entry.get("id") or not entry.get("audio_url"):
+        return False
+    for k in ("is_dj_jingle", "is_fx", "is_demo_voice", "is_timeline", "bed_mixed", "talkover", "talkover_trimmed", "kind", "is_spot", "is_power_play"):
+        if entry.get(k):
+            return False
+    return True
+
+
+# Tagli "on demand" (nessuna copia intera su disco/storage): URL deterministico
+# /api/stream/cut/<hash>.mp3?p=<sorgente>&ss=<inizio>&t=<durata> → ffmpeg -c copy
+# alla prima richiesta su QUALUNQUE pod, poi cache locale (pulizia dopo 24h).
+_CUT_DIR = Path("/app/backend/static/hls_cut")
+_CUT_LOCKS: dict = {}
+
+
+def _cut_key(src: str, ss: float, t: Optional[float]) -> str:
+    return hashlib.sha1(f"{src}|{ss:.3f}|{'' if t is None else f'{t:.3f}'}".encode()).hexdigest()[:24]
+
+
+def _cut_url(src: str, ss: float, t: Optional[float]) -> str:
+    from urllib.parse import urlencode
+    qs = {"p": src, "ss": f"{ss:.3f}"}
+    if t is not None:
+        qs["t"] = f"{t:.3f}"
+    return f"/api/stream/cut/{_cut_key(src, ss, t)}.mp3?{urlencode(qs)}"
+
+
+def _cut_cleanup(max_age_h: float = 24.0):
+    try:
+        cutoff = time.time() - max_age_h * 3600
+        for d, pref in ((_CUT_DIR, ""), (BEDMIX_DIR, "tk_mix_")):
+            if not d.exists():
+                continue
+            for f in d.iterdir():
+                if f.name.startswith(pref) and f.suffix == ".mp3" and f.stat().st_mtime < cutoff:
+                    f.unlink(missing_ok=True)
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"[cut] cleanup: {e}")
+
+
+async def _cut_render(src: str, ss: float, t: Optional[float], src_path=None) -> Optional[Path]:
+    _CUT_DIR.mkdir(parents=True, exist_ok=True)
+    out = _CUT_DIR / f"{_cut_key(src, ss, t)}.mp3"
+    if out.exists():
+        return out
+    lock = _CUT_LOCKS.setdefault(out.name, asyncio.Lock())
+    async with lock:
+        if out.exists():
+            return out
+        sp = src_path or await _audio_local_file(src)
+        if not sp:
+            return None
+        args = ["-ss", f"{ss:.3f}", "-i", str(sp)] + (["-t", f"{t:.3f}"] if t is not None else []) + ["-vn", "-c:a", "copy", "-f", "mp3"]
+        if not await _ffmpeg_run(args, str(out)):
+            return None
+        _cut_cleanup()
+        return out
+
+
+@api_router.get("/stream/cut/{name}.mp3")
+async def hls_cut_segment(name: str, p: str, ss: float = 0.0, t: Optional[float] = None, request: Request = None):
+    if not p.startswith("/api/") or ".." in p or "://" in p or p.startswith("/api/stream/"):
+        raise HTTPException(400, "percorso non valido")
+    if _cut_key(p, ss, t) != name:
+        raise HTTPException(400, "firma non valida")
+    out = await _cut_render(p, ss, t)
+    if not out:
+        raise HTTPException(404, "audio sorgente non trovato")
+    return FileResponse(str(out), media_type="audio/mpeg",
+                        headers={"Cache-Control": "public, max-age=86400", "Access-Control-Allow-Origin": "*"})
+
+
+async def _talkover_build(voice: dict, prev: dict, nxt: dict, dj_name: Optional[str] = None) -> Optional[tuple]:
+    """Ritorna (prev', mix, next') oppure None (→ comportamento precedente)."""
+    if not shutil.which("ffmpeg") or not voice.get("audio_url"):
+        return None
+    a_doc = await db.tracks.find_one({"id": prev.get("id")}, {"_id": 0, "outro_sec": 1, "is_jingle": 1, "is_spot": 1, "is_loop": 1, "is_fx": 1})
+    b_doc = await db.tracks.find_one({"id": nxt.get("id")}, {"_id": 0, "intro_sec": 1})
+    if not a_doc or not b_doc or a_doc.get("is_jingle") or a_doc.get("is_spot") or a_doc.get("is_loop") or a_doc.get("is_fx"):
+        return None
+    outro = max(0.0, float(a_doc.get("outro_sec") or 0))
+    intro = max(0.0, float(b_doc.get("intro_sec") or 0))
+    if outro <= 0 and intro <= 0:
+        return None
+    src_a = prev.get("orig_audio_url") or prev["audio_url"]   # il precedente può già essere un taglio (intro saltata)
+    ss_a = max(0.0, float(prev.get("cut_ss") or 0))
+    src_b = nxt["audio_url"]
+    vpath = await _audio_local_file(voice["audio_url"])
+    apath = await _audio_local_file(src_a)
+    bpath = await _audio_local_file(src_b)
+    if not (vpath and apath and bpath):
+        return None
+    v_dur, a_dur, b_dur = await asyncio.gather(_talkover_probe(vpath), _talkover_probe(apath), _talkover_probe(bpath))
+    if v_dur <= 0.5 or a_dur - ss_a <= 20 or b_dur <= 20:
+        return None
+    outro = round(min(outro, a_dur - ss_a - 10.0), 3)
+    intro = round(min(intro, b_dur - 10.0), 3)
+    need = v_dur + _TALKOVER_VOICE_DELAY + _TALKOVER_TAIL_MARGIN
+    window = outro + intro
+    if need <= window:
+        used_intro = round(min(intro, max(0.0, need - outro)), 3)
+        bed_part = 0.0
+    else:
+        used_intro = intro
+        bed_part = round(need - window, 3)
+    bed_url = await _bed_for_speaker(dj_name or voice.get("dj_name") or voice.get("artist")) if bed_part > 0 else None
+    bed_path = await _audio_local_file(bed_url) if bed_url else None
+    key = hashlib.sha1(f"{voice['audio_url'].split('?')[0]}|{prev['id']}|{nxt['id']}|{outro}|{used_intro}|{bed_part}|{bed_url or ''}|v1".encode()).hexdigest()[:20]
+    mix_out = BEDMIX_DIR / f"tk_mix_{key}.mp3"
+
+    # 1) mix: [coda di A] + [sottofondo] + [intro di B] sotto la voce (ducking sidechain)
+    if not mix_out.exists():
+        inputs = ["-i", str(vpath), "-ss", f"{max(0.0, a_dur - outro):.3f}", "-t", f"{max(outro, 1.0):.3f}", "-i", str(apath),
+                  "-t", f"{max(used_intro, 1.0):.3f}", "-i", str(bpath)]
+        fmt = "aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo"
+        parts, fc = [], []
+        if outro > 0:
+            fc.append(f"[1:a]{fmt},atrim=0:{outro:.3f},asetpts=PTS-STARTPTS[pa]"); parts.append("[pa]")
+        if bed_part > 0:
+            if bed_path:
+                inputs += ["-stream_loop", "-1", "-t", f"{bed_part + 1:.3f}", "-i", str(bed_path)]
+                fc.append(f"[3:a]{fmt},atrim=0:{bed_part:.3f},asetpts=PTS-STARTPTS,volume={_TALKOVER_BED_VOLUME},afade=t=in:st=0:d=0.6,afade=t=out:st={max(0.0, bed_part - 0.8):.3f}:d=0.8[pm]")
+            else:
+                fc.append(f"anullsrc=r=44100:cl=stereo,atrim=0:{bed_part:.3f},asetpts=PTS-STARTPTS,{fmt}[pm]")
+            parts.append("[pm]")
+        if used_intro > 0:
+            fc.append(f"[2:a]{fmt},atrim=0:{used_intro:.3f},asetpts=PTS-STARTPTS[pb]"); parts.append("[pb]")
+        if len(parts) > 1:
+            fc.append(f"{''.join(parts)}concat=n={len(parts)}:v=0:a=1[mus]")
+        else:
+            fc.append(f"{parts[0]}acopy[mus]")
+        delay_ms = int(_TALKOVER_VOICE_DELAY * 1000)
+        fc.append(f"[0:a]{fmt},adelay={delay_ms}|{delay_ms},apad,asplit=2[v][sc]")
+        fc.append("[mus][sc]sidechaincompress=threshold=0.02:ratio=6:attack=60:release=800:makeup=1[duck]")
+        fc.append("[duck][v]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[out]")
+        total = outro + bed_part + used_intro
+        ok = await _ffmpeg_run(inputs + ["-filter_complex", ";".join(fc), "-map", "[out]", "-t", f"{total:.3f}",
+                                         "-ar", "44100", "-ac", "2", "-c:a", "libmp3lame", "-b:a", "192k", "-f", "mp3"], str(mix_out))
+        if not ok:
+            return None
+    # 2) A senza la coda · 3) B dopo l'intro usata: tagli -c copy on-demand (resi subito qui per conoscere la durata reale)
+    a_out = b_out = None
+    a_t = round(a_dur - ss_a - outro, 3)
+    if outro > 0:
+        a_out = await _cut_render(src_a, ss_a, a_t, apath)
+        if not a_out:
+            return None
+    if used_intro > 0:
+        b_out = await _cut_render(src_b, used_intro, None, bpath)
+        if not b_out:
+            return None
+    mix_dur = await _talkover_probe(mix_out)
+    if mix_dur <= 0.5:
+        return None
+    mix = {**voice, "audio_url": await _talkover_store(mix_out), "voice_audio_url": voice["audio_url"],
+           "duration_sec": round(mix_dur, 3), "real_duration_sec": round(mix_dur, 3), "bed_mixed": True,
+           "talkover": {"prev_id": prev["id"], "next_id": nxt["id"], "outro_sec": outro, "intro_sec": used_intro,
+                        "bed_sec": bed_part, "bed_url": bed_url, "voice_sec": round(v_dur, 2)}}
+    prev2 = prev
+    if outro > 0:
+        a_real = await _talkover_probe(a_out)
+        if a_real <= 1:
+            return None
+        prev2 = {**prev, "audio_url": _cut_url(src_a, ss_a, a_t), "orig_audio_url": src_a, "cut_ss": ss_a,
+                 "duration_sec": round(a_real, 3), "real_duration_sec": round(a_real, 3), "talkover_trimmed": outro}
+    nxt2 = nxt
+    if used_intro > 0:
+        b_real = await _talkover_probe(b_out)
+        if b_real <= 1:
+            return None
+        nxt2 = {**nxt, "audio_url": _cut_url(src_b, used_intro, None), "orig_audio_url": src_b, "cut_ss": used_intro,
+                "duration_sec": round(b_real, 3), "real_duration_sec": round(b_real, 3), "talkover_skip_intro": used_intro}
+    logger.info(f"[talkover] voce {v_dur:.1f}s · outro {outro}s + bed {bed_part}s + intro {used_intro}s → {mix['audio_url']} ({mix_dur:.1f}s)")
+    return prev2, mix, nxt2
+
+
+async def _talkover_apply(voice: dict, prev: Optional[dict], exclude_ids: set, dj_name: Optional[str] = None) -> Optional[tuple]:
+    """Sceglie il brano successivo e costruisce il talk-over.
+    None → nessuna modifica · (None, None, nxt) → voce come prima ma `nxt` è il prossimo brano ·
+    (prev', mix, next') → talk-over completo."""
+    if not _talkover_is_music(prev):
+        return None
+    try:
+        a_doc = await db.tracks.find_one({"id": prev["id"]}, {"_id": 0, "outro_sec": 1})
+        if not a_doc:
+            return None
+        nxt = await _clock_pick_track(exclude_ids=exclude_ids)
+        if not nxt:
+            return None
+        b_doc = await db.tracks.find_one({"id": nxt["id"]}, {"_id": 0, "intro_sec": 1})
+        if not (float(a_doc.get("outro_sec") or 0) > 0 or float((b_doc or {}).get("intro_sec") or 0) > 0):
+            return None, None, nxt   # niente finestra: il brano scelto resta valido, voce come prima
+        res = await _talkover_build(voice, prev, nxt, dj_name)
+        return res if res else (None, None, nxt)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[talkover] skip: {e}")
+        return None
 
 
 
@@ -11263,7 +11530,29 @@ async def _clock_refill_queue():
         fx_counter = int(clock.get("fx_counter") or 0)
         pp_since = int(clock.get("pp_since") or 0)   # brani musicali dall'ultimo Power Play
         picks = []
+        existing_queue = list(clock.get("queue") or [])
+        extra_pick = None
+
+        async def _voice_with_talkover(voice):
+            """v13.82 · voce DJ su outro del brano precedente / intro del successivo (fail-safe → bed come prima).
+            Il precedente deve essere ancora lontano dalla promozione (in `picks` o ultimo di una coda ≥2)."""
+            nonlocal extra_pick
+            prev = picks[-1] if picks else (existing_queue[-1] if len(existing_queue) >= 2 else None)
+            res = await _talkover_apply(voice, prev, _queued_ids) if prev else None
+            if not res:
+                return await _bed_mix_item(voice)
+            prev2, mix, nxt = res
+            extra_pick = nxt
+            if prev2 is None or mix is None:
+                return await _bed_mix_item(voice)
+            if picks:
+                picks[-1] = prev2
+            else:
+                existing_queue[-1] = prev2
+            return mix
+
         while queue_len + len(picks) < _CLOCK_QUEUE_LOOKAHEAD:
+            extra_pick = None
             # Decidi se inserire un jingle DJ o un brano musicale
             need_dj = (counter > 0 and counter % _dj_every_n == 0) and _speaker_on
             picked = None
@@ -11275,7 +11564,7 @@ async def _clock_refill_queue():
             if _demo_on and demo_counter >= demo_target:
                 picked = await _clock_pick_demo_voice(exclude_ids=_queued_ids)
                 if picked:
-                    picked = await _bed_mix_item(picked)  # v13.56 · bed sotto la voce demo
+                    picked = await _voice_with_talkover(picked)  # v13.56 bed · v13.82 talk-over outro/intro
                     demo_slot_filled = True
                     demo_counter = 0
                     demo_target = random.randint(_demo["demo_every_min"], _demo["demo_every_max"])
@@ -11296,7 +11585,7 @@ async def _clock_refill_queue():
                 # secondo il proprio ritmo, invece di essere sempre scavalcata.
                 picked = await _clock_pick_dj_voice_segment()
                 if picked:
-                    picked = await _bed_mix_item(picked)  # v13.56 · bed sotto la voce (server-side)
+                    picked = await _voice_with_talkover(picked)  # v13.56 bed · v13.82 talk-over outro/intro
                     dj_slot_filled = True
             # Ticket #247410 (parte 2): need_jingle/need_fx devono dipendere
             # dall'ESITO reale del turno DJ (dj_slot_filled), non dal solo
@@ -11376,6 +11665,14 @@ async def _clock_refill_queue():
             )
             picks.append(picked)
             _queued_ids.add(picked.get("id"))
+            if extra_pick:
+                # v13.82 · il brano successivo scelto per il talk-over entra subito dopo la voce
+                picks.append(extra_pick)
+                _queued_ids.add(extra_pick.get("id"))
+                counter += 1; jingle_counter += 1; fx_counter += 1; pp_since += 1
+                if _demo_on:
+                    demo_counter += 1
+                extra_pick = None
 
         if not picks:
             return
@@ -11386,7 +11683,7 @@ async def _clock_refill_queue():
         async with _clock_lock:
             ok = await _clock_cas(
                 clock,
-                {"queue": list(clock.get("queue") or []) + picks, "music_counter": counter,
+                {"queue": existing_queue + picks, "music_counter": counter,
                  "jingle_counter": jingle_counter, "fx_counter": fx_counter, "pp_since": pp_since,
                  "demo_counter": demo_counter, "demo_target": demo_target,
                  "updated_at": datetime.now(timezone.utc).isoformat()},
@@ -12414,6 +12711,79 @@ async def admin_detect_intros():
 
     asyncio.create_task(_worker())
     return {"ok": True, "started": True}
+
+
+# ---------- v13.82 · Outro detection (stesso metodo RMS dell'intro, sulla coda del file) ----------
+
+def _detect_outro_sec_sync(local_path: str, total_sec: Optional[float] = None) -> Optional[float]:
+    """Durata della coda strumentale finale: ultimo istante (negli ultimi 60s) in cui
+    l'energia RMS media su ~0.5s supera nettamente quella del finale → outro = fine − quell'istante."""
+    import librosa
+    import numpy as _np
+    total = float(total_sec or 0)
+    if total <= 0:
+        total = float(librosa.get_duration(path=local_path))
+    if total < 20:
+        return None
+    span = min(60.0, total - 5.0)
+    y, sr = librosa.load(local_path, sr=22050, mono=True, offset=max(0.0, total - span), duration=span)
+    if y is None or len(y) < sr * 8:
+        return None
+    hop = 512
+    rms = librosa.feature.rms(y=y, hop_length=hop)[0]
+    if not len(rms) or float(_np.max(rms)) <= 0:
+        return None
+    fps = sr / hop
+    win = max(1, int(0.5 * fps))
+    smooth = _np.convolve(rms, _np.ones(win) / win, mode="same")
+    tail_n = max(win, int(2.0 * fps))
+    base = float(_np.median(smooth[-tail_n:])) or 1e-6
+    thr = max(base * 2.2, float(_np.max(smooth)) * 0.6)
+    end = len(smooth) - int(1.0 * fps)   # ignora l'ultimo secondo (code/fade del file)
+    hits = _np.nonzero(smooth[:end] >= thr)[0]
+    if not len(hits):
+        return None
+    outro = (len(smooth) - int(hits[-1])) / fps
+    return round(float(outro), 2) if 1.0 <= outro < 55 else None
+
+
+async def _detect_outro_sec(local_path: str, total_sec: Optional[float] = None) -> Optional[float]:
+    try:
+        return await asyncio.to_thread(_detect_outro_sec_sync, local_path, total_sec)
+    except Exception as e:
+        logger.debug(f"[outro-detect] {local_path}: {e}")
+        return None
+
+
+@api_router.post("/admin/audio/detect-outros")
+async def admin_detect_outros(payload: Optional[dict] = None):
+    """Batch offline: rileva `outro_sec` per tutti i brani che non ce l'hanno (`force` = tutti,
+    esclusi quelli impostati a mano). Non affidabile → 0 (nessuna coda parlabile). Async in background."""
+    force = bool((payload or {}).get("force"))
+    query = {"status": "ready", "audio_url": {"$ne": None}, "deleted_at": None,
+             "$and": [{"$or": [{"is_jingle": {"$ne": True}}]}, {"$or": [{"is_loop": {"$ne": True}}]}, {"$or": [{"is_fx": {"$ne": True}}]}, {"$or": [{"is_spot": {"$ne": True}}]}]}
+    if force:
+        query["outro_source"] = {"$ne": "manual"}
+    else:
+        query["$or"] = [{"outro_sec": None}, {"outro_sec": {"$exists": False}}]
+
+    async def _worker():
+        cursor = db.tracks.find(query, {"_id": 0, "id": 1, "audio_url": 1, "real_duration_sec": 1, "duration_sec": 1})
+        updated = detected = 0
+        async for tr in cursor:
+            local_path = await _local_audio_for_analysis((tr.get("audio_url") or "").strip())
+            if not local_path:
+                continue
+            outro = await _detect_outro_sec(local_path, float(tr.get("real_duration_sec") or tr.get("duration_sec") or 0) or None)
+            if outro is not None:
+                detected += 1
+            await db.tracks.update_one({"id": tr["id"]}, {"$set": {"outro_sec": float(outro or 0.0), "outro_source": "auto"}})
+            updated += 1
+            await asyncio.sleep(0.02)
+        logger.info(f"[outro-detect] done · updated={updated} detected={detected}")
+
+    asyncio.create_task(_worker())
+    return {"ok": True, "started": True, "force": force}
 
 
 # ---------- Jingle Library ----------

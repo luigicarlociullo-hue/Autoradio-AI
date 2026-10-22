@@ -172,6 +172,7 @@ function EditPanel({ track, onCancel, onSaved }) {
     on_air: track.on_air !== false, daypart_day: track.daypart_day !== false, daypart_night: track.daypart_night !== false,
     is_night_jingle: !!track.is_night_jingle,
     cover_url: track.cover_url || null, video_url: track.video_url || null,  // v13.75
+    intro_sec: track.intro_sec ?? "", outro_sec: track.outro_sec ?? "",  // v13.82 · finestre strumentali per il talk-over DJ
   });
   const [busy, setBusy] = useState(false);
   const up = (k, v) => setF((s) => ({ ...s, [k]: v }));
@@ -196,6 +197,9 @@ function EditPanel({ track, onCancel, onSaved }) {
     if (f.is_night_jingle !== !!track.is_night_jingle) ops.push(endpoints.trackNightJingle(track.id, f.is_night_jingle));
     if ((f.cover_url || null) !== (track.cover_url || null) || (f.video_url || null) !== (track.video_url || null))
       ops.push(setMeta(track.id, { cover_url: f.cover_url || null, video_url: f.video_url || null }));  // v13.75
+    const numOrNull = (v) => (v === "" || v === null || v === undefined ? null : Number(v));
+    if (numOrNull(f.intro_sec) !== (track.intro_sec ?? null) || numOrNull(f.outro_sec) !== (track.outro_sec ?? null))
+      ops.push(setMeta(track.id, { intro_sec: numOrNull(f.intro_sec), outro_sec: numOrNull(f.outro_sec) }));  // v13.82
     try {
       if (!ops.length) { toast("Nessuna modifica"); onCancel(); return; }
       await Promise.all(ops);
@@ -235,6 +239,10 @@ function EditPanel({ track, onCancel, onSaved }) {
             </select></label>
           <label className="text-xs text-zinc-400">BPM
             <input type="number" min={40} max={220} value={f.bpm} onChange={(e) => up("bpm", e.target.value)} placeholder="—" className={inp} data-testid="act-edit-bpm" /></label>
+          <label className="text-xs text-zinc-400" title="Intro strumentale (s): il DJ può parlarci sopra all'inizio del brano">Intro (s){track.intro_source === "manual" ? " ✎" : ""}
+            <input type="number" min={0} max={120} step={0.5} value={f.intro_sec} onChange={(e) => up("intro_sec", e.target.value)} placeholder="—" className={inp} data-testid="act-edit-intro" /></label>
+          <label className="text-xs text-zinc-400" title="Outro strumentale (s): coda finale senza cantato su cui il DJ può parlare">Outro (s){track.outro_source === "manual" ? " ✎" : ""}
+            <input type="number" min={0} max={120} step={0.5} value={f.outro_sec} onChange={(e) => up("outro_sec", e.target.value)} placeholder="—" className={inp} data-testid="act-edit-outro" /></label>
         </div>
         <div className="mt-4">
           <div className="text-xs text-zinc-400 mb-1.5">Fasce orarie (puoi accenderne più di una)</div>
@@ -303,7 +311,7 @@ function TrackRow({ t, selected, onSelect, previewing, onPreview, onEdit, onDele
           {t.is_pending_approval && <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-amber-500/15 text-amber-300 shrink-0">⏳ approvazione</span>}
         </div>
         <div className="text-[10px] text-zinc-500 font-mono truncate">
-          {t.artist} · {sid} · {t.duration_sec ? Math.floor(t.duration_sec) + "s" : "?"}{t.bpm ? ` · ${t.bpm} BPM` : ""} · <span className="text-cyan-300/80">{trackSlots(t).map(slotLabel).join(" + ")}{t.broadcast_custom ? ` + ${customLabel(t.broadcast_custom)}` : ""}</span>
+          {t.artist} · {sid} · {t.duration_sec ? Math.floor(t.duration_sec) + "s" : "?"}{t.bpm ? ` · ${t.bpm} BPM` : ""}{t.intro_sec != null || t.outro_sec != null ? <span className="text-amber-200/80" data-testid={`inout-${sid}`}> · in {t.intro_sec ?? "?"}s / out {t.outro_sec ?? "?"}s</span> : ""} · <span className="text-cyan-300/80">{trackSlots(t).map(slotLabel).join(" + ")}{t.broadcast_custom ? ` + ${customLabel(t.broadcast_custom)}` : ""}</span>
         </div>
       </div>
 

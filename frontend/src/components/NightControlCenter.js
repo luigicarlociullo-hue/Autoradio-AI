@@ -549,6 +549,7 @@ function TransitionFxBlock() {
 function MaintenanceBlock() {
   const [busyBpm, setBusyBpm] = useState(false);
   const [busyIntro, setBusyIntro] = useState(false);
+  const [busyOutro, setBusyOutro] = useState(false);  // v13.82
   const [busyDur, setBusyDur] = useState(false);
 
   const scanBpm = async () => {
@@ -573,6 +574,19 @@ function MaintenanceBlock() {
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Errore");
     } finally { setBusyIntro(false); }
+  };
+
+  // v13.82 · Outro strumentali (stesso metodo RMS dell'intro, sulla coda del file)
+  const detectOutros = async () => {
+    if (busyOutro) return;
+    if (!window.confirm("Rileva outro strumentali (coda finale senza cantato) su tutti i brani che non ce l'hanno? (zero costo API, girerà in background)")) return;
+    setBusyOutro(true);
+    try {
+      await api.post("/admin/audio/detect-outros", {});
+      toast.success("Detect outro avviato in background");
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Errore");
+    } finally { setBusyOutro(false); }
   };
 
   // v13.33 · Ricalcola durate reali via ffprobe con fallback Object Storage.
@@ -626,6 +640,15 @@ function MaintenanceBlock() {
         className="btn-outline text-xs flex items-center gap-1.5"
       >
         <Wand2 className="w-3 h-3" /> Rileva Intro strumentali
+      </button>
+      <button
+        data-testid="detect-outros-btn"
+        onClick={detectOutros}
+        disabled={busyOutro}
+        className="btn-outline text-xs flex items-center gap-1.5"
+        title="Coda strumentale finale (outro_sec): il DJ parla sull'outro del brano in onda e prosegue sull'intro del successivo"
+      >
+        <Wand2 className="w-3 h-3" /> Rileva Outro strumentali
       </button>
       <button
         data-testid="test-voice-over-btn"
