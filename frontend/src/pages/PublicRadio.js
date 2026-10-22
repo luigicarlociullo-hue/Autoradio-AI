@@ -856,6 +856,16 @@ export default function PublicRadio() {
     return () => { if (fsCtrlTimerRef.current) clearTimeout(fsCtrlTimerRef.current); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ledFs]);
+  // v13.84 · doppio clic / doppio tocco sul LedWall a schermo intero → esci (oltre a "Esci" ed Esc)
+  const fsLastTapRef = useRef({ t: 0, x: 0, y: 0 });
+  const onFsPointerUp = (e) => {
+    if (e.target?.closest?.("button, a, input, select, [role='slider']")) return;
+    const now = Date.now();
+    const last = fsLastTapRef.current;
+    const close = now - last.t < 350 && Math.abs(e.clientX - last.x) < 40 && Math.abs(e.clientY - last.y) < 40;
+    fsLastTapRef.current = close ? { t: 0, x: 0, y: 0 } : { t: now, x: e.clientX, y: e.clientY };
+    if (close) { e.preventDefault(); exitLedFs(); }
+  };
   const [fsTrackInfo, setFsTrackInfo] = useState(null);
   const fsTrackTimerRef = useRef(null);
   const fsTrackKey = `${displayCurrent?.id || ""}|${displayCurrent?.title || ""}|${displayCurrent?.artist || ""}`;
@@ -889,7 +899,7 @@ export default function PublicRadio() {
       {ledFs && (
         <div ref={ledFsRef} className="fixed inset-0 z-[100] bg-black rai-fs-wrap rai-fs-active select-none" data-testid="home-ledwall-fs"
           data-fullscreen="true" data-controls-visible={fsCtrlVisible ? "true" : "false"}
-          onPointerDown={pokeFsCtrl} onPointerMove={pokeFsCtrl}>
+          onPointerDown={pokeFsCtrl} onPointerMove={pokeFsCtrl} onPointerUp={onFsPointerUp} style={{ touchAction: "manipulation" }}>
           <LedWall
             isPlaying={audioOn || broadcastMode === "live_external"}
             current={effectiveCurrent}
