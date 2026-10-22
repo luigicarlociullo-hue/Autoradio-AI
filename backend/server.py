@@ -5771,7 +5771,7 @@ async def _talkover_store(out: Path) -> str:
 def _talkover_is_music(entry: Optional[dict]) -> bool:
     if not entry or not entry.get("id") or not entry.get("audio_url"):
         return False
-    for k in ("is_dj_jingle", "is_fx", "is_demo_voice", "is_timeline", "bed_mixed", "talkover", "talkover_trimmed", "kind", "is_spot", "is_power_play"):
+    for k in ("is_dj_jingle", "is_fx", "is_demo_voice", "is_timeline", "bed_mixed", "talkover", "talkover_trimmed", "kind", "is_spot", "is_power_play", "is_beatmatch", "beatmatch_trimmed"):
         if entry.get(k):
             return False
     return True
@@ -5932,7 +5932,7 @@ async def _talkover_build(voice: dict, prev: dict, nxt: dict, dj_name: Optional[
         a_real = await _talkover_probe(a_out)
         if a_real <= 1:
             return None
-        prev2 = {**prev, "audio_url": _cut_url(src_a, ss_a, a_t), "orig_audio_url": src_a, "cut_ss": ss_a,
+        prev2 = {**prev, "audio_url": _cut_url(src_a, ss_a, a_t), "orig_audio_url": src_a, "cut_ss": ss_a, "cut_t": a_t,
                  "duration_sec": round(a_real, 3), "real_duration_sec": round(a_real, 3), "talkover_trimmed": outro}
     nxt2 = nxt
     if used_intro > 0:
@@ -13124,29 +13124,233 @@ async def _beatmatch_render_pair(a: dict, b: dict) -> Optional[str]:
 
 
 @api_router.get("/beatmatch/{fname}")
-async def serve_beatmatch(fname: str):
-    """Serve i file di transizione pre-render. Cache lunga (1h)."""
+async def serve_beatmatch(fname: str, request: Request):
+    """Serve i file di transizione pre-render. Cache lunga (1h). v13.83 · fallback Object Storage
+    (archivio permanente: le transizioni sono disponibili su tutti i server)."""
     from fastapi.responses import FileResponse
+    if "/" in fname or ".." in fname or not fname.endswith(".mp3"):
+        raise HTTPException(400, "Invalid filename")
     p = _BEATMATCH_CACHE_DIR / fname
+    if not p.exists() and object_storage.is_enabled():
+        try:
+            data = await object_storage.fetch_mp3(f"beatmatch/{fname}")
+            if data:
+                p.write_bytes(data)
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[beatmatch] fetch storage {fname}: {e}")
     if not p.exists():
         raise HTTPException(404, "Transizione non trovata")
     return FileResponse(str(p), media_type="audio/mpeg",
-                        headers={"Cache-Control": "public, max-age=3600"})
+                        headers={"Cache-Control": "public, max-age=3600", "Access-Control-Allow-Origin": "*"})
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# v13.83 · BEAT-MATCH IN ONDA (solo nei contenitori notturni, toggle beatmatch_enabled).
+# Il ticker pre-renderizza la transizione A→B per le coppie di brani consecutivi
+# già in coda (mai il prossimo in onda) e, quando il file è pronto (locale +
+# archivio permanente), sostituisce [A, B] con [A senza coda, TRANSIZIONE, B dopo
+# la testa] via CAS sul clock. Crossfade "a tempo": durata = 16 battute del BPM
+# misurato di A (8 se i BPM distano >8), punto di mix su una battuta di A e prima
+# battuta di B allineata (librosa beat_track). Niente file pronto → passaggio
+# normale. Player / HLS / segnale orario non toccati (URL .mp3 passthrough).
+# ═══════════════════════════════════════════════════════════════════════════
+_BM_PRE_SEC = 8.0      # musica di A prima del crossfade
+_BM_POST_SEC = 8.0     # musica di B dopo il crossfade
+_BM_MIN_REMAIN = 20.0  # durata minima che deve restare ad A' e B'
+
+
+def _entry_src(e: dict) -> tuple:
+    """(sorgente, inizio, fine|None) in tempo-sorgente di un elemento musicale (anche già tagliato)."""
+    src = e.get("orig_audio_url") or e.get("audio_url")
+    ss = max(0.0, float(e.get("cut_ss") or 0))
+    t = e.get("cut_t")
+    return src, ss, (ss + float(t)) if t else None
+
+
+def _bm_beats_sync(path: str, offset: float, duration: float, bpm: Optional[int]) -> list:
+    import librosa
+    y, sr = librosa.load(path, sr=22050, mono=True, offset=max(0.0, offset), duration=duration)
+    if y is None or len(y) < sr * 4:
+        return []
+    kw = {"start_bpm": float(bpm)} if bpm and 60 <= bpm <= 200 else {}
+    _, frames = librosa.beat.beat_track(y=y, sr=sr, tightness=120, **kw)
+    return [max(0.0, offset) + float(t) for t in librosa.frames_to_time(frames, sr=sr)]
+
+
+async def _bm_beats(path, offset: float, duration: float, bpm: Optional[int]) -> list:
+    try:
+        return await asyncio.to_thread(_bm_beats_sync, str(path), offset, duration, bpm)
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"[beatmatch] beat_track: {e}")
+        return []
+
+
+def _bm_is_music(e: Optional[dict]) -> bool:
+    if not e or not e.get("id") or not e.get("audio_url"):
+        return False
+    for k in ("is_dj_jingle", "is_fx", "is_demo_voice", "is_timeline", "bed_mixed", "talkover", "talkover_trimmed",
+              "kind", "is_spot", "is_power_play", "is_beatmatch", "beatmatch_trimmed"):
+        if e.get(k):
+            return False
+    return True
+
+
+async def _beatmatch_plan(a: dict, b: dict) -> Optional[dict]:
+    """Calcola tagli e file della transizione (senza renderizzare). None → coppia non trattabile."""
+    docs = {d["id"]: d for d in await db.tracks.find({"id": {"$in": [a["id"], b["id"]]}},
+                                                   {"_id": 0, "id": 1, "bpm": 1, "is_jingle": 1, "is_spot": 1, "is_loop": 1, "is_fx": 1}).to_list(2)}
+    da, dbb = docs.get(a["id"]), docs.get(b["id"])
+    if not da or not dbb or any(d.get(k) for d in (da, dbb) for k in ("is_jingle", "is_spot", "is_loop", "is_fx")):
+        return None
+    src_a, ss_a, end_a = _entry_src(a)
+    src_b, ss_b, end_b = _entry_src(b)
+    pa, pb = await _audio_local_file(src_a), await _audio_local_file(src_b)
+    if not pa or not pb:
+        return None
+    dur_a, dur_b = await asyncio.gather(_talkover_probe(pa), _talkover_probe(pb))
+    if dur_a <= 0 or dur_b <= 0:
+        return None
+    end_a = min(end_a or dur_a, dur_a)
+    end_b = min(end_b or dur_b, dur_b)
+    bpm_a, bpm_b = da.get("bpm"), dbb.get("bpm")
+    ref_bpm = bpm_a or bpm_b
+    beats = 16 if (bpm_a and bpm_b and abs(int(bpm_a) - int(bpm_b)) <= 8) else 8
+    xfade = round(max(4.0, min(16.0, beats * 60.0 / float(ref_bpm))), 3) if ref_bpm else _BEATMATCH_XFADE_SEC
+    # punto di mix su una battuta di A (vicino a fine − xfade − 1s)
+    target = end_a - xfade - 1.0
+    m_a = target
+    if bpm_a:
+        bt = await _bm_beats(pa, max(0.0, end_a - xfade - 20.0), xfade + 20.0, bpm_a)
+        cand = [t for t in bt if t <= target]
+        if cand:
+            m_a = cand[-1]
+    # prima battuta di B (dopo l'inizio effettivo)
+    s_b = ss_b
+    if bpm_b:
+        bt = await _bm_beats(pb, ss_b, 12.0, bpm_b)
+        cand = [t for t in bt if t >= ss_b + 0.1]
+        if cand:
+            s_b = cand[0]
+    a_cut_end = round(m_a - _BM_PRE_SEC, 3)          # A' finisce qui (tempo-sorgente)
+    b_cut_start = round(s_b + xfade + _BM_POST_SEC, 3)  # B' parte qui
+    if a_cut_end - ss_a < _BM_MIN_REMAIN or end_b - b_cut_start < _BM_MIN_REMAIN or end_a - m_a < xfade:
+        return None
+    sig = hashlib.sha1(f"{src_a}|{src_b}|{a_cut_end}|{end_a}|{s_b}|{xfade}|v1".encode()).hexdigest()[:10]
+    return {"src_a": src_a, "src_b": src_b, "pa": pa, "pb": pb, "ss_a": ss_a, "ss_b": ss_b, "end_a": end_a, "end_b": end_b,
+            "m_a": round(m_a, 3), "s_b": round(s_b, 3), "xfade": xfade, "a_cut_end": a_cut_end, "b_cut_start": b_cut_start,
+            "bpm_a": bpm_a, "bpm_b": bpm_b, "beats": beats,
+            "fname": f"bm_{a['id'][:12]}__{b['id'][:12]}_{sig}.mp3"}
+
+
+async def _beatmatch_render_air(plan: dict) -> Optional[Path]:
+    out = _BEATMATCH_CACHE_DIR / plan["fname"]
+    if out.exists() and out.stat().st_size > 20 * 1024:
+        return out
+    if object_storage.is_enabled():
+        try:
+            data = await object_storage.fetch_mp3(f"beatmatch/{plan['fname']}")
+            if data and len(data) > 20 * 1024:
+                out.write_bytes(data)
+                return out
+        except Exception:
+            pass
+    pre, post, xf = _BM_PRE_SEC, _BM_POST_SEC, plan["xfade"]
+    a_seg = pre + xf   # A da a_cut_end fino a m_a + xfade: il crossfade inizia esattamente sulla battuta m_a
+    fmt = "aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo"
+    fc = (f"[0:a]{fmt},atrim=0:{a_seg:.3f},asetpts=PTS-STARTPTS[a];"
+          f"[1:a]{fmt},atrim=0:{xf + post:.3f},asetpts=PTS-STARTPTS[b];"
+          f"[a][b]acrossfade=d={xf:.3f}:c1=qsin:c2=qsin[out]")
+    args = ["-ss", f"{plan['a_cut_end']:.3f}", "-t", f"{a_seg + 1:.3f}", "-i", str(plan["pa"]),
+            "-ss", f"{plan['s_b']:.3f}", "-t", f"{xf + post + 1:.3f}", "-i", str(plan["pb"]),
+            "-filter_complex", fc, "-map", "[out]", "-ar", "44100", "-ac", "2", "-c:a", "libmp3lame", "-b:a", "192k", "-f", "mp3"]
+    if not await _ffmpeg_run(args, str(out)):
+        return None
+    if object_storage.is_enabled():
+        try:
+            await object_storage.put_mp3(f"beatmatch/{plan['fname']}", out.read_bytes())
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[beatmatch] upload storage: {e}")
+    return out
+
+
+async def _beatmatch_air_pair(a: dict, b: dict) -> Optional[tuple]:
+    """Ritorna (A', T, B') pronti per la coda, oppure None (passaggio normale)."""
+    plan = await _beatmatch_plan(a, b)
+    if not plan:
+        return None
+    out = await _beatmatch_render_air(plan)
+    if not out:
+        return None
+    a_t = round(plan["a_cut_end"] - plan["ss_a"], 3)
+    b_t = round(plan["end_b"] - plan["b_cut_start"], 3) if b.get("cut_t") else None
+    a_cut = await _cut_render(plan["src_a"], plan["ss_a"], a_t, plan["pa"])
+    b_cut = await _cut_render(plan["src_b"], plan["b_cut_start"], b_t, plan["pb"])
+    if not a_cut or not b_cut:
+        return None
+    t_dur, a_dur, b_dur = await asyncio.gather(_talkover_probe(out), _talkover_probe(a_cut), _talkover_probe(b_cut))
+    if min(t_dur, a_dur, b_dur) <= 1:
+        return None
+    a2 = {**a, "audio_url": _cut_url(plan["src_a"], plan["ss_a"], a_t), "orig_audio_url": plan["src_a"], "cut_ss": plan["ss_a"], "cut_t": a_t,
+          "duration_sec": round(a_dur, 3), "real_duration_sec": round(a_dur, 3), "beatmatch_trimmed": round(plan["end_a"] - plan["a_cut_end"], 3),
+          "dropped_tail_sec": round(plan["end_a"] - plan["m_a"] - plan["xfade"], 3)}
+    tr = {"id": f"bm-{a['id'][:8]}-{b['id'][:8]}-{uuid.uuid4().hex[:4]}", "title": f"{a.get('title') or '…'} ⇄ {b.get('title') or '…'}",
+          "artist": "Beat-Match", "audio_url": f"/api/beatmatch/{plan['fname']}", "duration_sec": round(t_dur, 3),
+          "real_duration_sec": round(t_dur, 3), "is_beatmatch": True,
+          "beatmatch": {"prev_id": a["id"], "next_id": b["id"], "xfade_sec": plan["xfade"], "beats": plan["beats"],
+                        "bpm_a": plan["bpm_a"], "bpm_b": plan["bpm_b"], "mix_at_a": plan["m_a"], "b_first_beat": plan["s_b"]}}
+    b2 = {**b, "audio_url": _cut_url(plan["src_b"], plan["b_cut_start"], b_t), "orig_audio_url": plan["src_b"], "cut_ss": plan["b_cut_start"],
+          **({"cut_t": b_t} if b_t else {}), "duration_sec": round(b_dur, 3), "real_duration_sec": round(b_dur, 3),
+          "beatmatch_skip": round(plan["b_cut_start"] - plan["ss_b"], 3)}
+    return a2, tr, b2
+
+
+async def _beatmatch_air_tick() -> int:
+    """Una passata: trova la prima coppia musicale consecutiva in coda (A non prima del 2° posto),
+    pre-renderizza e sostituisce via CAS. Ritorna il numero di sostituzioni (0/1)."""
+    clock = await db.station_clock.find_one({"_id": "clock"}) or {}
+    queue = list(clock.get("queue") or [])
+    for i in range(1, len(queue) - 1):
+        a, b = queue[i], queue[i + 1]
+        if not (_bm_is_music(a) and _bm_is_music(b)):
+            continue
+        res = await _beatmatch_air_pair(a, b)
+        if not res:
+            continue
+        a2, tr, b2 = res
+        async with _clock_lock:
+            fresh = await db.station_clock.find_one({"_id": "clock"}) or {}
+            fq = list(fresh.get("queue") or [])
+            if len(fq) <= i + 1 or fq[i].get("id") != a.get("id") or fq[i + 1].get("id") != b.get("id") \
+                    or fq[i].get("audio_url") != a.get("audio_url") or fq[i + 1].get("audio_url") != b.get("audio_url"):
+                logger.info("[beatmatch] coda cambiata durante il render: transizione resta in cache per il prossimo giro")
+                return 0
+            fq[i:i + 2] = [a2, tr, b2]
+            ok = await _clock_cas(fresh, {"queue": fq, "updated_at": datetime.now(timezone.utc).isoformat()})
+        if ok:
+            logger.info(f"[beatmatch] IN ONDA: {a.get('title')} ⇄ {b.get('title')} · xfade {tr['beatmatch']['xfade_sec']}s "
+                        f"({tr['beatmatch']['beats']} battute, bpm {tr['beatmatch']['bpm_a']}→{tr['beatmatch']['bpm_b']}) → {tr['audio_url']}")
+            return 1
+        return 0
+    return 0
 
 
 async def _beatmatch_pregen_ticker():
-    """Ticker leggero: se siamo in notte e beatmatch è ON, guarda i prossimi
-    2 elementi del clock e pre-renderizza la transizione se assente in cache.
+    """Ticker: in CONTENITORE notturno (v13.83) con beatmatch ON → transizioni in onda
+    (`_beatmatch_air_tick`); fuori contenitore ma di notte → solo pre-render in cache come prima.
     Idle di giorno o se `beatmatch_enabled=False`."""
     await asyncio.sleep(45)
     while True:
         try:
-            hour = _rome_now().hour
-            if not _is_night_hour(hour):
-                await asyncio.sleep(120)
-                continue
             st = await db.station.find_one({"_id": "state"}, {"beatmatch_enabled": 1}) or {}
             if not bool(st.get("beatmatch_enabled")):
+                await asyncio.sleep(120)
+                continue
+            if await _active_container_now():
+                await _beatmatch_air_tick()
+                await asyncio.sleep(20)
+                continue
+            hour = _rome_now().hour
+            if not _is_night_hour(hour):
                 await asyncio.sleep(120)
                 continue
             clock = await db.station_clock.find_one({"_id": "clock"}, {"_id": 0, "current": 1, "queue": 1}) or {}
@@ -13174,8 +13378,11 @@ async def _beatmatch_pregen_ticker():
 async def admin_beatmatch_status():
     st = await db.station.find_one({"_id": "state"}, {"beatmatch_enabled": 1}) or {}
     files = sorted(_BEATMATCH_CACHE_DIR.glob("bm_*.mp3"))
+    _c = await _active_container_now()
     return {
         "enabled": bool(st.get("beatmatch_enabled")),
+        "air_mode": bool(_c and st.get("beatmatch_enabled")),   # v13.83 · transizioni IN ONDA (solo in contenitore)
+        "container": _c.get("name") if _c else None,
         "cache_count": len(files),
         "cache_size_mb": round(sum(f.stat().st_size for f in files) / 1024 / 1024, 2),
         "night_window": f"{_NIGHT_HOUR_START:02d}:00 → 0{_NIGHT_HOUR_END}:00",
@@ -14067,6 +14274,9 @@ async def _startup_fix_durations():
             fixed = 0
             for q in queue:
                 if q.get("is_timeline") or q.get("is_follow_up") or not q.get("id"):
+                    continue
+                # v13.82/83 · elementi tagliati o renderizzati (talk-over, beat-match, bed): la loro durata è quella del file, non della libreria
+                if q.get("orig_audio_url") or q.get("cut_ss") is not None or q.get("talkover_skip_intro") or q.get("bed_mixed") or q.get("is_beatmatch"):
                     continue
                 t = await db.tracks.find_one({"id": q["id"]}, {"_id": 0, "real_duration_sec": 1})
                 rd = float((t or {}).get("real_duration_sec") or 0)

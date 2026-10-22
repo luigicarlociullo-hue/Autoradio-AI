@@ -148,10 +148,16 @@ function BeatmatchBlock() {
           <div className="font-semibold text-zinc-100">Beatmatch Notte</div>
           <div className="text-[11px] text-zinc-500 max-w-xs">
             Pre-render acrossfade ffmpeg tra brani adiacenti in {status?.night_window || "22-06"}.
+            Nei <b className="text-zinc-300">contenitori notturni</b> le transizioni vanno <b className="text-zinc-300">in onda</b> (crossfade a tempo sul BPM, archivio permanente).
             Cache: <b className="text-zinc-300">{status?.cache_count ?? 0}</b> transizioni
             ({status?.cache_size_mb ?? 0} MB).
           </div>
-          {status?.is_night_now && status?.enabled && (
+          {status?.air_mode && (
+            <div className="text-[10px] mt-1 uppercase tracking-widest text-cyan-300 font-bold" data-testid="beatmatch-air-mode">
+              ● TRANSIZIONI IN ONDA · {status.container}
+            </div>
+          )}
+          {status?.is_night_now && status?.enabled && !status?.air_mode && (
             <div className="text-[10px] mt-1 uppercase tracking-widest text-purple-300 font-bold">
               ● NIGHT MODE ATTIVA
             </div>
