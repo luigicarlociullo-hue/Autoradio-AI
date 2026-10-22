@@ -15,7 +15,8 @@ import ElasticQueuePreview from "@/components/ElasticQueuePreview";
 import NightControlCenter from "@/components/NightControlCenter";
 import AdManagerPanel from "@/components/AdManagerPanel";
 import { GoLivePanel, LedWallMiniPreview } from "@/components/CommandCenter2Panels";
-import ArchivioControlloTotale from "@/components/ArchivioControlloTotale";
+import ArchivioControlloTotale, { useGenres } from "@/components/ArchivioControlloTotale";
+import GenreSlotsPanel from "@/components/GenreSlotsPanel";
 import CoverVideoPicker from "@/components/CoverVideoPicker";
 import LedWallNewsPanel from "@/components/LedWallNewsPanel";
 import DemoModePanel from "@/components/DemoModePanel";
@@ -268,6 +269,8 @@ export default function Dashboard() {
               <BandHeader icon="🕰️" title="SCHEDULING" subtitle="Smart Flow Timeline · Smart Recurrence · Power Play · regole di rotazione" color="#00E5FF" />
               <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
                 <SmartFlowTimelinePanel />
+                {/* v13.80 · Generi gestiti dall'utente + fasce orarie per genere */}
+                <GenreSlotsPanel />
                 <PowerPlayMonitor />
                 <RotationRulesPanel />
               </div>
@@ -1297,6 +1300,7 @@ function DbSyncPanel() {
 // v13.49 · Non più montato: fuso in ArchivioControlloTotale. Conservato intatto.
 // eslint-disable-next-line no-unused-vars
 function TrackManagerPanel() {
+  const genres = useGenres();   // v13.80
   const [tracks, setTracks] = useState([]);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all"); // all|song|jingle|anthem
@@ -1473,17 +1477,7 @@ function TrackManagerPanel() {
       {/* Filtri per Genere / Archivio Pro */}
       <div className="flex flex-wrap items-center gap-1.5 mb-3" data-testid="genre-filters">
         <span className="text-[10px] font-mono uppercase tracking-widest text-zinc-500 mr-2">Archivio:</span>
-        {[
-          { k: "all",       label: "Tutti" },
-          { k: "pop",       label: "Pop" },
-          { k: "rock",      label: "Rock" },
-          { k: "hiphop",    label: "Hip Hop" },
-          { k: "dance",     label: "Dance/Club" },
-          { k: "relax",     label: "Relax" },
-          { k: "ambient",   label: "Ambient" },
-          { k: "varie",     label: "Varie" },
-          { k: "night-mix", label: "🌙 Night Mix (AI)" },
-        ].map(g => (
+        {[{ k: "all", label: "Tutti" }, ...genres, { k: "night-mix", label: "🌙 Night Mix (AI)" }].map(g => (   // v13.80 · generi dinamici
           <button
             key={g.k}
             data-testid={`genre-filter-${g.k}`}
@@ -1611,13 +1605,7 @@ function TrackManagerPanel() {
                     data-testid={`genre-${t.id.slice(0,8)}`}
                   >
                     <option value="">—</option>
-                    <option value="pop">Pop</option>
-                    <option value="rock">Rock</option>
-                    <option value="hiphop">Hip Hop</option>
-                    <option value="dance">Dance/Club</option>
-                    <option value="relax">Relax</option>
-                    <option value="ambient">Ambient</option>
-                    <option value="varie">Varie</option>
+                    {genres.map((g) => <option key={g.k} value={g.k}>{g.label}</option>)}
                   </select>
                 </td>
                 <td className="px-3 py-2 text-center">

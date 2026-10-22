@@ -363,7 +363,7 @@ class Track(BaseModel):
     # pydantic reject every free-text genre value with a ValidationError on
     # Track(**doc) — breaking track generation and any read of an existing
     # track. Keep these as two distinct fields.
-    genre_category: Optional[Literal["pop", "rock", "hiphop", "dance", "relax", "ambient", "varie"]] = None
+    genre_category: Optional[str] = None   # v13.80 · slug del genere principale (collezione `genres`, gestita dall'utente)
     bpm: Optional[int] = None             # BPM detected (client-side default, o server/manuale)
     bpm_source: Optional[Literal["client", "server", "manual"]] = None
     # Cestino soft-delete: quando non-null, il record è nel cestino
@@ -715,7 +715,159 @@ DEFAULT_DJS = [
 ]
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# v13.80 · GENERI gestiti dall'utente (`genres`) + FASCE ORARIE per genere (`genre_slots`)
+# Migrazione idempotente dal vecchio elenco fisso `genre_category` (slug conservati → zero perdita dati).
+# ═══════════════════════════════════════════════════════════════════════════
+_LEGACY_GENRES = [("pop", "Pop"), ("rock", "Rock"), ("hiphop", "Hip Hop"), ("dance", "Dance/Club"),
+                  ("relax", "Relax"), ("ambient", "Ambient"), ("varie", "Varie")]
+
+
+def _genre_slugify(name: str) -> str:
+    base = re.sub(r"[^a-z0-9]+", "-", (name or "").lower().strip()).strip("-")
+    return base[:40] or "genere"
+
+
+async def ensure_genres_seeded():
+    if await db.genres.count_documents({}) > 0:
+        return
+    now = now_iso()
+    await db.genres.insert_many([{"id": uuid.uuid4().hex[:12], "slug": sl, "name": nm, "order": i, "created_at": now}
+                                 for i, (sl, nm) in enumerate(_LEGACY_GENRES)])
+    logger.info("[genres] migrazione iniziale: 7 generi legacy creati (slug conservati)")
+
+
+def _hhmm_to_min(v: str) -> int:
+    try:
+        h, m = str(v or "0:0").split(":")[:2]
+        return max(0, min(24 * 60, int(h) * 60 + int(m)))
+    except Exception:
+        return 0
+
+
+async def _active_genre_slots(now_local: datetime) -> list:
+    slots = await db.genre_slots.find({"active": {"$ne": False}}, {"_id": 0}).to_list(200)
+    cur = now_local.hour * 60 + now_local.minute
+    wd = now_local.weekday()
+    out = []
+    for sl in slots:
+        a, b = _hhmm_to_min(sl.get("start")), _hhmm_to_min(sl.get("end"))
+        days = sl.get("days") or []
+        if days and wd not in days:
+            continue
+        inside = (a <= cur < b) if a <= b else (cur >= a or cur < b)  # a cavallo della mezzanotte
+        if inside:
+            out.append(sl)
+    return out
+
+
+async def _active_genre_slugs(now_local: datetime) -> list:
+    slugs = []
+    for sl in await _active_genre_slots(now_local):
+        slugs += [g for g in (sl.get("genre_slugs") or []) if g]
+    return list(dict.fromkeys(slugs))
+
+
+async def _active_genre_names() -> Optional[str]:
+    try:
+        from zoneinfo import ZoneInfo
+        now_local = datetime.now(ZoneInfo("Europe/Rome"))
+    except Exception:
+        now_local = datetime.now(timezone.utc)
+    slugs = await _active_genre_slugs(now_local)
+    if not slugs:
+        return None
+    docs = await db.genres.find({"slug": {"$in": slugs}}, {"_id": 0, "name": 1}).to_list(50)
+    return ", ".join(d["name"] for d in docs) or None
+
+
+@api_router.get("/genres")
+async def list_genres():
+    docs = await db.genres.find({}, {"_id": 0}).sort([("order", 1), ("name", 1)]).to_list(500)
+    counts = {c["_id"]: c["n"] for c in await db.tracks.aggregate(
+        [{"$match": {"deleted_at": None}}, {"$group": {"_id": "$genre_category", "n": {"$sum": 1}}}]).to_list(500)}
+    for d in docs:
+        d["tracks"] = counts.get(d["slug"], 0)
+    return {"genres": docs}
+
+
+@api_router.post("/admin/genres")
+async def admin_create_genre(payload: dict):
+    name = (payload.get("name") or "").strip()[:60]
+    if not name:
+        raise HTTPException(400, "Nome genere richiesto")
+    slug = _genre_slugify(name)
+    ex = await db.genres.find_one({"$or": [{"slug": slug}, {"name": {"$regex": f"^{re.escape(name)}$", "$options": "i"}}]}, {"_id": 0})
+    if ex:
+        return {"ok": True, "genre": ex, "existing": True}
+    n = await db.genres.count_documents({})
+    doc = {"id": uuid.uuid4().hex[:12], "slug": slug, "name": name, "order": n, "created_at": now_iso()}
+    await db.genres.insert_one(dict(doc))
+    return {"ok": True, "genre": doc}
+
+
+@api_router.delete("/admin/genres/{genre_id}")
+async def admin_delete_genre(genre_id: str):
+    g = await db.genres.find_one({"id": genre_id}, {"_id": 0})
+    if not g:
+        raise HTTPException(404, "Genere non trovato")
+    used = await db.tracks.count_documents({"genre_category": g["slug"], "deleted_at": None})
+    if used:
+        raise HTTPException(409, f"Genere usato da {used} brani: riassegnali prima")
+    await db.genres.delete_one({"id": genre_id})
+    await db.genre_slots.update_many({}, {"$pull": {"genre_slugs": g["slug"]}})
+    return {"ok": True}
+
+
+@api_router.get("/admin/genre-slots")
+async def admin_list_genre_slots():
+    slots = await db.genre_slots.find({}, {"_id": 0}).sort("start", 1).to_list(200)
+    try:
+        from zoneinfo import ZoneInfo
+        now_local = datetime.now(ZoneInfo("Europe/Rome"))
+    except Exception:
+        now_local = datetime.now(timezone.utc)
+    active_ids = {sl["id"] for sl in await _active_genre_slots(now_local)}
+    for sl in slots:
+        sl["is_active_now"] = sl["id"] in active_ids
+    return {"slots": slots, "active_genre_slugs": await _active_genre_slugs(now_local)}
+
+
+@api_router.post("/admin/genre-slots")
+async def admin_create_genre_slot(payload: dict):
+    slugs = [str(x).strip() for x in (payload.get("genre_slugs") or []) if str(x).strip()]
+    if not slugs:
+        raise HTTPException(400, "Seleziona almeno un genere")
+    known = {g["slug"] for g in await db.genres.find({"slug": {"$in": slugs}}, {"_id": 0, "slug": 1}).to_list(100)}
+    if set(slugs) - known:
+        raise HTTPException(404, f"Generi sconosciuti: {sorted(set(slugs) - known)}")
+    start, end = str(payload.get("start") or "00:00")[:5], str(payload.get("end") or "00:00")[:5]
+    if _hhmm_to_min(start) == _hhmm_to_min(end):
+        raise HTTPException(400, "Inizio e fine coincidono")
+    days = [int(d) for d in (payload.get("days") or []) if str(d).isdigit() and 0 <= int(d) <= 6]
+    doc = {"id": uuid.uuid4().hex[:12], "start": start, "end": end, "genre_slugs": slugs, "days": days,
+           "active": payload.get("active", True) is not False, "label": (payload.get("label") or "").strip()[:60],
+           "created_at": now_iso()}
+    await db.genre_slots.insert_one(dict(doc))
+    return {"ok": True, "slot": doc}
+
+
+@api_router.patch("/admin/genre-slots/{slot_id}")
+async def admin_toggle_genre_slot(slot_id: str, payload: dict):
+    r = await db.genre_slots.update_one({"id": slot_id}, {"$set": {"active": payload.get("active", True) is not False}})
+    if not r.matched_count:
+        raise HTTPException(404, "Fascia non trovata")
+    return {"ok": True}
+
+
+@api_router.delete("/admin/genre-slots/{slot_id}")
+async def admin_delete_genre_slot(slot_id: str):
+    await db.genre_slots.delete_one({"id": slot_id})
+    return {"ok": True}
+
+
 async def ensure_seeded():
+    await ensure_genres_seeded()   # v13.80
     # Il roster diurno ha 3 DJ (Leo/Aria/Max). Purge dei DJ vecchi che non
     # sono più nel roster ufficiale, MA preserva i DJ notturni (night_slot
     # in [1,2,3]) — quelli sono gestiti separatamente dal seed_night_djs.py.
@@ -5527,6 +5679,8 @@ async def admin_set_track_genre(track_id: str, payload: dict):
     il BPM e rendendo il Track non validabile da pydantic).
     """
     g = (payload.get("genre") or "").lower().strip() or None
+    if g and not await db.genres.find_one({"slug": g}):
+        raise HTTPException(404, "Genere non trovato: crealo prima con '+ Nuovo genere'")
     ALLOWED = {None, "pop", "rock", "hiphop", "dance", "relax", "ambient", "varie"}
     if g not in ALLOWED:
         raise HTTPException(400, f"Genre non valido. Usa uno di: {ALLOWED - {None}}")
@@ -8228,7 +8382,7 @@ async def _appointment_suno_prepare():
             if r.modified_count == 0:
                 continue
             try:
-                genre = cfg.get("suno_genre") or None
+                genre = cfg.get("suno_genre") or (await _active_genre_names()) or None   # v13.80 · fascia generi attiva
                 hint = " ".join(x for x in [f"a {genre} track" if genre else "", f"mood {cfg['suno_mood']}" if cfg.get("suno_mood") else "",
                                             f"for the radio show '{ev.get('title')}'" if ev.get("title") else ""] if x).strip() or None
                 t = await generate_track(hint=hint, genre=genre, lang=cfg.get("suno_lang") or "it")
@@ -10163,9 +10317,15 @@ async def _clock_pick_track(exclude_ids: Optional[set] = None) -> Optional[dict]
     # del rigido "meno recente" (FIFO), che produceva un ordine fisso e
     # prevedibile — poi aggiorniamo last_played_at come prima.
     _pool_size = 15
-    tr_pool = await db.tracks.find(q, {"_id": 0, "id": 1, "title": 1, "artist": 1,
-                                        "audio_url": 1, "duration_sec": 1, "real_duration_sec": 1, "bpm": 1}) \
-                              .sort([("last_played_at", 1)]).limit(_pool_size).to_list(length=_pool_size)
+    _proj = {"_id": 0, "id": 1, "title": 1, "artist": 1, "audio_url": 1, "duration_sec": 1, "real_duration_sec": 1, "bpm": 1}
+    # v13.80 · GENERI E FASCE ORARIE: se una fascia è attiva, solo brani di quei generi (fallback alla rotazione normale se vuoto)
+    _genre_slugs = await _active_genre_slugs(now_local)
+    tr_pool = []
+    if _genre_slugs:
+        tr_pool = await db.tracks.find({**q, "genre_category": {"$in": _genre_slugs}}, _proj) \
+                                  .sort([("last_played_at", 1)]).limit(_pool_size).to_list(length=_pool_size)
+    if not tr_pool:
+        tr_pool = await db.tracks.find(q, _proj).sort([("last_played_at", 1)]).limit(_pool_size).to_list(length=_pool_size)
     tr = random.choice(tr_pool) if tr_pool else None
     if not tr:
         tr_pool = await db.tracks.find(

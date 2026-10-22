@@ -42,11 +42,32 @@ const CATEGORY_FILTERS = [
   { k: "spot", label: "SPOT" }, { k: "loop", label: "BASI (LOOP)" }, { k: "fx", label: "FX" },
   { k: "anthem", label: "INNO" }, { k: "appointment_jingle", label: "SIGLE APPUNTAMENTI" }, { k: "pending", label: "⏳ APPROVAZIONE" },
 ];
-const GENRES = [
-  { k: "all", label: "Tutti" }, { k: "pop", label: "Pop" }, { k: "rock", label: "Rock" }, { k: "hiphop", label: "Hip Hop" },
-  { k: "dance", label: "Dance/Club" }, { k: "relax", label: "Relax" }, { k: "ambient", label: "Ambient" },
-  { k: "varie", label: "Varie" }, { k: "night-mix", label: "🌙 Night Mix (AI)" },
-];
+// v13.80 · GENERI gestiti dall'utente (collezione `genres`): elenco dinamico condiviso da filtro, Modifica e riga.
+// L'elenco fisso precedente è stato migrato (slug conservati). "+ Nuovo genere" crea un genere a nome libero.
+const genreListeners = new Set();
+let genreCache = [];
+const notifyGenres = () => genreListeners.forEach((fn) => fn(genreCache));
+export async function loadGenres() {
+  try { const r = await api.get("/genres"); genreCache = (r.data.genres || []).map((g) => ({ k: g.slug, label: g.name, id: g.id, tracks: g.tracks })); notifyGenres(); } catch {}
+  return genreCache;
+}
+export function useGenres() {
+  const [list, setList] = useState(genreCache);
+  useEffect(() => { genreListeners.add(setList); if (!genreCache.length) loadGenres(); return () => genreListeners.delete(setList); }, []);
+  return list;
+}
+export async function createGenreInteractive() {
+  const name = window.prompt("Nome del nuovo genere (es. Pop, Jazz, Italo Disco):");
+  if (!name || !name.trim()) return null;
+  try {
+    const r = await api.post("/admin/genres", { name: name.trim() });
+    await loadGenres();
+    toast.success(r.data.existing ? "Genere già esistente: selezionato" : `Genere "${r.data.genre.name}" creato`);
+    return r.data.genre?.slug || null;
+  } catch (e) { toast.error(e?.response?.data?.detail || "Errore creazione genere"); return null; }
+}
+const NEW_GENRE = "__new__";
+const withFixed = (list) => [{ k: "all", label: "Tutti" }, ...list, { k: "night-mix", label: "🌙 Night Mix (AI)" }];
 const backend = process.env.REACT_APP_BACKEND_URL;
 const downloadUrl = (id) => `${backend}/api/suno_audio/track_${id}.mp3`;
 const short = (id) => (id || "").slice(0, 8);
@@ -143,6 +164,7 @@ function DeleteConfirm({ track, onCancel, onConfirm, busy }) {
 
 /* ─── Pannello MATITA · tutti i campi, applicati solo su APPROVA E SALVA ─── */
 function EditPanel({ track, onCancel, onSaved }) {
+  const genres = useGenres();
   const [f, setF] = useState({
     title: track.title || "", artist: track.artist || "", kind: track.kind || "song",
     genre_category: track.genre_category || "", bpm: track.bpm || "", broadcast_slots: trackSlots(track),
@@ -205,9 +227,11 @@ function EditPanel({ track, onCancel, onSaved }) {
               {KINDS.map((k) => <option key={k.k} value={k.k}>{k.label}</option>)}
             </select></label>
           <label className="text-xs text-zinc-400">Genere (Archivio Pro)
-            <select value={f.genre_category} onChange={(e) => up("genre_category", e.target.value)} className={inp} data-testid="act-edit-genre">
+            <select value={f.genre_category} className={inp} data-testid="act-edit-genre"
+              onChange={async (e) => { const v = e.target.value; if (v === NEW_GENRE) { const slug = await createGenreInteractive(); if (slug) up("genre_category", slug); } else up("genre_category", v); }}>
               <option value="">—</option>
-              {GENRES.filter((g) => g.k !== "all" && g.k !== "night-mix").map((g) => <option key={g.k} value={g.k}>{g.label}</option>)}
+              {genres.map((g) => <option key={g.k} value={g.k}>{g.label}</option>)}
+              <option value={NEW_GENRE}>＋ Nuovo genere…</option>
             </select></label>
           <label className="text-xs text-zinc-400">BPM
             <input type="number" min={40} max={220} value={f.bpm} onChange={(e) => up("bpm", e.target.value)} placeholder="—" className={inp} data-testid="act-edit-bpm" /></label>
@@ -258,6 +282,7 @@ function EditPanel({ track, onCancel, onSaved }) {
 
 /* ─── Riga brano ─── */
 function TrackRow({ t, selected, onSelect, previewing, onPreview, onEdit, onDelete, onReplace, onChanged, busyKey, setBusyKey }) {
+  const genres = useGenres();
   const sid = short(t.id);
   const isOn = t.on_air !== false;
   const kind = KINDS.find((k) => k.k === t.kind) || { label: t.kind, cls: "bg-white/10 text-white" };
@@ -319,11 +344,12 @@ function TrackRow({ t, selected, onSelect, previewing, onPreview, onEdit, onDele
         <button data-testid={`replace-${sid}`} onClick={onReplace}
           className="inline-flex items-center gap-1 px-3 py-1 rounded bg-pink-500/10 border border-pink-500/30 text-pink-300 text-xs hover:bg-pink-500/20 transition">
           <Replace className="w-3 h-3" /> Sostituisci</button>
-        <select value={t.genre_category || ""} data-testid={`genre-${sid}`} title="Genere (Archivio Pro)"
-          onChange={(e) => run(`genre-${t.id}`, () => endpoints.trackSetGenre(t.id, e.target.value || null))}
+        <select value={t.genre_category || ""} data-testid={`genre-${sid}`} title="Genere principale"
+          onChange={async (e) => { const v = e.target.value; if (v === NEW_GENRE) { const slug = await createGenreInteractive(); if (slug) run(`genre-${t.id}`, () => endpoints.trackSetGenre(t.id, slug)); } else run(`genre-${t.id}`, () => endpoints.trackSetGenre(t.id, v || null)); }}
           className="bg-black/60 border border-white/10 rounded px-1 py-1 text-[10px] font-mono">
           <option value="">— genere</option>
-          {GENRES.filter((g) => g.k !== "all" && g.k !== "night-mix").map((g) => <option key={g.k} value={g.k}>{g.label}</option>)}
+          {genres.map((g) => <option key={g.k} value={g.k}>{g.label}</option>)}
+          <option value={NEW_GENRE}>＋ Nuovo genere…</option>
         </select>
         <input type="number" min={40} max={220} defaultValue={t.bpm || ""} key={`bpm-${t.id}-${t.bpm}`} placeholder="BPM" data-testid={`bpm-${sid}`}
           title={t.bpm_source ? `Sorgente: ${t.bpm_source}` : "BPM non ancora rilevato"}
@@ -353,6 +379,7 @@ function TrackRow({ t, selected, onSelect, previewing, onPreview, onEdit, onDele
 
 /* ─── Sezione principale ─── */
 export default function ArchivioControlloTotale({ TrackModal }) {
+  const genres = useGenres();
   const [tracks, setTracks] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -464,10 +491,12 @@ export default function ArchivioControlloTotale({ TrackModal }) {
       </div>
       <div className="flex flex-wrap items-center gap-1.5 mb-2" data-testid="act-genre-filters">
         <span className="text-[10px] font-mono uppercase tracking-widest text-zinc-500 mr-1">Archivio:</span>
-        {GENRES.map((g) => (
+        {withFixed(genres).map((g) => (
           <button key={g.k} type="button" onClick={() => setGenre(g.k)} data-testid={`act-genre-${g.k}`}
             className={`px-2.5 py-1 rounded text-[10px] font-mono uppercase border transition ${genre === g.k ? "border-cyan-400 text-cyan-300 bg-cyan-500/10" : "border-white/10 text-zinc-400 hover:border-white/20 hover:text-white"}`}>{g.label}</button>
         ))}
+        <button type="button" onClick={createGenreInteractive} data-testid="act-genre-new"
+          className="px-2.5 py-1 rounded text-[10px] font-mono uppercase border border-dashed border-cyan-400/40 text-cyan-300 hover:bg-cyan-500/10 transition">＋ Nuovo genere</button>
       </div>
 
       {/* Toolbar ZIP (preesistente) */}
